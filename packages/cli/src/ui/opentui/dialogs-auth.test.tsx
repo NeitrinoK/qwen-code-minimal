@@ -16,14 +16,14 @@
  *    parity) and Esc is blocked while unauthenticated;
  *  - main → sub-menu navigation and back follow the ink view stack;
  *  - the custom-provider wizard walks the full seven-step flow
- *    (protocol → api → baseUrl → apiKey → models → advancedConfig → review) and
+ *    (api → baseUrl → apiKey → models → advancedConfig → review) and
  *    the final Enter drives the same install-plan write path as ink's
  *    useAuth.handleProviderSubmit (buildInstallPlan → applyProviderInstall
  *    Plan → feedback + close);
  *  - a rejected install plan surfaces the error and keeps the dialog open.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { render, screen } from '@testing-library/react';
 import type { Config } from '@qwen-code/qwen-code-core';
@@ -58,17 +58,11 @@ const mocks = vi.hoisted(() => {
         // `bg` is the one style prop carried through: the dialog gives a
         // background colour to exactly one cell, the software cursor.
         const bg = (config as { bg?: string }).bg;
-        // `flexShrink` comes through too so the frame's shrink behaviour is
-        // assertable without booting the native renderer.
-        const flexShrink = (config as { flexShrink?: number }).flexShrink;
         return React.createElement(
           type === 'box' ? 'div' : 'span',
           {
             ...(key === undefined ? null : { key }),
             ...(bg === undefined ? null : { 'data-bg': bg }),
-            ...(flexShrink === undefined
-              ? null
-              : { 'data-flex-shrink': flexShrink }),
           },
           children,
         );
@@ -119,7 +113,11 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   };
 });
 
-import { AuthType } from '@qwen-code/qwen-code-core';
+import {
+  AuthType,
+  buildHubProviders,
+  setHubProviders,
+} from '@qwen-code/qwen-code-core';
 import * as coreRuntime from '@qwen-code/qwen-code-core';
 import { ICON } from '../constants.js';
 import { OpenTuiAuthDialog } from './dialogs-auth.js';
@@ -251,31 +249,21 @@ function renderDialog(overrides?: {
   authType?: AuthType;
   initialError?: string;
   merged?: Record<string, unknown>;
-  availableTerminalHeight?: number;
 }) {
   const onClose = vi.fn();
   const notify = vi.fn();
   const config = createMockConfig(overrides?.authType);
   const settings = createMockSettings(overrides?.merged);
-  const view = (availableTerminalHeight?: number) => (
+  render(
     <OpenTuiAuthDialog
       config={config}
       settings={settings}
       onClose={onClose}
       notify={notify}
       initialError={overrides?.initialError}
-      availableTerminalHeight={availableTerminalHeight}
-    />
+    />,
   );
-  const rendered = render(view(overrides?.availableTerminalHeight));
-  return {
-    onClose,
-    notify,
-    config,
-    /** Re-render the same dialog against a new region height. */
-    rerenderAt: (availableTerminalHeight: number) =>
-      rendered.rerender(view(availableTerminalHeight)),
-  };
+  return { onClose, notify, config };
 }
 
 /** Drive main → Custom Provider → through the full seven-step wizard. */
@@ -286,8 +274,9 @@ async function runCustomProviderFlow(): Promise<{
   const { onClose, notify } = renderDialog();
   await press('down');
   await press('down');
-  await press('return'); // main: CUSTOM_PROVIDER → provider-setup (protocol)
-  await press('return'); // protocol: OpenAI-compatible → API selection
+  // OpenAI-compatible is this build's only protocol, so the wizard skips the
+  // protocol step and opens on API selection.
+  await press('return'); // main: CUSTOM_PROVIDER → provider-setup (API)
   await press('return'); // API: Chat Completions → baseUrl input
   await typeText('https://api.example.com/v1');
   await press('return'); // baseUrl → apiKey
@@ -300,26 +289,42 @@ async function runCustomProviderFlow(): Promise<{
 }
 
 /**
- * Drive main → Third-party → DeepSeek to its model-IDs step, and type into the
+ * Drive main → Third-party → Grok to its model-IDs step, and type into the
  * custom-ID field. Models is the terminal step of every preset flow, so the
  * Enter that leaves it fires the install rather than another step.
  */
 async function runPresetFlowToTerminalModels(): Promise<void> {
   renderDialog();
   await press('down'); // main: THIRD_PARTY_PROVIDERS
-  await press('return'); // → thirdparty-select, DeepSeek on top
-  await press('return'); // DeepSeek → apiKey
+  await press('return'); // → thirdparty-select, Grok on top
+  await press('return'); // Grok → apiKey
   await typeText('sk-test');
   await press('return'); // apiKey → models (custom-ID input focused)
   await typeText('mod');
 }
+
+// Every flow below assumes a configured hub (its entry is the first main row).
+beforeEach(() => {
+  setHubProviders(
+    buildHubProviders({
+      label: 'Test Hub',
+      endpoints: [
+        { name: 'prod', baseUrl: 'https://hub.example.com/v1' },
+        { name: 'stage', baseUrl: 'https://stage.hub.example.com/v1' },
+      ],
+    }),
+  );
+});
+
+afterEach(() => {
+  setHubProviders([]);
+});
 
 describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
   beforeEach(() => {
     mocks.state.inputHandlers.length = 0;
     mocks.state.keyboardHandlers.length = 0;
     mocks.state.pasteHandlers.length = 0;
-    mocks.state.width = 100;
     core.applyProviderInstallPlan.mockReset().mockResolvedValue(undefined);
     core.logAuth.mockReset();
   });
@@ -327,9 +332,24 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
   it('renders the main menu with the three top-level options', () => {
     renderDialog();
     expect(screen.getByText('Connect a Provider')).toBeTruthy();
-    expect(screen.getByText('Alibaba ModelStudio')).toBeTruthy();
+    expect(screen.getByText('Model Hub')).toBeTruthy();
     expect(screen.getByText('Third-party Providers')).toBeTruthy();
     expect(screen.getByText('Custom Provider')).toBeTruthy();
+  });
+
+  it('omits the Model Hub entry when no hub is configured', () => {
+    setHubProviders([]);
+    renderDialog();
+    expect(screen.queryByText('Model Hub')).toBeNull();
+    expect(screen.getByText('Third-party Providers')).toBeTruthy();
+    expect(screen.getByText('Custom Provider')).toBeTruthy();
+  });
+
+  it('lists every configured hub endpoint in the hub sub-menu', async () => {
+    renderDialog();
+    await press('return'); // main: Model Hub → alibaba-select
+    expect(screen.getByText('Test Hub')).toBeTruthy();
+    expect(screen.getByText('Test Hub (stage)')).toBeTruthy();
   });
 
   it('blocks Esc on the main view while unauthenticated', async () => {
@@ -352,7 +372,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     // A startup login failure seeds the message before mount; the swallow is
     // for errors the dialog arms itself, so Esc must still close.
     const { onClose } = renderDialog({
-      authType: AuthType.QWEN_OAUTH,
+      authType: AuthType.USE_OPENAI,
       initialError: 'Failed to login',
     });
     await pressEsc();
@@ -372,10 +392,8 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
 
   it('navigates main → sub-menu and back with Esc', async () => {
     const { onClose } = renderDialog();
-    await press('return'); // main: Alibaba ModelStudio → alibaba-select
-    expect(
-      screen.getByText('Alibaba ModelStudio · Access Method'),
-    ).toBeTruthy();
+    await press('return'); // main: Model Hub → alibaba-select
+    expect(screen.getByText('Model Hub · Endpoint')).toBeTruthy();
     await pressEsc(); // back to main
     expect(screen.getByText('Connect a Provider')).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
@@ -390,20 +408,20 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
       handler(baseKeyEvent({ name: 'return', sequence: '\r' }));
     });
     // Two downs land on Custom Provider. The cursor the handler was registered
-    // with still pointed at Alibaba ModelStudio, whose Enter opens the
+    // with still pointed at Model Hub, whose Enter opens the
     // access-method sub-menu instead.
-    expect(screen.getByText('OpenAI-compatible')).toBeTruthy();
+    expect(screen.getByText('Chat Completions')).toBeTruthy();
     expect(screen.queryByText(/Access Method/)).toBeNull();
   });
 
   it('wraps the main-menu cursor from the first row to the last (#160)', async () => {
     renderDialog();
     // ink builds this list on DescriptiveRadioButtonSelect, whose useSelectionList
-    // steps modulo the row count; a clamp would stay on Alibaba ModelStudio and
+    // steps modulo the row count; a clamp would stay on Model Hub and
     // Enter would open the access-method sub-menu instead.
     await press('up');
     await press('return');
-    expect(screen.getByText('OpenAI-compatible')).toBeTruthy();
+    expect(screen.getByText('Chat Completions')).toBeTruthy();
     expect(screen.queryByText(/Access Method/)).toBeNull();
   });
 
@@ -413,20 +431,20 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     await press('down');
     await press('down');
     await press('return');
-    expect(
-      screen.getByText('Alibaba ModelStudio · Access Method'),
-    ).toBeTruthy();
+    expect(screen.getByText('Model Hub · Endpoint')).toBeTruthy();
   });
 
   it('keeps authentication open when only service models were saved', async () => {
-    const servicePlan = coreRuntime.buildInstallPlan(
-      coreRuntime.minimaxProvider,
-      {
-        baseUrl: coreRuntime.resolveBaseUrl(coreRuntime.minimaxProvider),
+    // A plan that saves only a service (image-only) model: no conversation
+    // model is selected, so the dialog must keep authentication open.
+    const servicePlan = {
+      ...coreRuntime.buildInstallPlan(coreRuntime.customProvider, {
+        baseUrl: 'https://images.example.com/v1',
         apiKey: 'test-image',
         modelIds: ['image-01'],
-      },
-    );
+      }),
+      modelSelection: undefined,
+    };
     const build = vi
       .spyOn(coreRuntime, 'buildInstallPlan')
       .mockReturnValue(servicePlan);
@@ -451,7 +469,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
   it('walks the custom-provider wizard and submits the install plan', async () => {
     const { onClose, notify } = await runCustomProviderFlow();
     // review: step title reflects the last step before saving
-    expect(screen.getByText(/Step 7\/7 · Review/)).toBeTruthy();
+    expect(screen.getByText(/Step 6\/6 · Review/)).toBeTruthy();
     await press('return'); // save
 
     await vi.waitFor(() => {
@@ -472,12 +490,10 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     await press('down');
     await press('down');
     await press('return');
-    expect(screen.getByText('OpenAI-compatible')).toBeTruthy();
-    expect(screen.queryByText('OpenAI Responses')).toBeNull();
-    expect(screen.getByText('Anthropic-compatible')).toBeTruthy();
-    expect(screen.getByText('Gemini-compatible')).toBeTruthy();
-    await press('return');
+    // The only protocol is OpenAI-compatible, so the wizard opens directly on
+    // the API choice with both wires offered.
     expect(screen.getByText('Chat Completions')).toBeTruthy();
+    expect(screen.queryByText('OpenAI Responses')).toBeNull();
     expect(screen.getByText('Responses')).toBeTruthy();
     await press('down');
     await press('return');
@@ -488,7 +504,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     await typeText('responses-model');
     await press('return');
     await press('return');
-    expect(screen.getByText(/Step 7\/7 · Review/)).toBeTruthy();
+    expect(screen.getByText(/Step 6\/6 · Review/)).toBeTruthy();
     await press('return');
     await vi.waitFor(() => {
       expect(core.applyProviderInstallPlan).toHaveBeenCalledTimes(1);
@@ -519,8 +535,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     });
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     // The parity RadioList gives the marker its own cell, so read it off the row.
     const markerOf = (label: string) =>
       screen.getByText(label).parentElement?.parentElement?.firstChild
@@ -549,8 +564,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     renderDialog();
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     await press('return'); // API: Chat Completions → baseUrl input
     await typeText('https://api.example.com/v1');
     await press('return'); // baseUrl → apiKey
@@ -568,8 +582,7 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     renderDialog();
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     await press('return'); // API: Chat Completions → baseUrl input
     await typeText('https://api.example.com/v1');
     await press('return'); // baseUrl → apiKey
@@ -624,14 +637,16 @@ describe('OpenTuiAuthDialog (#57 onboarding flow)', () => {
     // The other path that keeps the dialog open on the step that submitted: the
     // install succeeded but saved only service models, so the wizard stays where
     // it was and the field has to take keys again just the same.
-    const servicePlan = coreRuntime.buildInstallPlan(
-      coreRuntime.minimaxProvider,
-      {
-        baseUrl: coreRuntime.resolveBaseUrl(coreRuntime.minimaxProvider),
+    // A plan that saves only a service (image-only) model: no conversation
+    // model is selected, so the dialog must keep authentication open.
+    const servicePlan = {
+      ...coreRuntime.buildInstallPlan(coreRuntime.customProvider, {
+        baseUrl: 'https://images.example.com/v1',
         apiKey: 'test-image',
         modelIds: ['image-01'],
-      },
-    );
+      }),
+      modelSelection: undefined,
+    };
     const build = vi
       .spyOn(coreRuntime, 'buildInstallPlan')
       .mockReturnValue(servicePlan);
@@ -670,8 +685,7 @@ describe('bracketed-paste into dialog inputs (#57)', () => {
     renderDialog();
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     await press('return'); // API: Chat Completions → baseUrl input
     await typeText('https://api.example.com/v1');
     await press('return'); // baseUrl → apiKey
@@ -682,8 +696,7 @@ describe('bracketed-paste into dialog inputs (#57)', () => {
     renderDialog();
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     await press('return'); // API: Chat Completions → baseUrl input
   }
 
@@ -740,9 +753,9 @@ describe('bracketed-paste into dialog inputs (#57)', () => {
     await typeBatchedThenEnter('https://x.test');
     // A stale empty URL fell back to the protocol default without an error, so
     // the wizard advanced and saved the endpoint nobody typed.
-    expect(screen.getByText(/Step 4\/7 · API Key/)).toBeTruthy();
+    expect(screen.getByText(/Step 3\/6 · API Key/)).toBeTruthy();
     await runToReviewStep();
-    expect(screen.getByText(/Step 7\/7 · Review/)).toBeTruthy();
+    expect(screen.getByText(/Step 6\/6 · Review/)).toBeTruthy();
     expect(document.body.textContent).toContain('"baseUrl": "https://x.test"');
     expect(document.body.textContent).not.toContain('api.openai.com');
   });
@@ -946,7 +959,7 @@ describe('bracketed-paste into dialog inputs (#57)', () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(screen.getByText('auto')).toBeTruthy();
     await press('return'); // advancedConfig: skip → review
-    expect(screen.getByText(/Step 7\/7 · Review/)).toBeTruthy();
+    expect(screen.getByText(/Step 6\/6 · Review/)).toBeTruthy();
   });
 });
 
@@ -964,8 +977,7 @@ describe('caret editing in dialog text fields (#107)', () => {
     renderDialog();
     await press('down');
     await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
+    await press('return'); // main: CUSTOM_PROVIDER → API selection
     await press('return'); // API: Chat Completions → baseUrl input
   }
 
@@ -1053,7 +1065,7 @@ describe('caret editing in dialog text fields (#107)', () => {
     expect(focusedField()).toEqual({ text: 'https:// ', cell: ' ' });
     // the edited value, not the typed one, is what the step submits
     await press('return');
-    expect(screen.getByText(/Step 4\/7 · API Key/)).toBeTruthy();
+    expect(screen.getByText(/Step 3\/6 · API Key/)).toBeTruthy();
   });
 
   it('sends ctrl+E to the end of a pasted value and bare End to its own line', async () => {
@@ -1111,7 +1123,7 @@ describe('caret editing in dialog text fields (#107)', () => {
     await typeText('7');
     expect(focusedField()).toEqual({ text: '129734', cell: '3' });
     await press('return');
-    expect(screen.getByText(/Step 7\/7 · Review/)).toBeTruthy();
+    expect(screen.getByText(/Step 6\/6 · Review/)).toBeTruthy();
     expect(document.body.textContent).toContain('"contextWindowSize": 129734');
   });
 
@@ -1207,59 +1219,18 @@ describe('recommended-model checkboxes out of one read (#113)', () => {
   }
 
   /**
-   * Walk the DeepSeek wizard to the model-IDs step, where the custom-ID input
+   * Walk the Grok wizard to the model-IDs step, where the custom-ID input
    * holds focus. A custom provider ships no recommended list, so a preset is
    * the only route to the checkboxes.
    */
-  async function runToModelsStep(availableTerminalHeight?: number) {
-    const dialog = renderDialog({ availableTerminalHeight });
+  async function runToModelsStep(): Promise<void> {
+    renderDialog();
     await press('down'); // main: THIRD_PARTY_PROVIDERS
-    await press('return'); // → thirdparty-select, DeepSeek on top
-    await press('return'); // DeepSeek → apiKey
+    await press('return'); // → thirdparty-select, Grok on top
+    await press('return'); // Grok → apiKey
     await typeText('sk-test');
     await press('return'); // apiKey → models (custom-ID input focused)
-    return dialog;
   }
-
-  it('clips a model label to the one physical row its charge pays', async () => {
-    // The list charges each row a single physical row, so the label owns the
-    // content width less the radio box's four columns and must clip: an
-    // unclipped 51-column label wraps at a 38-column terminal and paints a
-    // second row the unshrinkable frame cannot shed.
-    mocks.state.width = 38;
-    try {
-      const dialog = await runToModelsStep();
-      dialog.rerenderAt(29);
-      expect(screen.getByText(/^deepseek-v4-pro/).textContent).toHaveLength(26);
-    } finally {
-      mocks.state.width = 100;
-    }
-  });
-
-  it('refuses the recommended rows a short region cannot paint', async () => {
-    // At region 21 the step's measured chrome pays for exactly one model row,
-    // so `deepseek-v4-flash` sits below the clip. A held ↓ walks `focus` on
-    // to it and Space would toggle a model the user never saw — which the
-    // Enter of the same read then writes into the install plan.
-    const dialog = await runToModelsStep();
-    dialog.rerenderAt(21);
-    await press('tab'); // custom-ID input → search field
-    await press('tab'); // search field → the one painted row
-    expect(screen.getByText(/^deepseek-v4-pro(\s|$)/)).not.toBeNull();
-    expect(screen.queryByText(/^deepseek-v4-flash(\s|$)/)).toBeNull();
-
-    const build = vi.spyOn(coreRuntime, 'buildInstallPlan');
-    try {
-      await pressBatched([DOWN, SPACE, ENTER]);
-      await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1));
-      // Only the painted row's tick was undone. Without the window the ↓
-      // reaches `deepseek-v4-flash` below the clip and the Space unticks it,
-      // so the plan ships `deepseek-v4-pro` alone.
-      expect(build.mock.calls[0]?.[1]?.modelIds).toEqual(['deepseek-v4-flash']);
-    } finally {
-      build.mockRestore();
-    }
-  });
 
   async function runToRecommendedList(): Promise<void> {
     await runToModelsStep();
@@ -1279,15 +1250,15 @@ describe('recommended-model checkboxes out of one read (#113)', () => {
 
   it('applies every tick of a held Space to the same checkbox', async () => {
     await runToRecommendedList();
-    // DeepSeek pre-checks both of its models, so the step opens filled.
-    expect(recommendedRow('deepseek-v4-pro')).toContain(ICON.RADIO_FILLED);
+    // Grok pre-checks every recommended model, so the step opens filled.
+    expect(recommendedRow('grok-4\\.5')).toContain(ICON.RADIO_FILLED);
     await pressBatched([SPACE, SPACE]);
     // Two ticks out of one read cancel each other. Held from the render that
     // armed the handler, the second one re-toggles what the first one changed.
-    expect(recommendedRow('deepseek-v4-pro')).toContain(ICON.RADIO_FILLED);
+    expect(recommendedRow('grok-4\\.5')).toContain(ICON.RADIO_FILLED);
     await pressBatched([SPACE]);
     // ...and one tick still clears the row, so the batch above is not a no-op.
-    expect(recommendedRow('deepseek-v4-pro')).toContain(ICON.CIRCLE_EMPTY);
+    expect(recommendedRow('grok-4\\.5')).toContain(ICON.CIRCLE_EMPTY);
   });
 
   it('submits the tick made in the same read as Enter', async () => {
@@ -1296,7 +1267,8 @@ describe('recommended-model checkboxes out of one read (#113)', () => {
     try {
       await pressBatched([SPACE, ENTER]);
       await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1));
-      expect(build.mock.calls[0]?.[1]?.modelIds).toEqual(['deepseek-v4-flash']);
+      expect(build.mock.calls[0]?.[1]?.modelIds).not.toContain('grok-4.5');
+      expect(build.mock.calls[0]?.[1]?.modelIds).toContain('grok-4.3');
     } finally {
       build.mockRestore();
     }
@@ -1308,224 +1280,21 @@ describe('recommended-model checkboxes out of one read (#113)', () => {
     // from the render that armed the handler, the Space would still see the
     // custom-ID field and type a space into it instead of toggling a row.
     await pressBatched([DOWN, DOWN, SPACE]);
-    expect(recommendedRow('deepseek-v4-pro')).toContain(ICON.CIRCLE_EMPTY);
+    expect(recommendedRow('grok-4\\.5')).toContain(ICON.CIRCLE_EMPTY);
   });
 
   it('toggles the row an arrow of the same read moved to', async () => {
     await runToRecommendedList();
     await pressBatched([DOWN, SPACE]);
-    expect(recommendedRow('deepseek-v4-pro')).toContain(ICON.RADIO_FILLED);
-    expect(recommendedRow('deepseek-v4-flash')).toContain(ICON.CIRCLE_EMPTY);
+    expect(recommendedRow('grok-4\\.5')).toContain(ICON.RADIO_FILLED);
+    expect(recommendedRow('grok-4\\.3')).toContain(ICON.CIRCLE_EMPTY);
   });
 
   it('filters the recommended list from the search field one Tab away', async () => {
     await runToModelsStep();
     await press('tab'); // custom-ID input → search field
-    await typeText('flash');
-    expect(screen.queryByText(/^deepseek-v4-pro(\s|$)/)).toBeNull();
-    expect(recommendedRow('deepseek-v4-flash')).toContain(ICON.RADIO_FILLED);
-  });
-});
-
-describe('the wizard frame keeps its natural height', () => {
-  beforeEach(() => {
-    mocks.state.inputHandlers.length = 0;
-    mocks.state.keyboardHandlers.length = 0;
-    mocks.state.pasteHandlers.length = 0;
-  });
-
-  it('stays unshrinkable for the list-carrying wizard while the static summary sheds rows', () => {
-    // The wizard's radio lists window from the region budget, so the frame
-    // fits the region by construction and never needs to shed rows (F5-1:
-    // the shrink opt-in is the static bodies'). The static no-config summary
-    // keeps `shrinkable` so a short region sheds its blank rows the way ink
-    // does.
-    const wizard = render(
-      <OpenTuiAuthDialog
-        config={createMockConfig()}
-        settings={createMockSettings()}
-        onClose={() => {}}
-        notify={() => {}}
-      />,
-    );
-    expect(
-      wizard.container.firstElementChild?.getAttribute('data-flex-shrink'),
-    ).toBe('0');
-    wizard.unmount();
-
-    const summary = render(
-      <OpenTuiAuthDialog
-        settings={createMockSettings()}
-        onClose={() => {}}
-        notify={() => {}}
-      />,
-    );
-    expect(
-      summary.container.firstElementChild?.getAttribute('data-flex-shrink'),
-    ).toBe('1');
-  });
-
-  it('windows the provider sub-menu from the region, so Enter only opens a painted provider', async () => {
-    // Region 13: the main view's chrome (shell 6, the clipped rule and the
-    // terms runs 5) leaves two rows, so one main row paints and the window
-    // follows the cursor; the sub-menu's chrome (shell 6, hint 2) leaves
-    // five rows, so two of the nine providers paint. Without the window all
-    // nine paint into a region that clips them, and Enter commits whichever
-    // row the cursor names.
-    renderDialog({ availableTerminalHeight: 13 });
-    await press('down'); // main: THIRD_PARTY_PROVIDERS
-    await press('return'); // → thirdparty-select
-    expect(screen.getByText('DeepSeek API Key')).toBeTruthy();
-    expect(screen.getByText('Grok (xAI) API Key')).toBeTruthy();
-    expect(screen.queryByText('MiniMax API Key')).toBeNull();
-
-    // The window follows the cursor: two downs put MiniMax's row on and
-    // DeepSeek's off, and Enter commits the painted MiniMax row.
-    await press('down');
-    await press('down');
-    expect(screen.getByText('MiniMax API Key')).toBeTruthy();
-    expect(screen.queryByText('DeepSeek API Key')).toBeNull();
-    await press('return');
-    expect(screen.getByText(/MiniMax API Key · Step 1\//)).toBeTruthy();
-  });
-
-  it('sheds the rule and terms block before the main list loses its last row', async () => {
-    // The main chrome is eleven rows at this width. A thirteen-row region
-    // pays it and paints one item with the terms block; a twelve-row one
-    // leaves the full chrome a one-row budget and floor((1 + 1) / 3) = 0
-    // items — the first-run wizard would refuse every key while Esc, armed
-    // with the must-connect error, refuses to close. The rule and the terms
-    // block shed instead: six chrome rows leave the list two items, and the
-    // wizard stays usable.
-    const { rerenderAt } = renderDialog({ availableTerminalHeight: 13 });
-    expect(screen.getByText(/Terms of Services/)).toBeTruthy();
-    expect(screen.getByText('Alibaba ModelStudio')).toBeTruthy();
-
-    rerenderAt(12);
-    expect(screen.queryByText(/Terms of Services/)).toBeNull();
-    expect(screen.getByText('Alibaba ModelStudio')).toBeTruthy();
-    expect(screen.getByText('Third-party Providers')).toBeTruthy();
-
-    await press('down'); // main: THIRD_PARTY_PROVIDERS — a painted row
-    await press('return');
-    expect(screen.getByText('Third-party Providers · Provider')).toBeTruthy();
-  });
-
-  it('sheds the main list margin row before the list loses its last row', async () => {
-    // With the rule and terms block shed, the shell's six chrome rows leave
-    // a seven-row region a one-row budget — less than an item's three-row
-    // stride — so the list's own margin row sheds too and one provider row
-    // paints: the frame is exactly the region's seven rows, and Enter opens
-    // the painted row.
-    const { onClose } = renderDialog({ availableTerminalHeight: 7 });
-    expect(screen.getByText('Connect a Provider')).toBeTruthy();
-    expect(screen.getByText('Alibaba ModelStudio')).toBeTruthy();
-    expect(screen.queryByText('Third-party Providers')).toBeNull();
-
-    await press('return');
-    expect(
-      screen.getByText('Alibaba ModelStudio · Access Method'),
-    ).toBeTruthy();
-
-    await pressEsc(); // a sub-view's Esc is goBack, unchanged
-    expect(screen.getByText('Connect a Provider')).toBeTruthy();
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it('refuses the main-menu keys when even the shed chrome pays zero rows, and Esc closes the dead view', async () => {
-    // With the rule, the terms block and the list's margin row shed, the
-    // main chrome is five rows, so a six-row region leaves a one-row budget
-    // — less than an item's three-row stride. No row paints, and the arrows
-    // and Enter must not address one: the view does not move. Esc must still
-    // leave: arming the must-connect error over a list that cannot paint
-    // would wedge the dialog shut, since the armed error then swallows every
-    // later Esc.
-    const { onClose } = renderDialog({ availableTerminalHeight: 6 });
-    expect(screen.getByText('Connect a Provider')).toBeTruthy();
-    expect(screen.queryByText('Alibaba ModelStudio')).toBeNull();
-    expect(screen.queryByText('Third-party Providers')).toBeNull();
-
-    await press('down');
-    await press('return');
-
-    expect(screen.getByText('Connect a Provider')).toBeTruthy();
-    expect(screen.queryByText('Third-party Providers · Provider')).toBeNull();
-
-    const consumed = await pressEsc();
-    expect(consumed).toBe(true);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('charges the Shell title the rows it wraps into at a narrow width', async () => {
-    // At a 38-column terminal the 32-column sub-menu title wraps to two
-    // rows, so the measured shell chrome is seven, not the flat six: a
-    // fourteen-row region pays one provider row (a row's stride is three),
-    // where the flat count paid two — and the unshrinkable frame grew a row
-    // past the region.
-    mocks.state.width = 38;
-    renderDialog({ availableTerminalHeight: 14 });
-    await press('down'); // main: THIRD_PARTY_PROVIDERS
-    await press('return'); // → thirdparty-select
-    expect(screen.getByText('Third-party Providers · Provider')).toBeTruthy();
-    expect(screen.getByText('DeepSeek API Key')).toBeTruthy();
-    expect(screen.queryByText('Grok (xAI) API Key')).toBeNull();
-  });
-
-  it('refuses the sub-menu keys when the region pays zero provider rows', async () => {
-    // Navigated at region 13 and then shrunk past the sub-menu's chrome:
-    // region 9 leaves one row — less than a provider row's three — so
-    // nothing paints, and the arrows and Enter address nothing.
-    const { rerenderAt } = renderDialog({ availableTerminalHeight: 13 });
-    await press('down');
-    await press('return'); // → thirdparty-select
-    expect(screen.getByText('DeepSeek API Key')).toBeTruthy();
-
-    rerenderAt(9);
-    expect(screen.queryByText('DeepSeek API Key')).toBeNull();
-    await press('down');
-    await press('return');
-    // Still on the sub-menu: no provider setup opened.
-    expect(screen.getByText('Third-party Providers · Provider')).toBeTruthy();
-    expect(screen.queryByText(/Step 1\//)).toBeNull();
-  });
-});
-
-describe('wire-API step cursor out of one read (#207)', () => {
-  beforeEach(() => {
-    mocks.state.inputHandlers.length = 0;
-    mocks.state.keyboardHandlers.length = 0;
-    mocks.state.pasteHandlers.length = 0;
-    core.applyProviderInstallPlan.mockReset().mockResolvedValue(undefined);
-    core.logAuth.mockReset();
-  });
-
-  it('saves the wire API the arrow of the same read moved to', async () => {
-    renderDialog();
-    await press('down');
-    await press('down');
-    await press('return'); // main: CUSTOM_PROVIDER → protocol
-    await press('return'); // protocol: OpenAI-compatible → API selection
-    // ↓ and Enter out of one stdin read. Read from the render that armed the
-    // handler, the Enter still saw Chat Completions and saved the wrong wire.
-    const handler = lastKeyboardHandler();
-    await act(async () => {
-      handler(baseKeyEvent({ name: 'down', sequence: '\x1b[B' }));
-      handler(baseKeyEvent({ name: 'return', sequence: '\r' }));
-    });
-    await typeText('https://api.example.com/v1');
-    await press('return'); // baseUrl → apiKey
-    await typeText('sk-test');
-    await press('return'); // apiKey → models
-    await typeText('responses-model');
-    await press('return'); // models → advancedConfig
-    await press('return'); // advancedConfig → review
-    await press('return'); // save
-    await vi.waitFor(() => {
-      expect(core.applyProviderInstallPlan).toHaveBeenCalledTimes(1);
-    });
-    expect(core.applyProviderInstallPlan).toHaveBeenCalledWith(
-      expect.objectContaining({ authType: AuthType.USE_OPENAI_RESPONSES }),
-      expect.anything(),
-    );
+    await typeText('4.3');
+    expect(screen.queryByText(/^grok-4\.5(\s|$)/)).toBeNull();
+    expect(recommendedRow('grok-4\\.3')).toContain(ICON.RADIO_FILLED);
   });
 });

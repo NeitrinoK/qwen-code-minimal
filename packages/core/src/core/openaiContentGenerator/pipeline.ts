@@ -18,7 +18,6 @@ import {
   corroborateTruncationFromCompletionTokens,
   OpenAIContentConverter,
 } from './converter.js';
-import { DashScopeOpenAICompatibleProvider } from './provider/dashscope.js';
 import {
   applyOfficialOpenAIPromptCaching,
   isOfficialOpenAIEndpoint,
@@ -53,8 +52,6 @@ import { createDebugLogger } from '../../utils/debugLogger.js';
 import { getToolCallPreparations } from '../tool-call-preparation.js';
 import { markFlushedToolCallPark } from '../stream-transport-retry.js';
 import { InvalidStreamError } from '../invalid-stream-error.js';
-import { logProtocolTagSanitized } from '../../telemetry/loggers.js';
-import { ProtocolTagSanitizedEvent } from '../../telemetry/types.js';
 import { getErrorMessage, getErrorStatus } from '../../utils/errors.js';
 import { getRateLimitErrorDetails } from '../../utils/rateLimit.js';
 import {
@@ -757,21 +754,14 @@ export class ContentGenerationPipeline {
         | undefined,
     ) => {
       if (!sanitization) return;
-      const event = new ProtocolTagSanitizedEvent({
+      // Telemetry emission was removed from this fork; retain the debug log.
+      debugLogger.warn('Sanitized a model protocol tag', {
         model: context.model,
         promptId: userPromptId,
         responseId: response?.responseId,
         tagName: sanitization.tagName,
         toolCallCount: sanitization.toolCallCount,
       });
-      debugLogger.warn('Sanitized a model protocol tag', {
-        model: event.model,
-        promptId: event.prompt_id,
-        responseId: event.response_id,
-        tagName: event.tag_name,
-        toolCallCount: event.tool_call_count,
-      });
-      logProtocolTagSanitized(this.config.cliConfig, event);
     };
 
     /**
@@ -1376,9 +1366,8 @@ export class ContentGenerationPipeline {
     // wire: a "disabled" shape is a guaranteed request failure, so the flag
     // also overrides the config-level `reasoning: false` opt-out.
     const model = (context.model ?? '').toLowerCase();
-    const isDashScope = DashScopeOpenAICompatibleProvider.isDashScopeProvider(
-      this.contentGeneratorConfig,
-    );
+    // DashScope provider removed from this fork; treat as non-DashScope.
+    const isDashScope = false;
     const explicitThinkingMandatory =
       reasoningCapabilities?.canDisable === false ||
       this.requiresThinking(model);
@@ -1430,11 +1419,10 @@ export class ContentGenerationPipeline {
       const typed = providerRequest as unknown as Record<string, unknown>;
       // Provider buildRequest doesn't auto-inject `enable_thinking`, so a
       // guarded `in typed` check would never fire for default qwen3 configs.
-      // Hostname + model-name gate avoids leaking this qwen-specific field
-      // to non-qwen routings on the same DashScope hostname (GLM uses
-      // `extra_body.thinking.enabled`, DeepSeek-on-DashScope uses
-      // `thinking: { type: 'disabled' }`; sending `enable_thinking` to them
-      // is at best a no-op, at worst forwarded upstream and rejected).
+      // The model-name gate avoids leaking this qwen-specific field to
+      // non-qwen routings (GLM uses `extra_body.thinking.enabled`, DeepSeek
+      // uses `thinking: { type: 'disabled' }`; sending `enable_thinking` to
+      // them is at best a no-op, at worst forwarded upstream and rejected).
       //
       // Gate on the *wire* model (`context.model`, i.e.
       // `request.model || contentGeneratorConfig.model` — the same value

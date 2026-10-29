@@ -812,20 +812,6 @@ const PROTOCOL_ITEMS = [
     description: t('Standard OpenAI API format (most common)'),
     value: AuthType.USE_OPENAI,
   },
-  {
-    key: AuthType.USE_ANTHROPIC,
-    title: t('Anthropic-compatible'),
-    label: t('Anthropic-compatible'),
-    description: t('Anthropic Messages API format'),
-    value: AuthType.USE_ANTHROPIC,
-  },
-  {
-    key: AuthType.USE_GEMINI,
-    title: t('Gemini-compatible'),
-    label: t('Gemini-compatible'),
-    description: t('Google Gemini API format'),
-    value: AuthType.USE_GEMINI,
-  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -8,31 +8,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { parse } from 'yaml';
 
 import externalContextConfig from '../../integrations/external-context/vitest.config.js';
 import externalContextMem0Config from '../../integrations/external-context-mem0/vitest.config.js';
 import acpBridgeConfig from '../../packages/acp-bridge/vitest.config.js';
-import audioCaptureConfig from '../../packages/audio-capture/vitest.config.js';
-import browserUseConfig from '../../packages/browser-use/vitest.config.js';
-import channelsBaseConfig from '../../packages/channels/base/vitest.config.js';
-import dingtalkConfig from '../../packages/channels/dingtalk/vitest.config.js';
-import dwsConfig from '../../packages/channels/dws/vitest.config.js';
-import emailConfig from '../../packages/channels/email/vitest.config.js';
-import feishuConfig from '../../packages/channels/feishu/vitest.config.js';
-import githubConfig from '../../packages/channels/github/vitest.config.js';
-import gitlabConfig from '../../packages/channels/gitlab/vitest.config.js';
-import qqbotConfig from '../../packages/channels/qqbot/vitest.config.js';
-import telegramConfig from '../../packages/channels/telegram/vitest.config.js';
-import wecomConfig from '../../packages/channels/wecom/vitest.config.js';
-import weixinConfig from '../../packages/channels/weixin/vitest.config.js';
-import chromeExtensionConfig from '../../packages/chrome-extension/vitest.config.js';
 import cliConfig from '../../packages/cli/vitest.config.js';
 import coreConfig from '../../packages/core/vitest.config.js';
-import nodeReplConfig from '../../packages/node-repl/vitest.config.js';
-import sdkTypescriptConfig from '../../packages/sdk-typescript/vitest.config.js';
-import vscodeCompanionConfig from '../../packages/vscode-ide-companion/vitest.config.js';
-import webShellConfig from '../../packages/web-shell/vitest.config.js';
 import { getTestCiWorkspacePackageJsonPaths } from '../workspaces.js';
 import scriptsTestsConfig from './vitest.config.js';
 
@@ -56,26 +37,8 @@ const configs: Record<string, ExemptionConfig> = {
   'integrations/external-context': externalContextConfig,
   'integrations/external-context-mem0': externalContextMem0Config,
   'packages/acp-bridge': acpBridgeConfig,
-  'packages/audio-capture': audioCaptureConfig,
-  'packages/browser-use': browserUseConfig,
-  'packages/channels/base': channelsBaseConfig,
-  'packages/channels/dingtalk': dingtalkConfig,
-  'packages/channels/dws': dwsConfig,
-  'packages/channels/email': emailConfig,
-  'packages/channels/feishu': feishuConfig,
-  'packages/channels/github': githubConfig,
-  'packages/channels/gitlab': gitlabConfig,
-  'packages/channels/qqbot': qqbotConfig,
-  'packages/channels/telegram': telegramConfig,
-  'packages/channels/wecom': wecomConfig,
-  'packages/channels/weixin': weixinConfig,
-  'packages/chrome-extension': chromeExtensionConfig,
   'packages/cli': cliConfig,
   'packages/core': coreConfig,
-  'packages/node-repl': nodeReplConfig,
-  'packages/sdk-typescript': sdkTypescriptConfig,
-  'packages/vscode-ide-companion': vscodeCompanionConfig,
-  'packages/web-shell': webShellConfig,
   'scripts/tests': scriptsTestsConfig,
 };
 
@@ -112,49 +75,11 @@ const configModules: Record<
     import('../../integrations/external-context-mem0/vitest.config.js'),
   'packages/acp-bridge': () =>
     import('../../packages/acp-bridge/vitest.config.js'),
-  'packages/audio-capture': () =>
-    import('../../packages/audio-capture/vitest.config.js'),
-  'packages/browser-use': () =>
-    import('../../packages/browser-use/vitest.config.js'),
-  'packages/channels/base': () =>
-    import('../../packages/channels/base/vitest.config.js'),
-  'packages/channels/dingtalk': () =>
-    import('../../packages/channels/dingtalk/vitest.config.js'),
-  'packages/channels/dws': () =>
-    import('../../packages/channels/dws/vitest.config.js'),
-  'packages/channels/email': () =>
-    import('../../packages/channels/email/vitest.config.js'),
-  'packages/channels/feishu': () =>
-    import('../../packages/channels/feishu/vitest.config.js'),
-  'packages/channels/github': () =>
-    import('../../packages/channels/github/vitest.config.js'),
-  'packages/channels/gitlab': () =>
-    import('../../packages/channels/gitlab/vitest.config.js'),
-  'packages/channels/qqbot': () =>
-    import('../../packages/channels/qqbot/vitest.config.js'),
-  'packages/channels/telegram': () =>
-    import('../../packages/channels/telegram/vitest.config.js'),
-  'packages/channels/wecom': () =>
-    import('../../packages/channels/wecom/vitest.config.js'),
-  'packages/channels/weixin': () =>
-    import('../../packages/channels/weixin/vitest.config.js'),
-  'packages/chrome-extension': () =>
-    import('../../packages/chrome-extension/vitest.config.js'),
   'packages/cli': () => import('../../packages/cli/vitest.config.js'),
   'packages/core': () => import('../../packages/core/vitest.config.js'),
-  'packages/node-repl': () =>
-    import('../../packages/node-repl/vitest.config.js'),
   // qwen-live's ceiling is unconditional (its config carries a flat 60s), so
   // it passes the on-pool floor from any runner name and stays out of the
   // off-pool sample below.
-  'packages/qwen-live': () =>
-    import('../../packages/qwen-live/vitest.config.js'),
-  'packages/sdk-typescript': () =>
-    import('../../packages/sdk-typescript/vitest.config.js'),
-  'packages/vscode-ide-companion': () =>
-    import('../../packages/vscode-ide-companion/vitest.config.js'),
-  'packages/web-shell': () =>
-    import('../../packages/web-shell/vitest.config.js'),
   'scripts/tests': () => import('./vitest.config.js'),
 };
 
@@ -204,21 +129,6 @@ describe('shared-pool test timeout', () => {
     'integrations/external-context',
     'integrations/external-context-mem0',
     'packages/acp-bridge',
-    'packages/audio-capture',
-    'packages/browser-use',
-    'packages/channels/base',
-    'packages/channels/dingtalk',
-    'packages/channels/dws',
-    'packages/channels/email',
-    'packages/channels/feishu',
-    'packages/channels/github',
-    'packages/channels/gitlab',
-    'packages/channels/qqbot',
-    'packages/channels/telegram',
-    'packages/channels/wecom',
-    'packages/channels/weixin',
-    'packages/chrome-extension',
-    'packages/web-shell',
   ] as const;
 
   // cli and core gate the same way but pin 15s off the pool instead of the
@@ -290,19 +200,12 @@ describe('shared-pool test timeout', () => {
       // No gated ternary, hence no off-pool branch to sample: node-repl,
       // sdk-typescript and scripts/tests carry flat literals, qwen-live's
       // ceiling is unconditional.
-      'packages/node-repl',
-      'packages/qwen-live',
-      'packages/sdk-typescript',
       'scripts/tests',
     ];
-    // Pins 15s off the pool and is asserted in both branches by
-    // `bundle-guard timeout ceiling` below.
-    const ASSERTED_ELSEWHERE = ['packages/vscode-ide-companion'];
     const arms = [
       ...OFF_POOL_DEFAULT,
       ...Object.keys(OFF_POOL_PINNED),
       ...FLAT_CEILING_CONFIGS,
-      ...ASSERTED_ELSEWHERE,
     ];
     expect(new Set(arms).size, 'one off-pool arm per workspace').toBe(
       arms.length,
@@ -350,11 +253,10 @@ describe('autofix gate load clamps', () => {
     vi.resetModules();
     // Re-imported under the stub: the configs read the env at import time,
     // and the static imports above already resolved the non-ECS branch.
-    const [core, cli, acpBridge, webShell] = await Promise.all([
+    const [core, cli, acpBridge] = await Promise.all([
       import('../../packages/core/vitest.config.js'),
       import('../../packages/cli/vitest.config.js'),
       import('../../packages/acp-bridge/vitest.config.js'),
-      import('../../packages/web-shell/vitest.config.js'),
     ]);
     vi.unstubAllEnvs();
 
@@ -381,13 +283,8 @@ describe('autofix gate load clamps', () => {
     );
 
     // 60_000 / 60_000 / '25%' on the ECS branch of core and cli;
-    // acp-bridge and web-shell set the two timeouts but define no maxWorkers.
-    for (const config of [
-      core.default,
-      cli.default,
-      acpBridge.default,
-      webShell.default,
-    ]) {
+    // acp-bridge sets the two timeouts but defines no maxWorkers.
+    for (const config of [core.default, cli.default, acpBridge.default]) {
       expect(String(config.test?.testTimeout)).toBe(clamps['testTimeout']);
       expect(String(config.test?.hookTimeout)).toBe(clamps['hookTimeout']);
     }
@@ -408,28 +305,27 @@ describe('autofix gate load clamps', () => {
     // that cap is the shield keeping a 1.x workspace's legs alive under
     // the clamps — pin it here so removing it fails the suite instead of
     // crashing every gate leg for the workspace.
-    type ImporterDeps = Record<string, { version?: string }> | undefined;
-    const lock = parse(
+    const lock = JSON.parse(
       readFileSync(
-        fileURLToPath(new URL('../../pnpm-lock.yaml', import.meta.url)),
+        fileURLToPath(new URL('../../package-lock.json', import.meta.url)),
         'utf8',
       ),
-    ) as {
-      importers: Record<
-        string,
-        { dependencies?: ImporterDeps; devDependencies?: ImporterDeps }
-      >;
-    };
-    // Each importer records the vitest it resolves (with a peer suffix
-    // after the version), so a workspace pinning 1.x shows up directly.
-    const vitestVersion = (importer: string) =>
-      lock.importers[importer]?.devDependencies?.['vitest']?.version ??
-      lock.importers[importer]?.dependencies?.['vitest']?.version ??
-      '';
+    ) as { packages: Record<string, { version?: string }> };
+    // npm hoists the root's vitest to node_modules/vitest; a workspace that
+    // resolves a different major gets its own nested copy.
+    const vitestVersion = (workspace: string) =>
+      lock.packages[
+        workspace === '.'
+          ? 'node_modules/vitest'
+          : `${workspace}/node_modules/vitest`
+      ]?.version ?? '';
     // The shield only matters beside a 2.x+ root; if the root itself were
     // 1.x the premise of this test would be gone, so pin it.
     expect(Number(vitestVersion('.').split('.')[0])).toBeGreaterThanOrEqual(2);
-    const legacyWorkspaces = Object.keys(lock.importers).filter(
+    const workspaces = Object.keys(lock.packages).filter(
+      (path) => !path.includes('node_modules'),
+    );
+    const legacyWorkspaces = workspaces.filter(
       (path) =>
         (path.startsWith('packages/') || path.startsWith('integrations/')) &&
         vitestVersion(path) !== '' &&
@@ -449,27 +345,6 @@ describe('autofix gate load clamps', () => {
         typeof config.test?.poolOptions?.threads?.maxThreads,
         workspace,
       ).toBe('number');
-    }
-  });
-});
-
-describe('bundle-guard timeout ceiling', () => {
-  it('keeps the bundle-guard timeout ceiling in packages/vscode-ide-companion', async () => {
-    // The config reads RUNNER_NAME at import time, so re-import it under
-    // each stub to pin both branches, not only the ambient one.
-    for (const [runnerName, expected] of [
-      ['ecs-qwen-parity', 60_000],
-      ['ubuntu-latest-runner', 15_000],
-    ] as const) {
-      vi.stubEnv('RUNNER_NAME', runnerName);
-      vi.resetModules();
-      const mod = await import(
-        '../../packages/vscode-ide-companion/vitest.config.js'
-      );
-      expect(mod.default.test?.testTimeout, `RUNNER_NAME=${runnerName}`).toBe(
-        expected,
-      );
-      vi.unstubAllEnvs();
     }
   });
 });

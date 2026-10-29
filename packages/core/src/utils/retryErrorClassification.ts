@@ -4,9 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AuthType } from './auth-type.js';
+import type { AuthType } from './auth-type.js';
 import { isAbortError } from './errors.js';
-import { isQwenQuotaExceededError } from './quotaErrorDetection.js';
 import { getRateLimitErrorDetails, isRateLimitError } from './rateLimit.js';
 import { ResponsesHttpError } from './responses-http-error.js';
 
@@ -77,18 +76,6 @@ export function classifyRetryError(
     ...(providerMessage !== undefined ? { providerMessage } : {}),
     ...(requestId !== undefined ? { requestId } : {}),
   };
-
-  if (
-    context.authType === AuthType.QWEN_OAUTH &&
-    isQwenQuotaExceededError(error)
-  ) {
-    return {
-      kind: 'provider-business',
-      diagnosis: 'fail-fast',
-      reason: 'qwen-oauth-free-tier-quota',
-      ...common,
-    };
-  }
 
   if (isAllocatedQuotaExceeded(providerCode)) {
     return {

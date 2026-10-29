@@ -36,22 +36,13 @@ import type { Settings } from './settings.js';
 import * as ServerConfig from '@qwen-code/qwen-code-core';
 import { isWorkspaceTrusted } from './trustedFolders.js';
 import { resetMcpApprovalsForTesting } from './mcpApprovals.js';
-import { addCommand } from '../commands/mcp/add.js';
-import * as Mem0Settings from './mem0-settings.js';
 import {
   isCrossSessionMessagingActive,
   isCrossSessionMessagingEnabled,
 } from '../peerMessaging/enabled.js';
 
-const sshWorkspaceProbe = vi.hoisted(() => vi.fn());
-vi.mock('../serve/ssh-workspace-store.js', () => ({
-  readSshWorkspace: sshWorkspaceProbe,
-}));
-
 const mockWriteStderrLine = vi.hoisted(() => vi.fn());
 const mockWriteStdoutLine = vi.hoisted(() => vi.fn());
-const mockUpdateHandler = vi.hoisted(() => vi.fn());
-const mockBatchHandler = vi.hoisted(() => vi.fn());
 const mockSessionServiceInstance = vi.hoisted(() => ({
   loadLastSession: vi.fn(),
   loadSession: vi.fn(),
@@ -62,7 +53,9 @@ const mockSessionServiceInstance = vi.hoisted(() => ({
   findSessionIdIgnoringCase: vi.fn(),
 }));
 const mockSessionServiceCtor = vi.hoisted(() =>
-  vi.fn(() => mockSessionServiceInstance),
+  vi.fn(function () {
+    return mockSessionServiceInstance;
+  }),
 );
 const mockConfigConstructorParams = vi.hoisted(() => vi.fn());
 
@@ -70,27 +63,6 @@ vi.mock('../utils/stdioHelpers.js', () => ({
   writeStderrLine: mockWriteStderrLine,
   writeStdoutLine: mockWriteStdoutLine,
   clearScreen: vi.fn(),
-}));
-
-vi.mock('../commands/update.js', () => ({
-  updateCommand: {
-    command: 'update',
-    describe: 'mock update command',
-    handler: mockUpdateHandler,
-  },
-}));
-
-// The real handler resolves credentials and calls the Batch API, so leaving it
-// unmocked would turn the `batch` exit-list case into a live HTTPS request on
-// any machine with OPENAI_API_KEY + model + base URL set.
-vi.mock('../commands/batch.js', () => ({
-  batchCommand: {
-    // Positionals must be declared: parseArguments runs yargs in strict mode,
-    // so a bare `batch` would reject `status batch_x` before the handler runs.
-    command: 'batch <subcommand> [id]',
-    describe: 'mock batch command',
-    handler: mockBatchHandler,
-  },
 }));
 
 const createNativeLspServiceInstance = () => ({
@@ -256,21 +228,14 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   return {
     ...actualServer,
     Config: ConfigWithParamCapture,
-    NativeLspService: vi
-      .fn()
-      .mockImplementation(() => createNativeLspServiceInstance()),
+    NativeLspService: vi.fn().mockImplementation(function () {
+      return createNativeLspServiceInstance();
+    }),
     SessionService: mockSessionServiceCtor,
     SkillManager: SkillManagerMock,
     // Reset to `undefined` per test, which resolveOutputStyle treats as
     // "built-ins only"; the output-style tests below install a catalog.
     loadOutputStyleCatalog: vi.fn(),
-    IdeClient: {
-      getInstance: vi.fn().mockResolvedValue({
-        getConnectionStatus: vi.fn(),
-        initialize: vi.fn(),
-        shutdown: vi.fn(),
-      }),
-    },
     loadEnvironment: vi.fn(),
     loadServerHierarchicalMemory: vi.fn(
       // Match the real signature: (cwd, includeDirs, fileService,
@@ -344,19 +309,6 @@ describe('parseArguments', () => {
     },
   );
 
-  it.each(['docker', 'podman', 'sandbox-exec'])(
-    'preserves named sandbox selection %s',
-    async (backend) => {
-      for (const flags of [[`--sandbox=${backend}`], ['-s', backend]]) {
-        process.argv = ['node', 'script.js', ...flags, '-p', 'query'];
-        expect(await parseArguments()).toMatchObject({
-          sandbox: backend,
-          prompt: 'query',
-        });
-      }
-    },
-  );
-
   it('preserves boolean sandbox flags and literal prompt text', async () => {
     process.argv = ['node', 'script.js', '--sandbox', '-p', 'bwrap'];
     expect(await parseArguments()).toMatchObject({
@@ -370,151 +322,6 @@ describe('parseArguments', () => {
     });
     process.argv = ['node', 'script.js', '--', '--sandbox', 'bwrap'];
     expect((await parseArguments())._).toEqual(['--sandbox', 'bwrap']);
-  });
-
-  it('keeps the MCP scope alias in its own command grammar', async () => {
-    const handler = vi
-      .spyOn(addCommand, 'handler')
-      .mockImplementation(() => {});
-    process.argv = [
-      'node',
-      'script.js',
-      '--debug',
-      'mcp',
-      'add',
-      '-s',
-      'project',
-      'myserver',
-      'npx',
-      '-y',
-      'foo',
-    ];
-    await expect(parseArguments()).rejects.toThrow(
-      'process.exit unexpectedly called with "0"',
-    );
-    expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'project', name: 'myserver' }),
-    );
-    handler.mockRestore();
-  });
-
-  it.each([
-    ['--sandbox=docker', 'mcp', 'list'],
-    ['-s', 'docker', 'mcp', 'list'],
-    ['--sandbox=podman', 'extensions', 'list'],
-  ])(
-    'rejects session options on subcommands instead of starting a prompt: %j',
-    async (...args) => {
-      process.argv = ['node', 'script.js', ...args];
-      mockWriteStderrLine.mockClear();
-      await expect(parseArguments()).rejects.toThrow(
-        'process.exit unexpectedly called with "1"',
-      );
-      expect(mockWriteStderrLine).toHaveBeenCalledWith(
-        expect.stringContaining('Unknown argument'),
-      );
-    },
-  );
-
-  it.each([
-    ['--sandbox=true', 'query'],
-    ['--sandbox', '-p', 'query'],
-  ])(
-    'supports explicit automatic selection with a prompt: %j',
-    async (...args) => {
-      process.argv = ['node', 'script.js', ...args];
-      expect(await parseArguments()).toMatchObject({
-        sandbox: true,
-        prompt: 'query',
-      });
-    },
-  );
-
-  it('keeps a positional query separate from explicit automatic sandbox selection', async () => {
-    process.argv = ['node', 'script.js', '--sandbox', 'explain the parser'];
-    expect(await parseArguments()).toMatchObject({
-      sandbox: 'explain the parser',
-    });
-
-    process.argv = [
-      'node',
-      'script.js',
-      '--sandbox=true',
-      'explain the parser',
-    ];
-    expect(await parseArguments()).toMatchObject({
-      sandbox: true,
-      query: 'explain the parser',
-    });
-  });
-
-  it('uses one option grammar and stops parsing options after --', async () => {
-    process.argv = [
-      'node',
-      'script.js',
-      'explain',
-      'what',
-      '-s',
-      'docker',
-      'does',
-    ];
-    expect(await parseArguments()).toMatchObject({
-      sandbox: 'docker',
-      query: 'explain what does',
-    });
-    process.argv = [
-      'node',
-      'script.js',
-      'fix',
-      'the',
-      '--sandbox',
-      'false',
-      'bug',
-    ];
-    expect(await parseArguments()).toMatchObject({
-      sandbox: false,
-      query: 'fix the bug',
-    });
-    process.argv = [
-      'node',
-      'script.js',
-      '--',
-      'explain',
-      'what',
-      '-s',
-      'docker',
-      'does',
-    ];
-    expect((await parseArguments())._).toEqual([
-      'explain',
-      'what',
-      '-s',
-      'docker',
-      'does',
-    ]);
-  });
-
-  it.each(['explain what -s docker does', 'fix the --sandbox false bug'])(
-    'keeps option-like text inside an explicit prompt: %s',
-    async (prompt) => {
-      process.argv = ['node', 'script.js', '--sandbox=true', '-p', prompt];
-      expect(await parseArguments()).toMatchObject({
-        sandbox: true,
-        prompt,
-      });
-    },
-  );
-
-  it('keeps last-wins selection without treating an absent option as false', async () => {
-    for (const flags of [
-      ['--sandbox=docker', '--no-sandbox'],
-      ['--sandbox=true', '--sandbox=false'],
-    ]) {
-      process.argv = ['node', 'script.js', ...flags, '-p', 'query'];
-      expect((await parseArguments()).sandbox).toBe(false);
-    }
-    process.argv = ['node', 'script.js', '-p', 'query'];
-    expect((await parseArguments()).sandbox).toBeUndefined();
   });
 
   it('includes every approval mode description in --help', async () => {
@@ -610,41 +417,6 @@ describe('parseArguments', () => {
     expect(argv.authType).toBe(AuthType.USE_OPENAI_RESPONSES);
   });
 
-  it('registers update as an exiting subcommand', async () => {
-    process.argv = ['node', 'script.js', 'update'];
-    mockUpdateHandler.mockResolvedValue(undefined);
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-
-    await expect(parseArguments()).rejects.toThrow('process.exit called');
-
-    expect(mockUpdateHandler).toHaveBeenCalled();
-    expect(mockExit).toHaveBeenCalledWith(0);
-    mockExit.mockRestore();
-  });
-
-  it('propagates non-zero exitCode from the update handler', async () => {
-    process.argv = ['node', 'script.js', 'update'];
-    mockUpdateHandler.mockImplementation(() => {
-      process.exitCode = 1;
-    });
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-
-    try {
-      await expect(parseArguments()).rejects.toThrow('process.exit called');
-
-      expect(mockUpdateHandler).toHaveBeenCalled();
-      expect(mockExit).toHaveBeenCalledWith(1);
-    } finally {
-      mockExit.mockRestore();
-      mockUpdateHandler.mockReset();
-      process.exitCode = undefined;
-    }
-  });
-
   it('should allow --prompt-interactive without --prompt', async () => {
     process.argv = [
       'node',
@@ -672,30 +444,6 @@ describe('parseArguments', () => {
     process.argv = ['node', 'script.js', '--insecure'];
     const argv = await parseArguments();
     expect(argv.insecure).toBe(true);
-  });
-
-  it('parses the private ACP execution engine and refuses other engines', async () => {
-    process.argv = [
-      'node',
-      'script.js',
-      '--acp',
-      '--acp-execution-engine',
-      'managed',
-    ];
-    expect((await parseArguments()).acpExecutionEngine).toBe('managed');
-
-    process.argv = [
-      'node',
-      'script.js',
-      '--acp',
-      '--acp-execution-engine',
-      'legacy',
-    ];
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-    await expect(parseArguments()).rejects.toThrow('process.exit called');
-    mockExit.mockRestore();
   });
 
   it('rejects --json-schema combined with --acp', async () => {
@@ -986,24 +734,6 @@ describe('parseArguments', () => {
     expect(argv.promptInteractive).toBeUndefined();
   });
 
-  it('should map @path to prompt with ambient flags (debug, telemetry)', async () => {
-    // Ambient flags like debug, telemetry should NOT affect routing
-    process.argv = [
-      'node',
-      'script.js',
-      '@path',
-      './file.md',
-      '--debug',
-      '--telemetry',
-    ];
-    const argv = await parseArguments();
-    expect(argv.query).toBe('@path ./file.md');
-    expect(argv.prompt).toBe('@path ./file.md'); // Should map to one-shot
-    expect(argv.promptInteractive).toBeUndefined();
-    expect(argv.debug).toBe(true);
-    expect(argv.telemetry).toBe(true);
-  });
-
   it('should map any @command to prompt (one-shot)', async () => {
     // Test that all @commands now go to one-shot mode
     const testCases = [
@@ -1108,30 +838,6 @@ describe('parseArguments', () => {
     );
 
     mockExit.mockRestore();
-  });
-
-  it('exits after a `batch` subcommand instead of falling through to the main flow', async () => {
-    // Falling through would reach the memory relaunch, whose child parses argv
-    // again and would submit (and bill) a second batch job.
-    process.argv = ['node', 'script.js', 'batch', 'status', 'batch_x'];
-    mockBatchHandler.mockResolvedValue(undefined);
-
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-
-    try {
-      await expect(parseArguments()).rejects.toThrow('process.exit called');
-
-      expect(mockBatchHandler).toHaveBeenCalled();
-      expect(mockExit).toHaveBeenCalledWith(0);
-    } finally {
-      mockExit.mockRestore();
-      mockBatchHandler.mockReset();
-      // `run()` in the batch command assigns this before exiting; a leaked 1
-      // would change the exit code of every later test on this worker.
-      process.exitCode = undefined;
-    }
   });
 
   it('should reject --json-schema with no prompt source when stdin is a TTY', async () => {
@@ -1432,10 +1138,12 @@ describe('loadCliConfig', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     nativeLspServiceMock.mockReset();
-    nativeLspServiceMock.mockImplementation(
-      () => createNativeLspServiceInstance() as unknown as NativeLspService,
-    );
-    mockSessionServiceCtor.mockImplementation(() => mockSessionServiceInstance);
+    nativeLspServiceMock.mockImplementation(function () {
+      return createNativeLspServiceInstance() as unknown as NativeLspService;
+    });
+    mockSessionServiceCtor.mockImplementation(function () {
+      return mockSessionServiceInstance;
+    });
     mockSessionServiceInstance.loadLastSession.mockResolvedValue(undefined);
     mockSessionServiceInstance.loadSession.mockResolvedValue(undefined);
     mockSessionServiceInstance.forkSession.mockResolvedValue({
@@ -1457,136 +1165,6 @@ describe('loadCliConfig', () => {
     vi.unstubAllEnvs();
     resetMcpApprovalsForTesting();
     vi.restoreAllMocks();
-  });
-
-  it.each([undefined, 'workspace', 'project'] as const)(
-    'registers bundled Mem0 read-only over repository MCP configuration: %s',
-    async (scope) => {
-      const server = {
-        command: process.execPath,
-        args: ['mem0/main.js'],
-        includeTools: ['context_search'],
-      };
-      const createServer = vi
-        .spyOn(Mem0Settings, 'createBundledMem0Server')
-        .mockReturnValue(server);
-      process.argv = ['node', 'script.js', '-p', 'hello'];
-      const argv = await parseArguments();
-      const mem0 = { baseUrl: 'https://mem0.example', enableWrites: true };
-      await loadCliConfig(
-        {
-          memory: { mem0 },
-          ...(scope
-            ? {
-                mcpServers: {
-                  'external-context': { command: 'repo-mcp', scope },
-                },
-              }
-            : {}),
-        },
-        argv,
-      );
-      expect(createServer).toHaveBeenCalledWith(
-        mem0,
-        expect.any(String),
-        false,
-      );
-      expect(mockConfigConstructorParams).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          mcpServers: expect.objectContaining({ 'external-context': server }),
-        }),
-      );
-    },
-  );
-
-  it('rejects a manual operator external-context server alongside bundled Mem0', async () => {
-    vi.spyOn(Mem0Settings, 'createBundledMem0Server').mockReturnValue({
-      command: process.execPath,
-      args: ['mem0/main.js'],
-    });
-    process.argv = ['node', 'script.js', '-p', 'hello'];
-    await expect(
-      loadCliConfig(
-        {
-          memory: { mem0: { baseUrl: 'https://mem0.example' } },
-          mcpServers: { 'external-context': { command: 'operator-mcp' } },
-        },
-        await parseArguments(),
-      ),
-    ).rejects.toThrow(
-      'Configure memory.mem0 or an external-context MCP server',
-    );
-  });
-
-  it('does not create a bundled server for an explicitly disabled Mem0', async () => {
-    const createServer = vi.spyOn(Mem0Settings, 'createBundledMem0Server');
-    process.argv = ['node', 'script.js', '-p', 'hello'];
-    await loadCliConfig(
-      { memory: { mem0: null } } as unknown as Settings,
-      await parseArguments(),
-    );
-    expect(createServer).not.toHaveBeenCalled();
-  });
-
-  it('overrides a workspace-scoped external-context server instead of aborting startup', async () => {
-    const server = {
-      command: process.execPath,
-      args: ['mem0/main.js'],
-      includeTools: ['context_search'],
-    };
-    vi.spyOn(Mem0Settings, 'createBundledMem0Server').mockReturnValue(server);
-    process.argv = ['node', 'script.js', '-p', 'hello'];
-    const argv = await parseArguments();
-    // A trusted repository's own `.qwen/settings.json` contributes this entry
-    // stamped `scope: 'workspace'` (settings.ts tagMcpServerScope). It is not
-    // operator configuration, so it must not wedge every operator who set
-    // `memory.mem0` in a folder they cannot fix; the built-in binding overrides
-    // it because assembleMcpServers spreads topTierMcpServers last — the same
-    // thing that already happens to a `.mcp.json` entry of that name.
-    await loadCliConfig(
-      {
-        memory: { mem0: { baseUrl: 'https://mem0.example' } },
-        mcpServers: {
-          'external-context': {
-            command: 'node',
-            args: ['.qwen/shim/loader.js'],
-            scope: 'workspace',
-          },
-        },
-      },
-      argv,
-    );
-    expect(mockConfigConstructorParams).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        mcpServers: expect.objectContaining({ 'external-context': server }),
-      }),
-    );
-  });
-
-  it('still rejects an operator-scoped external-context server next to memory.mem0', async () => {
-    const server = {
-      command: process.execPath,
-      args: ['mem0/main.js'],
-      includeTools: ['context_search'],
-    };
-    vi.spyOn(Mem0Settings, 'createBundledMem0Server').mockReturnValue(server);
-    process.argv = ['node', 'script.js', '-p', 'hello'];
-    const argv = await parseArguments();
-    // No `scope` = user/default settings, i.e. the operator's own binding: that
-    // conflict stays loud, so dropping the provenance check cannot pass.
-    await expect(
-      loadCliConfig(
-        {
-          memory: { mem0: { baseUrl: 'https://mem0.example' } },
-          mcpServers: {
-            'external-context': { command: 'node', args: ['loader.js'] },
-          },
-        },
-        argv,
-      ),
-    ).rejects.toThrow(
-      'Configure memory.mem0 or an external-context MCP server, not both.',
-    );
   });
 
   it.each([undefined, '1'])(
@@ -1623,49 +1201,6 @@ describe('loadCliConfig', () => {
       ServerConfig.DEFAULT_CONTEXT_FILENAME,
       ServerConfig.AGENT_CONTEXT_FILENAME,
     ]);
-  });
-
-  it('isolates SSH configuration from local project services and code-mode-only settings', async () => {
-    sshWorkspaceProbe.mockReturnValueOnce({
-      host: 'host',
-      port: 2222,
-      directory: '/srv/project',
-    });
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    await loadCliConfig(
-      {
-        tools: {
-          codeModeOnly: true,
-          truncateToolOutputThreshold: 2500,
-          shell: { defaultTimeoutMs: 45000 },
-        },
-        mcpServers: { local: { command: 'must-not-run' } },
-      },
-      argv,
-    );
-    expect(mockConfigConstructorParams).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        codeModeOnly: false,
-        disableAllHooks: true,
-        mcpServers: {},
-        overrideExtensions: [],
-        workflowsEnabled: false,
-        enableManagedAutoMemory: false,
-        enableManagedAutoDream: false,
-        enableTeamMemory: false,
-        enableTeamMemorySync: false,
-        enableStructuredMemoryRecall: false,
-        enableAutoSkill: false,
-        fileCheckpointingEnabled: false,
-        artifactEnabled: false,
-        executionEnvironment: expect.objectContaining({
-          toolNames: expect.any(Set),
-        }),
-        appendSystemPrompt: expect.stringContaining('/srv/project'),
-      }),
-    );
-    expect(nativeLspServiceMock).not.toHaveBeenCalled();
   });
 
   it('passes the effective model API to Config at startup', async () => {
@@ -1924,29 +1459,6 @@ describe('loadCliConfig', () => {
     await loadCliConfig({}, argv);
 
     expect(process.env['QWEN_DEBUG_LOG_FILE']).toBeUndefined();
-  });
-
-  describe('usage statistics', () => {
-    it.each<[string, string | undefined, boolean | undefined, boolean]>([
-      ['defaults to enabled', undefined, undefined, true],
-      ['uses a disabled setting', undefined, false, false],
-      ['lets true override a disabled setting', 'true', false, true],
-      ['lets 1 override a disabled setting', '1', false, true],
-      ['lets false override an enabled setting', 'false', true, false],
-      ['lets 0 override an enabled setting', '0', true, false],
-    ])('%s', async (_name, envValue, settingValue, expected) => {
-      vi.stubEnv('QWEN_USAGE_STATISTICS_ENABLED', envValue);
-      process.argv = ['node', 'script.js'];
-      const argv = await parseArguments();
-      const settings: Settings =
-        settingValue === undefined
-          ? {}
-          : { privacy: { usageStatisticsEnabled: settingValue } };
-
-      const config = await loadCliConfig(settings, argv);
-
-      expect(config.getUsageStatisticsEnabled()).toBe(expected);
-    });
   });
 
   describe('model.goalTokenBudget', () => {
@@ -2855,7 +2367,7 @@ describe('loadCliConfig', () => {
     expect(config.shouldAutoOpenArtifact()).toBe(false);
   });
 
-  it('should enable artifacts by default', async () => {
+  it('leaves artifacts disabled unless experimental.artifact opts in', async () => {
     process.argv = ['node', 'script.js'];
     const argv = await parseArguments();
 
@@ -2863,7 +2375,7 @@ describe('loadCliConfig', () => {
 
     expect(mockConfigConstructorParams).toHaveBeenCalledWith(
       expect.objectContaining({
-        artifactEnabled: true,
+        artifactEnabled: false,
       }),
     );
   });
@@ -3341,26 +2853,6 @@ describe('loadCliConfig', () => {
       );
     },
   );
-
-  it('passes the Managed engine quarantine sink to the session Config', async () => {
-    const onManagedEngineQuarantine = vi.fn();
-    await loadCliConfig(
-      {},
-      {} as CliArgs,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      false,
-      { onManagedEngineQuarantine },
-    );
-
-    expect(mockConfigConstructorParams).toHaveBeenLastCalledWith(
-      expect.objectContaining({ onManagedEngineQuarantine }),
-    );
-  });
 
   it('should explain when --fork-session fails to copy the source session', async () => {
     const sourceSessionId = '123e4567-e89b-42d3-a456-426614174000';
@@ -3959,315 +3451,6 @@ describe('loadCliConfig', () => {
   });
 });
 
-describe('loadCliConfig telemetry', () => {
-  const originalArgv = process.argv;
-  const originalIsTTY = process.stdin.isTTY;
-
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.mocked(os.homedir).mockReturnValue('/mock/home/user');
-    vi.stubEnv('GEMINI_API_KEY', 'test-api-key');
-  });
-
-  afterEach(() => {
-    process.argv = originalArgv;
-    process.stdin.isTTY = originalIsTTY;
-    vi.unstubAllEnvs();
-    vi.restoreAllMocks();
-  });
-
-  it('should set telemetry to false by default when no flag or setting is present', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {};
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(false);
-  });
-
-  it('should set telemetry to true when --telemetry flag is present', async () => {
-    process.argv = ['node', 'script.js', '--telemetry'];
-    const argv = await parseArguments();
-    const settings: Settings = {};
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it('should initialize telemetry before prompt-interactive startup', async () => {
-    process.argv = [
-      'node',
-      'script.js',
-      '-i',
-      'hello from prompt-interactive',
-      '--telemetry',
-    ];
-    const argv = await parseArguments();
-
-    await loadCliConfig({}, argv);
-
-    expect(mockConfigConstructorParams).toHaveBeenCalledWith(
-      expect.objectContaining({
-        question: 'hello from prompt-interactive',
-        deferTelemetryInitialization: false,
-      }),
-    );
-  });
-
-  it('should defer telemetry for ordinary interactive startup', async () => {
-    process.argv = ['node', 'script.js', '--telemetry'];
-    process.stdin.isTTY = true;
-    const argv = await parseArguments();
-
-    await loadCliConfig({}, argv);
-
-    expect(mockConfigConstructorParams).toHaveBeenCalledWith(
-      expect.objectContaining({
-        question: '',
-        deferTelemetryInitialization: true,
-      }),
-    );
-  });
-
-  it('should defer telemetry for ACP startup', async () => {
-    process.argv = ['node', 'script.js', '--acp', '--telemetry'];
-    const argv = await parseArguments();
-
-    await loadCliConfig({}, argv);
-
-    expect(mockConfigConstructorParams).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deferTelemetryInitialization: true,
-      }),
-    );
-  });
-
-  it('should set telemetry to false when --no-telemetry flag is present', async () => {
-    process.argv = ['node', 'script.js', '--no-telemetry'];
-    const argv = await parseArguments();
-    const settings: Settings = {};
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(false);
-  });
-
-  it('should use telemetry value from settings if CLI flag is not present (settings true)', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it('should use telemetry value from settings if CLI flag is not present (settings false)', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: false } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(false);
-  });
-
-  it('should prioritize --telemetry CLI flag (true) over settings (false)', async () => {
-    process.argv = ['node', 'script.js', '--telemetry'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: false } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it('should prioritize --no-telemetry CLI flag (false) over settings (true)', async () => {
-    process.argv = ['node', 'script.js', '--no-telemetry'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryEnabled()).toBe(false);
-  });
-
-  it('should use telemetry OTLP endpoint from settings if CLI flag is not present', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { otlpEndpoint: 'http://settings.example.com' },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpEndpoint()).toBe(
-      'http://settings.example.com',
-    );
-  });
-
-  it('should prioritize --telemetry-otlp-endpoint CLI flag over settings', async () => {
-    process.argv = [
-      'node',
-      'script.js',
-      '--telemetry-otlp-endpoint',
-      'http://cli.example.com',
-    ];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { otlpEndpoint: 'http://settings.example.com' },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpEndpoint()).toBe('http://cli.example.com');
-  });
-
-  it('should use default endpoint if no OTLP endpoint is provided via CLI or settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpEndpoint()).toBe('http://localhost:4317');
-  });
-
-  it('should use telemetry target from settings if CLI flag is not present', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { target: ServerConfig.DEFAULT_TELEMETRY_TARGET },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryTarget()).toBe(
-      ServerConfig.DEFAULT_TELEMETRY_TARGET,
-    );
-  });
-
-  it('should prioritize --telemetry-target CLI flag over settings', async () => {
-    process.argv = ['node', 'script.js', '--telemetry-target', 'gcp'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { target: ServerConfig.DEFAULT_TELEMETRY_TARGET },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryTarget()).toBe('gcp');
-  });
-
-  it('should use default target if no target is provided via CLI or settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryTarget()).toBe(
-      ServerConfig.DEFAULT_TELEMETRY_TARGET,
-    );
-  });
-
-  it('should use telemetry log prompts from settings if CLI flag is not present', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { logPrompts: false } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(false);
-  });
-
-  it('should prioritize --telemetry-log-prompts CLI flag (true) over settings (false)', async () => {
-    process.argv = ['node', 'script.js', '--telemetry-log-prompts'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { logPrompts: false } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(true);
-  });
-
-  it('should prioritize --no-telemetry-log-prompts CLI flag (false) over settings (true)', async () => {
-    process.argv = ['node', 'script.js', '--no-telemetry-log-prompts'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { logPrompts: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(false);
-  });
-
-  it('should use default log prompts (true) if no value is provided via CLI or settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(true);
-  });
-
-  it('should use includeSensitiveSpanAttributes from settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { includeSensitiveSpanAttributes: true },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryIncludeSensitiveSpanAttributes()).toBe(true);
-  });
-
-  it('should default includeSensitiveSpanAttributes to false', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryIncludeSensitiveSpanAttributes()).toBe(false);
-  });
-
-  it('should use sensitiveSpanAttributeMaxLength from settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { sensitiveSpanAttributeMaxLength: 65_536 },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetrySensitiveSpanAttributeMaxLength()).toBe(65_536);
-  });
-
-  it('should default sensitiveSpanAttributeMaxLength to 1MiB', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetrySensitiveSpanAttributeMaxLength()).toBe(
-      1024 * 1024,
-    );
-  });
-
-  it('should use telemetry OTLP protocol from settings if CLI flag is not present', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { otlpProtocol: 'http' },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpProtocol()).toBe('http');
-  });
-
-  it('should prioritize --telemetry-otlp-protocol CLI flag over settings', async () => {
-    process.argv = ['node', 'script.js', '--telemetry-otlp-protocol', 'http'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { otlpProtocol: 'grpc' },
-    };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpProtocol()).toBe('http');
-  });
-
-  it('should use default protocol if no OTLP protocol is provided via CLI or settings', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv);
-    expect(config.getTelemetryOtlpProtocol()).toBe('grpc');
-  });
-
-  it('should reject invalid --telemetry-otlp-protocol values', async () => {
-    process.argv = [
-      'node',
-      'script.js',
-      '--telemetry-otlp-protocol',
-      'invalid',
-    ];
-
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-    mockWriteStderrLine.mockClear();
-
-    await expect(parseArguments()).rejects.toThrow('process.exit called');
-
-    expect(mockWriteStderrLine).toHaveBeenCalledWith(
-      expect.stringContaining('Invalid values:'),
-    );
-
-    mockExit.mockRestore();
-  });
-});
-
 describe('mergeExcludeTools', () => {
   const defaultExcludes = [
     ToolNames.SHELL,
@@ -4412,42 +3595,19 @@ describe('mergeExcludeTools', () => {
     expect(codeMode.getToolMode()).toBe('code_mode_only');
   });
 
-  it('should only enable tools.freeform inside CodeModeOnly', async () => {
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-
-    const direct = await loadCliConfig(
-      { tools: { freeform: true } },
-      argv,
-      undefined,
-      [],
-    );
-    const codeMode = await loadCliConfig(
-      { tools: { codeModeOnly: true, freeform: true } },
-      argv,
-      undefined,
-      [],
-    );
-
-    expect(direct.getCodeModeOnly()).toBe(false);
-    expect(direct.getFreeform()).toBe(false);
-    expect(codeMode.getFreeform()).toBe(true);
-  });
-
   it.each(['--safe-mode', '--bare'])(
-    'should disable CodeModeOnly and Freeform in %s mode',
+    'should disable CodeModeOnly in %s mode',
     async (flag) => {
       process.argv = ['node', 'script.js', flag];
       const argv = await parseArguments();
       const config = await loadCliConfig(
-        { tools: { codeModeOnly: true, freeform: true } },
+        { tools: { codeModeOnly: true } },
         argv,
         undefined,
         [],
       );
 
       expect(config.getCodeModeOnly()).toBe(false);
-      expect(config.getFreeform()).toBe(false);
     },
   );
 
@@ -5377,67 +4537,6 @@ describe('loadCliConfig with includeDirectories', () => {
     expect(NativeLspService).not.toHaveBeenCalled();
   });
 
-  it('builds agent-host sessions with a read-only initialization profile', async () => {
-    const mockCwd = path.resolve(path.sep, 'home', 'user', 'project');
-    process.argv = [
-      'node',
-      'script.js',
-      '--experimental-lsp',
-      '--include-directories',
-      path.resolve(path.sep, 'cli', 'path1'),
-    ];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      mcpServers: { ambient: { command: 'ambient-mcp' } },
-      context: {
-        includeDirectories: [path.resolve(path.sep, 'settings', 'path1')],
-      },
-      tools: { workflowsEnabled: true },
-      experimental: {
-        cron: true,
-        sessionWorkflow: true,
-        artifact: true,
-      },
-      omni: { enabled: true },
-    };
-
-    await loadCliConfig(
-      settings,
-      argv,
-      mockCwd,
-      ['ambient-extension'],
-      { userHooks: { PromptSubmit: [{ command: 'ambient-hook' }] } },
-      undefined,
-      { injected: new ServerConfig.MCPServerConfig('node', ['injected.js']) },
-      undefined,
-      false,
-      { agentHostReadOnly: true },
-    );
-
-    expect(mockConfigConstructorParams).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        targetDir: mockCwd,
-        safeMode: true,
-        coreTools: [ToolNames.READ_FILE, ToolNames.GREP, ToolNames.LS],
-        includeDirectories: [],
-        lsp: { enabled: false },
-        disableAllHooks: true,
-        mcpServers: {},
-        topTierMcpServers: undefined,
-        pendingMcpServers: undefined,
-        overrideExtensions: [],
-        workflowsEnabled: false,
-        sessionWorkflowEnabled: false,
-        fileCheckpointingEnabled: false,
-        cronEnabled: false,
-        artifactEnabled: false,
-        omniEnabled: false,
-      }),
-    );
-    expect(sshWorkspaceProbe).not.toHaveBeenCalled();
-    expect(NativeLspService).not.toHaveBeenCalled();
-  });
-
   it('should ignore implicit startup context inputs in bare mode', async () => {
     const mockCwd = path.resolve(path.sep, 'home', 'user', 'project');
     const cliPath = path.resolve(path.sep, 'cli', 'path1');
@@ -5472,7 +4571,7 @@ describe('loadCliConfig with includeDirectories', () => {
 
     expect(config.getManagedAutoMemoryEnabled()).toBe(true);
     expect(config.getManagedAutoDreamEnabled()).toBe(true);
-    expect(config.getAutoSkillEnabled()).toBe(false);
+    expect(config.getAutoSkillEnabled()).toBe(true);
   });
 
   it('autoSkillConfirm: defaults to true when unset', async () => {
@@ -6475,11 +5574,11 @@ describe('loadCliConfig approval mode', () => {
     vi.restoreAllMocks();
   });
 
-  it('should default to AUTO approval mode when no flags are set', async () => {
+  it('should default to DEFAULT approval mode when no flags are set', async () => {
     process.argv = ['node', 'script.js'];
     const argv = await parseArguments();
     const config = await loadCliConfig({}, argv, undefined, []);
-    expect(config.getApprovalMode()).toBe(ServerConfig.ApprovalMode.AUTO);
+    expect(config.getApprovalMode()).toBe(ServerConfig.ApprovalMode.DEFAULT);
   });
 
   it('should set PLAN approval mode when --approval-mode=plan', async () => {
@@ -6897,187 +5996,6 @@ describe('parseArguments with positional prompt', () => {
     process.argv = ['node', 'script.js', '--prompt', 'test prompt'];
     const argv = await parseArguments();
     expect(argv.prompt).toBe('test prompt');
-  });
-});
-
-describe('Telemetry configuration via environment variables', () => {
-  it('should prioritize QWEN_TELEMETRY_ENABLED over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_ENABLED', 'true');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: false } };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it('should prioritize QWEN_TELEMETRY_TARGET over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_TARGET', 'gcp');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { target: 'local' },
-    } as unknown as Settings;
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryTarget()).toBe('gcp');
-  });
-
-  it('should throw when QWEN_TELEMETRY_TARGET is invalid', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_TARGET', 'bogus');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { target: 'gcp' },
-    } as unknown as Settings;
-    await expect(loadCliConfig(settings, argv, undefined, [])).rejects.toThrow(
-      /Invalid telemetry configuration: .*Invalid telemetry target/i,
-    );
-    vi.unstubAllEnvs();
-  });
-
-  it('should prioritize QWEN_TELEMETRY_OTLP_ENDPOINT over settings and default env var', async () => {
-    vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://default.env.com');
-    vi.stubEnv('QWEN_TELEMETRY_OTLP_ENDPOINT', 'http://gemini.env.com');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { otlpEndpoint: 'http://settings.com' },
-    };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryOtlpEndpoint()).toBe('http://gemini.env.com');
-  });
-
-  it('should prioritize QWEN_TELEMETRY_OTLP_PROTOCOL over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_OTLP_PROTOCOL', 'http');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { otlpProtocol: 'grpc' } };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryOtlpProtocol()).toBe('http');
-  });
-
-  it('should prioritize QWEN_TELEMETRY_LOG_PROMPTS over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_LOG_PROMPTS', 'false');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { logPrompts: true } };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(false);
-  });
-
-  it('should prioritize QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES', 'true');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { includeSensitiveSpanAttributes: false },
-    };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryIncludeSensitiveSpanAttributes()).toBe(true);
-  });
-
-  it('should prioritize QWEN_TELEMETRY_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH', '131072');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { sensitiveSpanAttributeMaxLength: 65_536 },
-    };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetrySensitiveSpanAttributeMaxLength()).toBe(131_072);
-  });
-
-  it('should prioritize QWEN_TELEMETRY_OUTFILE over settings', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_OUTFILE', '/gemini/env/telemetry.log');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { outfile: '/settings/telemetry.log' },
-    };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryOutfile()).toBe('/gemini/env/telemetry.log');
-  });
-
-  it('should use settings value when QWEN_TELEMETRY_ENABLED is not set', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_ENABLED', undefined);
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = { telemetry: { enabled: true } };
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it('should use settings value when QWEN_TELEMETRY_TARGET is not set', async () => {
-    vi.stubEnv('QWEN_TELEMETRY_TARGET', undefined);
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const settings: Settings = {
-      telemetry: { target: 'local' },
-    } as unknown as Settings;
-    const config = await loadCliConfig(settings, argv, undefined, []);
-    expect(config.getTelemetryTarget()).toBe('local');
-  });
-
-  it("should treat QWEN_TELEMETRY_ENABLED='1' as true", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_ENABLED', '1');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig({}, argv, undefined, []);
-    expect(config.getTelemetryEnabled()).toBe(true);
-  });
-
-  it("should treat QWEN_TELEMETRY_ENABLED='0' as false", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_ENABLED', '0');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig(
-      { telemetry: { enabled: true } },
-      argv,
-      undefined,
-      [],
-    );
-    expect(config.getTelemetryEnabled()).toBe(false);
-  });
-
-  it("should treat QWEN_TELEMETRY_LOG_PROMPTS='1' as true", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_LOG_PROMPTS', '1');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig({}, argv, undefined, []);
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(true);
-  });
-
-  it("should treat QWEN_TELEMETRY_LOG_PROMPTS='false' as false", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_LOG_PROMPTS', 'false');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig(
-      { telemetry: { logPrompts: true } },
-      argv,
-      undefined,
-      [],
-    );
-    expect(config.getTelemetryLogPromptsEnabled()).toBe(false);
-  });
-
-  it("should treat QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES='1' as true", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES', '1');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig({}, argv, undefined, []);
-    expect(config.getTelemetryIncludeSensitiveSpanAttributes()).toBe(true);
-  });
-
-  it("should treat QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES='false' as false", async () => {
-    vi.stubEnv('QWEN_TELEMETRY_INCLUDE_SENSITIVE_SPAN_ATTRIBUTES', 'false');
-    process.argv = ['node', 'script.js'];
-    const argv = await parseArguments();
-    const config = await loadCliConfig(
-      { telemetry: { includeSensitiveSpanAttributes: true } },
-      argv,
-      undefined,
-      [],
-    );
-    expect(config.getTelemetryIncludeSensitiveSpanAttributes()).toBe(false);
   });
 });
 

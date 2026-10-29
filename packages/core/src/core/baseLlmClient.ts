@@ -921,9 +921,7 @@ export class BaseLlmClient {
   }
 
   /**
-   * Resolve a model across all authTypes. Handles the case where the target
-   * model is registered under a different authType than the main model
-   * (e.g. main=QWEN_OAUTH, fast=USE_ANTHROPIC).
+   * Resolve a model across all authTypes.
    */
   private resolveModelAcrossAuthTypes(
     model: string,
@@ -943,13 +941,7 @@ export class BaseLlmClient {
       return getResolvedModel(selector.authType);
     }
 
-    const allAuthTypes: AuthType[] = [
-      AuthType.QWEN_OAUTH,
-      AuthType.USE_OPENAI,
-      AuthType.USE_VERTEX_AI,
-      AuthType.USE_ANTHROPIC,
-      AuthType.USE_GEMINI,
-    ];
+    const allAuthTypes: AuthType[] = [AuthType.USE_OPENAI];
 
     const mainAuthType = this.config.getContentGeneratorConfig()?.authType;
     if (mainAuthType) {

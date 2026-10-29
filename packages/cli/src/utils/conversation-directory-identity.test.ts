@@ -28,8 +28,22 @@ import {
 } from './conversation-directory-identity.js';
 
 // fs-interception seam: lets a test commit a rename exactly between two fs
-// calls inside the module under test.
-vi.mock('node:fs/promises', { spy: true });
+// calls inside the module under test. vitest 4 dropped the `{ spy: true }`
+// auto-spy shape that exposed `.mockImplementation` on each named export, so
+// wrap every function export in a pass-through `vi.fn` by hand — the module
+// under test then imports a spy whose implementation a test can override and
+// restore.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const mocked: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(actual)) {
+    mocked[key] =
+      typeof value === 'function'
+        ? vi.fn(value as (...args: unknown[]) => unknown)
+        : value;
+  }
+  return { ...mocked, default: mocked };
+});
 
 const realFsPromises =
   await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');

@@ -80,7 +80,7 @@ const createManager = (o: ManagerOverrides = {}) => {
     getExtensionScope: vi.fn((name: string) => o.scopes?.[name] ?? 'user'),
     getSources: vi.fn(() => o.sources ?? []),
     discoverPlugins: vi.fn().mockResolvedValue(o.discovered ?? []),
-    toggleFavorite: vi.fn(() => true),
+    toggleFavorite: vi.fn<(name: string) => boolean>(() => true),
     setExtensionScope: vi.fn(),
     getDisabledMcpServers: vi.fn(() => []),
     setMcpServerDisabled: vi.fn(),

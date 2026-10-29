@@ -104,10 +104,10 @@ git clone https://github.com/QwenLM/qwen-code.git # Or your fork's URL
 cd qwen-code
 ```
 
-To install dependencies defined in `package.json` as well as root dependencies, use the pnpm version the repository pins in `packageManager` (Corepack, bundled with Node.js, fetches it):
+To install dependencies defined in `package.json` as well as root dependencies:
 
 ```bash
-corepack pnpm install --frozen-lockfile
+npm install
 ```
 
 To build the entire project (all packages):
@@ -325,7 +325,7 @@ We publish an artifact for each commit to our internal registry. But if you need
 
 ```
 npm run clean
-corepack pnpm install --frozen-lockfile
+npm install
 npm run auth
 npm run prerelease:dev
 npm publish --workspaces

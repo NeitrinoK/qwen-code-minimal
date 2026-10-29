@@ -258,7 +258,12 @@ describe('getOrCreateMcpDispatcher', () => {
     setResolvedProxyUrlForRuntimeFetch('http://proxy.example.com:8080');
     const dispatcher = getOrCreateMcpDispatcher(false);
     expect(dispatcher).toBe(
-      getOrCreateSharedDispatcher('http://proxy.example.com:8080', false),
+      getOrCreateSharedDispatcher(
+        'http://proxy.example.com:8080',
+        [],
+        [],
+        false,
+      ),
     );
   });
 
@@ -266,7 +271,7 @@ describe('getOrCreateMcpDispatcher', () => {
     const d1 = getOrCreateMcpDispatcher(false);
     expect(d1).toBe(getOrCreateMcpDispatcher(false));
     expect(d1).not.toBe(
-      getOrCreateSharedDispatcher('http://proxy.local', false),
+      getOrCreateSharedDispatcher('http://proxy.local', [], [], false),
     );
   });
 
@@ -275,7 +280,12 @@ describe('getOrCreateMcpDispatcher', () => {
     resetDispatcherCache();
     const dispatcher = getOrCreateMcpDispatcher(false);
     expect(dispatcher).not.toBe(
-      getOrCreateSharedDispatcher('http://proxy.example.com:8080', false),
+      getOrCreateSharedDispatcher(
+        'http://proxy.example.com:8080',
+        [],
+        [],
+        false,
+      ),
     );
   });
 });

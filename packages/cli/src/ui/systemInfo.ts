@@ -12,7 +12,6 @@ import type { CommandContext } from './commands/types.js';
 import { getCliVersion } from '../utils/version.js';
 import { formatAuxModelSelectorForDisplay } from '../utils/aux-model-selector.js';
 import {
-  IdeClient,
   AuthType,
   createDebugLogger,
   formatMemoryUsage,
@@ -115,24 +114,6 @@ export async function getGitVersion(): Promise<string> {
 }
 
 /**
- * Gets the IDE client name if IDE mode is enabled.
- * Returns empty string if IDE mode is disabled or IDE client is not detected.
- */
-export async function getIdeClientName(
-  context: SystemInfoContext,
-): Promise<string> {
-  if (!context.services.config?.getIdeMode()) {
-    return '';
-  }
-  try {
-    const ideClient = await IdeClient.getInstance();
-    return ideClient?.getDetectedIdeDisplayName() ?? '';
-  } catch {
-    return '';
-  }
-}
-
-/**
  * Gets the sandbox environment information.
  * Handles different sandbox types including sandbox-exec and custom sandbox environments.
  * For bug reports, removes 'qwen-' or 'qwen-code-' prefixes from sandbox names.
@@ -181,7 +162,7 @@ export async function getSystemInfo(
   const modelVersion = context.services.config?.getModel() || 'Unknown';
   const cliVersion = await getCliVersion();
   const selectedAuthType = context.services.config?.getAuthType() || '';
-  const ideClient = await getIdeClientName(context);
+  const ideClient = '';
   const sessionId = context.services.config?.getSessionId() || 'unknown';
   const proxy = context.services.config?.getProxy();
 
@@ -218,11 +199,10 @@ export async function getExtendedSystemInfo(
   const sandboxEnv =
     formatExecutionSandbox(context.services.config) ?? getSandboxEnv(true);
 
-  // Get base URL and apiKeyEnvKey if using OpenAI or Anthropic auth
+  // Get base URL and apiKeyEnvKey if using OpenAI auth
   const contentGeneratorConfig =
     baseInfo.selectedAuthType === AuthType.USE_OPENAI ||
-    baseInfo.selectedAuthType === AuthType.USE_OPENAI_RESPONSES ||
-    baseInfo.selectedAuthType === AuthType.USE_ANTHROPIC
+    baseInfo.selectedAuthType === AuthType.USE_OPENAI_RESPONSES
       ? context.services.config?.getContentGeneratorConfig()
       : undefined;
   const baseUrl = contentGeneratorConfig?.baseUrl;

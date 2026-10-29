@@ -26,7 +26,6 @@ import {
   makeSlashCommandEvent,
   SlashCommandStatus,
   ToolConfirmationOutcome,
-  IdeClient,
   type SessionListItem,
   addMCPStatusChangeListener,
   removeMCPStatusChangeListener,
@@ -181,7 +180,6 @@ export interface SlashCommandProcessorActions {
   openModelDialog: (options?: {
     fastModelMode?: boolean;
     advisorModelMode?: boolean;
-    voiceModelMode?: boolean;
     visionModelMode?: boolean;
     compactionModelMode?: boolean;
     imageModelMode?: boolean;
@@ -592,28 +590,6 @@ export const useSlashCommandProcessor = (
       peerMessaging,
     ],
   );
-
-  useEffect(() => {
-    if (!config || config.getShellExecutionSandbox?.()) {
-      return;
-    }
-
-    const listener = () => {
-      reloadCommands();
-    };
-
-    (async () => {
-      const ideClient = await IdeClient.getInstance();
-      ideClient.addStatusChangeListener(listener);
-    })();
-
-    return () => {
-      (async () => {
-        const ideClient = await IdeClient.getInstance();
-        ideClient.removeStatusChangeListener(listener);
-      })();
-    };
-  }, [config, reloadCommands]);
 
   // MCP discovery is progressive: it runs in the background after the UI is
   // already interactive, so a server's prompts (prompts/list) are not in the
@@ -1254,12 +1230,6 @@ export const useSlashCommandProcessor = (
                       return { type: 'handled' };
                     case 'advisor-model':
                       actions.openModelDialog({ advisorModelMode: true });
-                      return { type: 'handled' };
-                    case 'voice-model':
-                      actions.openModelDialog({
-                        voiceModelMode: true,
-                        persistScope: result.persistScope,
-                      });
                       return { type: 'handled' };
                     case 'vision-model':
                       actions.openModelDialog({

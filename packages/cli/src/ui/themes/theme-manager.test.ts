@@ -21,7 +21,23 @@ import * as os from 'node:os';
 import type * as osActual from 'node:os';
 import * as detectModule from './detect-terminal-theme.js';
 
-vi.mock('node:fs');
+const { mockExistsSync, mockReadFileSync, mockRealpathSync } = vi.hoisted(
+  () => ({
+    mockExistsSync: vi.fn(),
+    mockReadFileSync: vi.fn(),
+    mockRealpathSync: vi.fn(),
+  }),
+);
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const mocked = {
+    ...actual,
+    existsSync: mockExistsSync,
+    readFileSync: mockReadFileSync,
+    realpathSync: mockRealpathSync,
+  };
+  return { ...mocked, default: mocked };
+});
 vi.mock('node:os', async (importOriginal) => {
   const actualOs = await importOriginal<typeof osActual>();
   return {
@@ -55,6 +71,7 @@ const validCustomTheme: CustomTheme = {
 
 describe('ThemeManager', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     // Reset themeManager state. themeManager is a module-level singleton,
     // so the cached async auto-detection result would otherwise leak across
     // tests and make ordering load-bearing.
@@ -129,11 +146,11 @@ describe('ThemeManager', () => {
   });
 
   describe('auto theme detection', () => {
-    it('should select Qwen Dark when terminal is detected as dark', () => {
+    it('should select Qwen Minimal when terminal is detected as dark', () => {
       vi.mocked(detectModule.detectTerminalTheme).mockReturnValue('dark');
       const result = themeManager.setActiveTheme(AUTO_THEME_NAME);
       expect(result).toBe(true);
-      expect(themeManager.getActiveTheme().name).toBe('Qwen Dark');
+      expect(themeManager.getActiveTheme().name).toBe('Qwen Minimal');
     });
 
     it('should select Qwen Light when terminal is detected as light', () => {
@@ -155,12 +172,12 @@ describe('ThemeManager', () => {
       expect(themeManager.getActiveTheme().name).toBe('Qwen Light');
     });
 
-    it('should resolve async auto theme with Qwen Dark for dark', async () => {
+    it('should resolve async auto theme with Qwen Minimal for dark', async () => {
       vi.mocked(detectModule.detectTerminalThemeAsync).mockResolvedValue(
         'dark',
       );
       await themeManager.resolveAutoThemeAsync();
-      expect(themeManager.getActiveTheme().name).toBe('Qwen Dark');
+      expect(themeManager.getActiveTheme().name).toBe('Qwen Minimal');
     });
 
     it('should reuse the async-detected value when auto is re-selected', async () => {
@@ -194,12 +211,12 @@ describe('ThemeManager', () => {
 
     beforeEach(() => {
       vi.mocked(os.homedir).mockReturnValue('/home/user');
-      vi.spyOn(fs, 'realpathSync').mockImplementation((p) => p as string);
+      vi.mocked(fs.realpathSync).mockImplementation((p) => p as string);
     });
 
     it('should load a theme from a valid file path', () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(mockTheme));
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(mockTheme));
 
       const result = themeManager.setActiveTheme('/home/user/my-theme.json');
 
@@ -213,7 +230,7 @@ describe('ThemeManager', () => {
     });
 
     it('should not load a theme if the file does not exist', () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+      vi.mocked(fs.existsSync).mockReturnValue(false);
 
       const result = themeManager.setActiveTheme(mockThemePath);
 
@@ -222,8 +239,8 @@ describe('ThemeManager', () => {
     });
 
     it('should not load a theme from a file with invalid JSON', () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue('invalid json');
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
 
       const result = themeManager.setActiveTheme(mockThemePath);
 
@@ -232,8 +249,8 @@ describe('ThemeManager', () => {
     });
 
     it('should not load a theme from an untrusted file path', () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(mockTheme));
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(mockTheme));
 
       const result = themeManager.setActiveTheme('/untrusted/my-theme.json');
 

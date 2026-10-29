@@ -4,13 +4,27 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
 import { AgentStatus } from '@qwen-code/qwen-code-core';
 import { renderWithProviders } from '../../../test-utils/render.js';
 import { ArenaSessionCard } from './ArenaCards.js';
 import type { ArenaAgentCardData } from '../../types.js';
 
 describe('ArenaSessionCard', () => {
+  beforeAll(() => {
+    // Pin number formatting to en-US so thousands separators are stable across
+    // machine locales (e.g. ru_RU renders a narrow no-break space, not a comma).
+    vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+      this: number,
+    ) {
+      return new Intl.NumberFormat('en-US').format(this);
+    });
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
   it('renders the comparison summary sections from agent results', () => {
     const agents: ArenaAgentCardData[] = [
       {

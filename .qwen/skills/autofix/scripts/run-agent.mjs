@@ -563,8 +563,10 @@ for (const key of spec.required ?? []) {
 
 const prompt = promptFor(options, spec);
 if (options.printPrompt) {
-  process.stdout.write(prompt);
-  process.exit(0);
+  // Exit from the write callback: on a pipe stdout is asynchronous on macOS,
+  // and an immediate process.exit() truncates the prompt at the pipe buffer.
+  process.stdout.write(prompt, () => process.exit(0));
+  await new Promise(() => {});
 }
 
 const missingInputs = missing(options.workdir, spec.inputs);

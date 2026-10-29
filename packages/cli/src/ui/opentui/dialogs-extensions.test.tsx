@@ -22,7 +22,7 @@
  *  - Discover/Sources degrade honestly (no fake keys, no fake loading).
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act } from 'react';
 import { render, screen } from '@testing-library/react';
 
@@ -109,6 +109,11 @@ import {
   type ExtensionRow,
 } from './dialogs-extensions.js';
 import { C } from './theme.js';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 describe('extensions tabs (shell parity)', () => {
   it('keeps the original tab ids and order', () => {
@@ -209,7 +214,7 @@ const ROWS: ExtensionRow[] = [
 function renderDialog(overrides?: {
   rows?: ExtensionRow[];
   busy?: boolean;
-  onDetailAction?: ReturnType<typeof vi.fn>;
+  onDetailAction?: MockAny;
   status?: { type: 'error' | 'warning' | 'success' | 'info'; text: string };
   availableTerminalHeight?: number;
 }) {

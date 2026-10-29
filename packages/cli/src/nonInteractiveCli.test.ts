@@ -84,10 +84,6 @@ import { expectWithinLatencyBudget } from './test-utils/latency-budget.js';
 
 // Mock core modules
 const runVisionBridgeSpy = vi.hoisted(() => vi.fn());
-const endInteractionSpanSpy = vi.hoisted(() => vi.fn());
-const getActiveInteractionSpanSpy = vi.hoisted(() => vi.fn());
-const addAgentOutputMessageAttributesSpy = vi.hoisted(() => vi.fn());
-const interactionSpan = vi.hoisted(() => ({}));
 vi.mock('./ui/hooks/atCommandProcessor.js');
 vi.mock('./services/review-worktree-lease.js', () => ({
   cleanupReviewWorktreeLeases: vi.fn(),
@@ -107,9 +103,6 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     ...original,
     executeToolCall: vi.fn(),
     runVisionBridge: runVisionBridgeSpy,
-    addAgentOutputMessageAttributes: addAgentOutputMessageAttributesSpy,
-    endInteractionSpan: endInteractionSpanSpy,
-    getActiveInteractionSpan: getActiveInteractionSpanSpy,
     shutdownTelemetry: vi.fn(),
     isTelemetrySdkInitialized: vi.fn().mockReturnValue(true),
     ChatRecordingService: MockChatRecordingService,
@@ -282,12 +275,10 @@ describe('runNonInteractive', () => {
     _resetCleanupFunctionsForTest();
     _resetExitLatchForTest();
 
+    vi.clearAllMocks();
+
     mockCoreExecuteToolCall = vi.mocked(executeToolCall);
     runVisionBridgeSpy.mockReset();
-    endInteractionSpanSpy.mockReset();
-    addAgentOutputMessageAttributesSpy.mockReset();
-    getActiveInteractionSpanSpy.mockReset();
-    getActiveInteractionSpanSpy.mockReturnValue(interactionSpan);
     mockShutdownTelemetry = vi.mocked(shutdownTelemetry);
     vi.mocked(isTelemetrySdkInitialized).mockReturnValue(true);
     mockGetDebugResponses = vi.fn().mockReturnValue([]);
@@ -1708,12 +1699,6 @@ describe('runNonInteractive', () => {
       goalTurnKey: firstOptions.goalTurnKey,
       goalOrigin: 'runtime',
     });
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('ok', {
-      promptId: 'goal-teammate-handoff',
-    });
-    expect(endInteractionSpanSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      mockLlmClient.sendMessageStream.mock.invocationCallOrder[1]!,
-    );
   });
 
   it('ends a Goal turn without another model call after update_goal', async () => {
@@ -1767,9 +1752,6 @@ describe('runNonInteractive', () => {
       parts: [{ text: 'proposal recorded' }],
     });
     expect(finishTurn).toHaveBeenCalledOnce();
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('ok', {
-      promptId: 'goal-terminal-tool-result',
-    });
   });
 
   it('streams Goal state changes that happen while a headless turn settles', async () => {
@@ -1988,16 +1970,6 @@ describe('runNonInteractive', () => {
         ),
       ),
     );
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('error', {
-      promptId: 'goal-explicit-budget',
-      errorMessage:
-        'Run aborted: tool-call budget of 0 exceeded (--max-tool-calls); observed 1.',
-      errorType: 'run_budget_exceeded',
-    });
-    expect(endInteractionSpanSpy).not.toHaveBeenCalledWith(
-      'cancelled',
-      expect.objectContaining({ promptId: 'goal-explicit-budget' }),
-    );
 
     expect(mockCoreExecuteToolCall).not.toHaveBeenCalled();
     expect(goalRuntime.getSnapshot()).toMatchObject({
@@ -2015,67 +1987,6 @@ describe('runNonInteractive', () => {
     ).toBe(goalPauseReasonForRunBudget('tool-calls'));
 
     void run;
-  });
-
-  it('records a budget error when an in-flight model stream rejects after abort', async () => {
-    setupMetricsMock();
-    vi.mocked(mockConfig.getMaxWallTimeSeconds).mockReturnValue(0.01);
-    const runAbortController = new AbortController();
-    let interactionOpen = true;
-    getActiveInteractionSpanSpy.mockImplementation(() =>
-      interactionOpen ? interactionSpan : undefined,
-    );
-    endInteractionSpanSpy.mockImplementation((_status, metadata) => {
-      if (metadata?.promptId === 'budget-stream-abort') {
-        interactionOpen = false;
-      }
-    });
-    mockLlmClient.sendMessageStream.mockReturnValueOnce(
-      (async function* () {
-        yield { type: LlmEventType.Content, value: 'partial response' };
-        if (!runAbortController.signal.aborted) {
-          await new Promise<void>((_, reject) => {
-            runAbortController.signal.addEventListener(
-              'abort',
-              () => {
-                if (
-                  getActiveInteractionSpanSpy('budget-stream-abort') ===
-                  interactionSpan
-                ) {
-                  endInteractionSpanSpy('cancelled', {
-                    promptId: 'budget-stream-abort',
-                  });
-                }
-                reject(new Error('stream aborted after budget expiry'));
-              },
-              { once: true },
-            );
-          });
-        }
-        throw new Error('stream aborted after budget expiry');
-      })(),
-    );
-
-    await expect(
-      runNonInteractive(
-        mockConfig,
-        mockSettings,
-        'wait for the model',
-        'budget-stream-abort',
-        { abortController: runAbortController },
-      ),
-    ).rejects.toThrow('process.exit(55) called');
-
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('error', {
-      promptId: 'budget-stream-abort',
-      errorMessage:
-        'Run aborted: wall-clock budget of 0.01s exceeded (--max-wall-time).',
-      errorType: 'run_budget_exceeded',
-    });
-    expect(endInteractionSpanSpy).not.toHaveBeenCalledWith(
-      'cancelled',
-      expect.objectContaining({ promptId: 'budget-stream-abort' }),
-    );
   });
 
   it('interrupts Goal settlement when the explicit wall-clock budget expires', async () => {
@@ -2558,11 +2469,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Test input' }],
       expect.any(AbortSignal),
       'prompt-id-1',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Test input',
-      },
+      { type: SendMessageType.UserQuery },
     );
     expect(processStdoutSpy).toHaveBeenCalledWith('Hello World\n');
     expect(mockShutdownTelemetry).toHaveBeenCalled();
@@ -3567,11 +3474,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Use a tool' }],
       expect.any(AbortSignal),
       'prompt-id-2',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Use a tool',
-      },
+      { type: SendMessageType.UserQuery },
     );
     // Verify second call (after tool execution) has type: ToolResult
     expect(mockLlmClient.sendMessageStream).toHaveBeenNthCalledWith(
@@ -5449,12 +5352,6 @@ describe('runNonInteractive', () => {
         'prompt-id-4',
       ),
     ).rejects.toThrow(apiError);
-
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('error', {
-      promptId: 'prompt-id-4',
-      errorMessage: 'headless invocation failed',
-      errorType: 'Error',
-    });
   });
 
   it('should not exit if a tool is not found, and should send error back to model', async () => {
@@ -5559,11 +5456,7 @@ describe('runNonInteractive', () => {
       processedParts,
       expect.any(AbortSignal),
       'prompt-id-7',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Summarize @file.txt',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     // 6. Assert the final output is correct
@@ -5631,11 +5524,7 @@ describe('runNonInteractive', () => {
       headlessImageParts,
       expect.any(AbortSignal),
       'prompt-vision-route',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: selector,
-        submittedPrompt: 'inspect @image.png',
-      },
+      { type: SendMessageType.UserQuery, modelOverride: selector },
     );
     expect(mockLlmClient.sendMessageStream).toHaveBeenNthCalledWith(
       2,
@@ -5755,11 +5644,7 @@ describe('runNonInteractive', () => {
       [{ text: 'machine transcription' }],
       expect.any(AbortSignal),
       'prompt-vision-bridge',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'inspect @image.png',
-      },
+      { type: SendMessageType.UserQuery },
     );
     expect(processStderrSpy).toHaveBeenCalledWith(
       expect.stringContaining('Converted 1 image(s)'),
@@ -5836,11 +5721,7 @@ describe('runNonInteractive', () => {
       [{ text: 'inspect this image' }],
       expect.any(AbortSignal),
       'prompt-vision-bridge-failed',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'inspect @image.png',
-      },
+      { type: SendMessageType.UserQuery },
     );
     expect(processStderrSpy).toHaveBeenCalledWith(
       'Vision bridge failed; proceeding without the image(s).\n',
@@ -5874,11 +5755,7 @@ describe('runNonInteractive', () => {
       [{ text: 'inspect this image' }],
       expect.any(AbortSignal),
       'prompt-vision-bridge-skipped',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'inspect @image.png',
-      },
+      { type: SendMessageType.UserQuery },
     );
     expect(processStderrSpy).toHaveBeenCalledWith(
       expect.stringContaining('Vision bridge cancelled.'),
@@ -5921,11 +5798,7 @@ describe('runNonInteractive', () => {
       ],
       expect.any(AbortSignal),
       'prompt-oversized-image',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'inspect @image.png',
-      },
+      { type: SendMessageType.UserQuery },
     );
   });
 
@@ -5978,11 +5851,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Test input' }],
       expect.any(AbortSignal),
       'prompt-id-1',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Test input',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     // JSON adapter emits array of messages, last one is result with stats
@@ -6137,11 +6006,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Empty response test' }],
       expect.any(AbortSignal),
       'prompt-id-empty',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Empty response test',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     // JSON adapter emits array of messages, last one is result with stats
@@ -6505,11 +6370,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Prompt from command' }],
       expect.any(AbortSignal),
       'prompt-id-slash',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: '/testcommand',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     expect(processStdoutSpy).toHaveBeenCalledWith('Response from command\n');
@@ -6569,11 +6430,7 @@ describe('runNonInteractive', () => {
       [{ text: '/unknowncommand' }],
       expect.any(AbortSignal),
       'prompt-id-unknown',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: '/unknowncommand',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     expect(processStdoutSpy).toHaveBeenCalledWith('Response to unknown\n');
@@ -6769,9 +6626,6 @@ describe('runNonInteractive', () => {
       type: 'result',
       is_error: true,
       error: { message: 'Operation cancelled.' },
-    });
-    expect(endInteractionSpanSpy).toHaveBeenCalledWith('cancelled', {
-      promptId: 'prompt-recoverable-interrupt',
     });
   });
 
@@ -7687,11 +7541,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Message from stream-json input' }],
       expect.any(AbortSignal),
       'prompt-envelope',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Message from stream-json input',
-      },
+      { type: SendMessageType.UserQuery },
     );
   });
 
@@ -8365,11 +8215,7 @@ describe('runNonInteractive', () => {
       [{ text: 'Simple string content' }],
       expect.any(AbortSignal),
       'prompt-string-content',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'Simple string content',
-      },
+      { type: SendMessageType.UserQuery },
     );
 
     // UserMessage with array of text blocks
@@ -8402,11 +8248,7 @@ describe('runNonInteractive', () => {
       [{ text: 'First part' }, { text: 'Second part' }],
       expect.any(AbortSignal),
       'prompt-blocks-content',
-      {
-        type: SendMessageType.UserQuery,
-        modelOverride: undefined,
-        submittedPrompt: 'First part Second part',
-      },
+      { type: SendMessageType.UserQuery },
     );
   });
 
@@ -8556,18 +8398,6 @@ describe('runNonInteractive', () => {
       // abortAll() must be called so any in-flight background agents are
       // torn down before we emit the terminal result.
       expect(abortAllSpy).toHaveBeenCalledTimes(1);
-      expect(endInteractionSpanSpy).toHaveBeenCalledWith('ok', {
-        promptId: 'prompt-id-structured',
-      });
-      expect(addAgentOutputMessageAttributesSpy).toHaveBeenCalledWith(
-        mockConfig,
-        interactionSpan,
-        JSON.stringify(structuredArgs),
-        'tool_call',
-      );
-      expect(
-        addAgentOutputMessageAttributesSpy.mock.invocationCallOrder[0],
-      ).toBeLessThan(endInteractionSpanSpy.mock.invocationCallOrder[0]!);
 
       const events = writes
         .join('')
@@ -8979,11 +8809,6 @@ describe('runNonInteractive', () => {
         );
       expect(result?.is_error).toBe(true);
       expect(result?.error?.message).toMatch(/structured_output/);
-      expect(endInteractionSpanSpy).toHaveBeenCalledWith('error', {
-        promptId: 'prompt-id-plaintext',
-        errorMessage: 'model did not produce structured output',
-        errorType: 'structured_output_missing',
-      });
     });
 
     it('reports only the accepted attempt in the structured-output preview', async () => {

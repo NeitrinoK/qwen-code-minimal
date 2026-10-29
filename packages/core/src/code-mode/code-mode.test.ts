@@ -6,7 +6,6 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Tool } from '@google/genai';
-import { AnthropicContentConverter } from '../core/anthropicContentGenerator/converter.js';
 import { convertLlmToolsToOpenAI } from '../core/openaiContentGenerator/converter.js';
 import { makeFakeConfig } from '../test-utils/config.js';
 import { MockTool } from '../test-utils/mock-tool.js';
@@ -261,12 +260,7 @@ describe('CodeModeOnly exposure', () => {
     expect(declarations.map((item) => item.name)).toEqual(['agent', 'exec']);
     const openai = await convertLlmToolsToOpenAI(tools);
     expect(openai.map((item) => item.function.name)).toEqual(['agent', 'exec']);
-    const anthropic = await new AnthropicContentConverter(
-      'test-model',
-    ).convertLlmToolsToAnthropic(tools);
-    expect(anthropic.map((item) => item.name)).toEqual(['agent', 'exec']);
     expect(openai[1]?.function.description).toContain('tools.read_file');
-    expect(anthropic[1]?.description).toContain('tools.read_file');
   });
 
   it('builds stable declarations and resolves normalized-name collisions first-wins', () => {

@@ -7,11 +7,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import {
-  createDebugLogger,
-  ideContextStore,
-  Storage,
-} from '@qwen-code/qwen-code-core';
+import { createDebugLogger, Storage } from '@qwen-code/qwen-code-core';
 import { findEnvFiles, preResolveHomeEnvOverrides } from './environment.js';
 import {
   getSystemDefaultsPath,
@@ -142,7 +138,8 @@ function sameFileSigs(a: FileSig[], b: FileSig[]): boolean {
 function isEntryFresh(key: string, entry: CacheEntry): boolean {
   const fp = entry.fingerprint;
   return (
-    ideContextStore.get()?.workspaceState?.isTrusted === fp.ideTrust &&
+    // IDE integration is removed in this fork; trust state is always undefined.
+    fp.ideTrust === undefined &&
     realpathOr(key) === fp.realCwd &&
     // homeDir guards the corner where nothing else moves: QWEN_HOME set (so
     // settings paths don't follow HOME), no .env files anywhere, and the new
@@ -214,7 +211,7 @@ export function loadSettingsCached(workspaceDir: string): LoadedSettings {
           // .env discovery needs the merged settings (trust), so it can only
           // be signed after the load — see difference (2) in the module doc.
           envFiles: envFileSigs(settings, key),
-          ideTrust: ideContextStore.get()?.workspaceState?.isTrusted,
+          ideTrust: undefined,
           realCwd: realpathOr(key),
           homeDir: realpathOr(os.homedir()),
         },

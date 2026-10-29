@@ -52,8 +52,10 @@ describe('scripts/check-core-subpath-exports.mjs', () => {
   function createFixture({
     coreExports = INTACT_EXPORTS,
     cliSpecifiers = ['@qwen-code/qwen-code-core/config/storage.js'],
-    acpBridgeSpecifiers = ['@qwen-code/qwen-code-core/goalWire'],
-    sdkSpecifiers = ['@qwen-code/qwen-code-core/version.js'],
+    acpBridgeSpecifiers = [
+      '@qwen-code/qwen-code-core/goalWire',
+      '@qwen-code/qwen-code-core/version.js',
+    ],
     distOverrides = {},
     withUnpublishedSrcTarget = false,
   } = {}) {
@@ -112,7 +114,6 @@ describe('scripts/check-core-subpath-exports.mjs', () => {
     const sources = {
       cli: cliSpecifiers,
       'acp-bridge': acpBridgeSpecifiers,
-      'sdk-typescript': sdkSpecifiers,
     };
     for (const [packageName, specifiers] of Object.entries(sources)) {
       const sourceDir = join(cwd, 'packages', packageName, 'src');
@@ -151,7 +152,7 @@ describe('scripts/check-core-subpath-exports.mjs', () => {
   }
 
   it('resolves specifiers named only by the scanned runtime dependencies', async () => {
-    // Pins the acp-bridge/sdk-typescript source scan: goalWire is named by no
+    // Pins the acp-bridge source scan: goalWire is named by no
     // cli source, exactly like ./transcriptRecords and ./subSessionConstants
     // in the repo. Reverting the scan to cli/src alone drops these specifiers
     // from the collected set and this assertion fails.

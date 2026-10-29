@@ -291,7 +291,7 @@ function modelCallScreenshot(app: string): Content {
     parts: [
       {
         functionCall: {
-          name: 'mcp__node-repl__node_repl',
+          name: 'image_tool__capture',
           args: { app },
         },
       },
@@ -310,7 +310,7 @@ function userToolResultWithImage(mimeType: string, data: string): Content {
     parts: [
       {
         functionResponse: {
-          name: 'mcp__node-repl__node_repl',
+          name: 'image_tool__capture',
           response: { output: 'screenshot returned' },
           parts: [{ inlineData: { mimeType, data } }],
         } as unknown as NonNullable<
@@ -360,7 +360,7 @@ describe('extractRecentImages', () => {
     ];
     const result = extractRecentImages(history, 3);
     expect(result).toHaveLength(1);
-    expect(result[0].sourceToolName).toBe('mcp__node-repl__node_repl');
+    expect(result[0].sourceToolName).toBe('image_tool__capture');
     expect(result[0].sourceToolArgs).toEqual({ app: 'Safari' });
     expect(result[0].turnIndex).toBe(1); // user+fr is at index 1
   });
@@ -404,7 +404,7 @@ describe('extractRecentImages', () => {
     const result = extractRecentImages(history, 3);
     expect(result).toHaveLength(1);
     expect(result[0].part.inlineData?.data).toBe('nestedshot');
-    expect(result[0].sourceToolName).toBe('mcp__node-repl__node_repl');
+    expect(result[0].sourceToolName).toBe('image_tool__capture');
   });
 
   it('collects both nested tool images and top-level user pastes', () => {
@@ -455,7 +455,7 @@ describe('countToolResponseImages', () => {
         parts: [
           {
             functionResponse: {
-              name: 'mcp__node-repl__node_repl',
+              name: 'image_tool__capture',
               response: { output: '' },
               parts: [
                 { inlineData: { mimeType: 'image/png', data: 'x' } },
@@ -733,13 +733,13 @@ describe('buildImageRestorationBlock', () => {
       {
         part: { inlineData: { mimeType: 'image/png', data: 'aaaa' } },
         turnIndex: 5,
-        sourceToolName: 'mcp__node-repl__node_repl',
+        sourceToolName: 'image_tool__capture',
         sourceToolArgs: { app: 'Safari' },
       },
       {
         part: { inlineData: { mimeType: 'image/png', data: 'bbbb' } },
         turnIndex: 11,
-        sourceToolName: 'mcp__node-repl__node_repl',
+        sourceToolName: 'image_tool__capture',
         sourceToolArgs: { app: 'Mail' },
       },
     ];
@@ -751,7 +751,7 @@ describe('buildImageRestorationBlock', () => {
     const header = (block!.parts![0] as { text: string }).text;
     expect(header).toContain('Recent visual snapshots');
     expect(header).toContain('turn 5');
-    expect(header).toContain('mcp__node-repl__node_repl');
+    expect(header).toContain('image_tool__capture');
     expect(header).toContain('"app":"Safari"');
     expect(header).toContain('turn 11');
     expect(header).toContain('"app":"Mail"');
@@ -826,7 +826,7 @@ describe('composePostCompactHistory', () => {
         parts: [
           {
             functionCall: {
-              name: 'mcp__node-repl__node_repl',
+              name: 'image_tool__capture',
               args: { app: 'Safari' },
             },
           },
@@ -837,7 +837,7 @@ describe('composePostCompactHistory', () => {
         parts: [
           {
             functionResponse: {
-              name: 'mcp__node-repl__node_repl',
+              name: 'image_tool__capture',
               response: { output: 'screenshot' },
             },
           },
@@ -1148,7 +1148,7 @@ describe('composePostCompactHistory', () => {
         parts: [
           {
             functionResponse: {
-              name: 'mcp__node-repl__node_repl',
+              name: 'image_tool__capture',
               response: { output: '' },
               parts: [
                 { inlineData: { mimeType: 'image/png', data: 'img1' } },
@@ -1200,7 +1200,7 @@ describe('composePostCompactHistory', () => {
         parts: [
           {
             functionResponse: {
-              name: 'mcp__node-repl__node_repl',
+              name: 'image_tool__capture',
               response: { output: '' },
               parts: [{ inlineData: { mimeType: 'image/png', data: 'i' } }],
             } as unknown as NonNullable<

@@ -11,7 +11,6 @@ import {
 import { prepareFileWatchersForProcessExit } from '@qwen-code/qwen-code-core/utils/file-watcher-cleanup.js';
 import { validateExecutionSandboxSelection } from './config/execution-sandbox-settings.js';
 import {
-  AuthType,
   type ChatRecord,
   computeInitialTurnFromHistory,
   type Config,
@@ -106,7 +105,7 @@ import {
   relaunchAppInChildProcess,
   relaunchOnExitCode,
 } from './utils/relaunch.js';
-import { start_sandbox } from './serve/sandbox.js';
+import { start_sandbox } from './sandbox/sandbox.js';
 import { getStartupWarnings } from './utils/startupWarnings.js';
 import { getUserStartupWarnings } from './utils/userStartupWarnings.js';
 import { getInterruptedWorkflowRunsNotice } from './utils/interrupted-workflow-runs.js';
@@ -116,13 +115,7 @@ import { sanitizeTerminalText } from './ui/utils/textUtils.js';
 import { getHeadlessYoloSafetyWarning } from './utils/headlessSafetyWarnings.js';
 import { clearInheritedPeerMessagingEnv } from './peerMessaging/env.js';
 import { initializeLlmOutputLanguage } from './i18n/languageUtils.js';
-import {
-  CUSTOM_SANDBOX_IMAGE_ENV_VAR,
-  HOST_UPDATE_RELAUNCH_ENV_VAR,
-  UPDATE_COMPLETE_EXIT_CODE,
-  superviseInProcess,
-} from './utils/processUtils.js';
-import { getInstallationInfo } from './utils/installationInfo.js';
+import { superviseInProcess } from './utils/processUtils.js';
 
 const debugLogger = createDebugLogger('STARTUP');
 
@@ -485,10 +478,9 @@ export async function main() {
 
   markAcpStartup('argsParseStart');
   let argv = await parseArguments();
-  // The full yargs `serve` handler captures and deletes this credential while
-  // parsing the subcommand. Other CLI/ACP paths do not use it, so scrub any
-  // ambient value immediately after argument parsing and before Config,
-  // hooks, MCP servers, or tools can initialize.
+  // No CLI/ACP path consumes this credential, so scrub any ambient value
+  // immediately after argument parsing and before Config, hooks, MCP servers,
+  // or tools can initialize.
   delete process.env[EXTERNAL_TOOL_GUARD_TOKEN_ENV];
   markAcpStartup('argsParseEnd');
   profileCheckpoint('after_parse_arguments');
@@ -497,20 +489,6 @@ export async function main() {
     isAcpMode &&
     privateAcpParentCapability !== undefined &&
     conversationsRuntimeMarkerSeen;
-  // Only the daemon that spawns a Managed host can drive its sessions, and
-  // the Conversations runtime is never paired. A repeated option arrives as
-  // an array, which is refused too.
-  if (
-    argv.acpExecutionEngine !== undefined &&
-    (argv.acpExecutionEngine !== 'managed' ||
-      !isAcpMode ||
-      privateAcpParentCapability === undefined ||
-      conversationsRuntimeProvenance)
-  ) {
-    throw new Error(
-      '--acp-execution-engine is reserved for hosts spawned by qwen serve.',
-    );
-  }
   const privateAcpChildEnv =
     isAcpMode && privateAcpParentCapability !== undefined
       ? {
@@ -670,46 +648,7 @@ export async function main() {
     const memoryArgs = settings.merged.advanced?.autoConfigureMemory
       ? getNodeMemoryArgs(isDebugMode)
       : [];
-    const updateProjectRoot = process.cwd();
-    const onUpdateRelaunch = async (relaunchOnFailure: boolean) => {
-      await initializeI18n(
-        resolveLanguageSetting(settings.merged.general?.language as string),
-      );
-      const { updateBeforeRelaunch } = await import('./ui/update-relaunch.js');
-      const shouldRelaunch = await updateBeforeRelaunch(
-        settings,
-        updateProjectRoot,
-        relaunchOnFailure,
-      );
-      return shouldRelaunch ? UPDATE_COMPLETE_EXIT_CODE : 0;
-    };
     const sandboxConfig = await loadSandboxConfig(settings.merged, argv);
-    const customSandboxImage =
-      argv.sandboxImage ??
-      process.env['QWEN_SANDBOX_IMAGE'] ??
-      settings.merged.tools?.sandboxImage;
-    // Only the container backends run an image with its own in-process updater;
-    // `sandbox-exec` confines this process in place, so neither the
-    // image handoff nor the host-update relaunch marker applies to them.
-    // Narrowed to the config (not a boolean) so `.image` stays type-safe below.
-    const containerSandbox =
-      sandboxConfig?.command === 'docker' || sandboxConfig?.command === 'podman'
-        ? sandboxConfig
-        : undefined;
-    if (containerSandbox?.image && customSandboxImage) {
-      // Images built before this handoff protocol must be rebuilt; they cannot
-      // be made to skip their in-process updater from the host.
-      process.env[CUSTOM_SANDBOX_IMAGE_ENV_VAR] = containerSandbox.image;
-    } else if (containerSandbox) {
-      const hostInstallationInfo = getInstallationInfo(updateProjectRoot, true);
-      process.env[HOST_UPDATE_RELAUNCH_ENV_VAR] = String(
-        Boolean(
-          hostInstallationInfo.updateCommand ||
-            (hostInstallationInfo.isStandalone &&
-              hostInstallationInfo.standaloneDir),
-        ),
-      );
-    }
     // We intentionally omit the list of extensions here because extensions
     // should not impact auth or setting up the sandbox.
     // TODO(jacobr): refactor loadCliConfig so there is a minimal version
@@ -829,18 +768,14 @@ export async function main() {
       // provenance travels in `privateAcpChildEnv`, which is spread last.
       delete process.env[PRIVATE_CONVERSATIONS_RUNTIME_ENV];
 
-      await relaunchOnExitCode(
-        () =>
-          start_sandbox(
-            sandboxConfig,
-            memoryArgs,
-            partialConfig,
-            sandboxArgs,
-            privateAcpChildEnv,
-          ),
-        {
-          onUpdateRelaunch,
-        },
+      await relaunchOnExitCode(() =>
+        start_sandbox(
+          sandboxConfig,
+          memoryArgs,
+          partialConfig,
+          sandboxArgs,
+          privateAcpChildEnv,
+        ),
       );
       process.exit(0);
     } else if (
@@ -855,8 +790,9 @@ export async function main() {
     ) {
       // Nothing to add to this process's flags, and no env-file values that
       // already-loaded modules missed, so a relaunch would only load the whole
-      // CLI a second time. Restarts re-exec in place instead.
-      superviseInProcess(onUpdateRelaunch);
+      // CLI a second time. Restarts re-exec in place instead. This build
+      // ships no in-process updater, so the update handler is never reached.
+      superviseInProcess(() => 0);
     } else {
       // Interactive and streaming modes keep a supervisor for in-session
       // restarts. A one-shot prompt can replace this already-loaded process.
@@ -864,7 +800,6 @@ export async function main() {
         afterSpawn: clearCorruptionEnvVars,
         childEnv: { ...privateAcpChildEnv, ...getRelaunchEnvProvenance() },
         environmentChangedSinceBoot: hasLoadedEnvironmentValues(),
-        onUpdateRelaunch,
         replaceProcess:
           !isAcpMode &&
           argv.inputFormat !== InputFormat.STREAM_JSON &&
@@ -923,7 +858,6 @@ export async function main() {
     argv.openaiLoggingDir = resolveIfPath(argv.openaiLoggingDir);
     argv.jsonFile = resolveIfPath(argv.jsonFile);
     argv.inputFile = resolveIfPath(argv.inputFile);
-    argv.telemetryOutfile = resolveIfPath(argv.telemetryOutfile);
     if (Array.isArray(argv.includeDirectories)) {
       argv.includeDirectories = argv.includeDirectories.map((d) =>
         typeof d === 'string' && d.length > 0
@@ -1278,17 +1212,8 @@ export async function main() {
     // For stream-json mode, defer config.initialize() until after the initialize control request
     // For other modes, initialize normally
     const { initializeApp } = await import('./core/initializer.js');
-    let input = config.getQuestion();
-    const hasRemoteInput = Boolean(config.getInputFile?.());
-    const deferIdeConnection =
-      config.isInteractive() &&
-      !config.getExperimentalZedIntegration() &&
-      !input &&
-      !hasRemoteInput;
     markAcpStartup('appInitializationStart');
-    const initializationResult = await initializeApp(config, settings, {
-      deferIdeConnection,
-    });
+    const initializationResult = await initializeApp(config, settings);
     markAcpStartup('appInitializationEnd');
     profileCheckpoint('after_initialize_app');
 
@@ -1296,20 +1221,12 @@ export async function main() {
       markAcpStartup('acpImportStart');
       const { runAcpAgent } = await import('./acp-integration/acpAgent.js');
       markAcpStartup('acpImportEnd');
-      // A Managed host runs its sessions' tools in Runtime workers.
-      const managedRuntimeEnvironment =
-        argv.acpExecutionEngine === 'managed'
-          ? (await import('./serve/managed-runtime-session-worker.js'))
-              .createManagedRuntimeEnvironment
-          : undefined;
       try {
         await runAcpAgent(config, settings, argv, {
           privateParentCapability: isAcpMode
             ? privateAcpParentCapability
             : undefined,
           conversationsRuntimeProvenance,
-          executionEngine: argv.acpExecutionEngine,
-          managedRuntimeEnvironment,
           externalToolGuardRequired:
             isAcpMode &&
             privateAcpParentCapability !== undefined &&
@@ -1328,6 +1245,23 @@ export async function main() {
       process.exit(0);
     }
 
+    // Background housekeeping: file-history cleanup and (future) other
+    // periodic disk maintenance. Interactive-only — SDK/ACP modes don't
+    // create the file-history dirs this cleans, so they skip. Dynamic import
+    // keeps --help / one-shot --prompt paths from loading this code at all.
+    // Timers inside are .unref()'d so they never block process exit.
+    if (config.isInteractive()) {
+      // .catch() is intentional: a dynamic-import or module-init failure
+      // becomes a swallowed log instead of an unhandled promise rejection
+      // that crashes the REPL.
+      void import('./services/housekeeping/scheduler.js')
+        .then((m) => m.startBackgroundHousekeeping(config, settings))
+        .catch((err) => {
+          debugLogger.warn('failed to start background housekeeping:', err);
+        });
+    }
+
+    let input = config.getQuestion();
     const startupWarnings = [
       ...new Set([
         ...(config.isSafeMode()
@@ -1343,12 +1277,6 @@ export async function main() {
         })),
         ...getSettingsWarnings(settings),
         ...config.getWarnings(),
-        ...(config.getModelsConfig().getCurrentAuthType() ===
-        AuthType.QWEN_OAUTH
-          ? [
-              'Qwen OAuth free tier was discontinued on 2026-04-15. Run /auth to switch to Coding Plan or another provider.',
-            ]
-          : []),
       ]),
     ];
     const emittedStartupWarnings = new Set(startupWarnings);
@@ -1431,10 +1359,7 @@ export async function main() {
             startupWarnings,
             process.cwd(),
             initializationResult!,
-            {
-              postRenderConnectIde: deferIdeConnection,
-              extensionRefreshState,
-            },
+            { extensionRefreshState },
           );
           if (started) {
             clearCorruptionEnvVars();
@@ -1467,10 +1392,7 @@ export async function main() {
         startupWarnings,
         process.cwd(),
         initializationResult!,
-        {
-          postRenderConnectIde: deferIdeConnection,
-          extensionRefreshState,
-        },
+        { extensionRefreshState },
       );
       // Clean up corruption env vars so subsequent relaunch children
       // and subprocesses don't inherit stale state.

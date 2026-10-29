@@ -32,9 +32,6 @@ import type { UseInputHistoryReturn } from '../hooks/useInputHistory.js';
 import { useInputHistory } from '../hooks/useInputHistory.js';
 import type { UseReverseSearchCompletionReturn } from '../hooks/useReverseSearchCompletion.js';
 import { useReverseSearchCompletion } from '../hooks/useReverseSearchCompletion.js';
-import { useVoiceInput } from '../hooks/use-voice-input.js';
-import type { MicrophonePermission } from '../hooks/use-voice-input.js';
-import { createVoiceRecorder } from '../voice/voice-recorder.js';
 import * as clipboardUtils from '../utils/clipboardUtils.js';
 import { createMockCommandContext } from '../../test-utils/mockCommandContext.js';
 import stripAnsi from 'strip-ansi';
@@ -69,19 +66,14 @@ vi.mock('../hooks/useShellHistory.js');
 vi.mock('../hooks/useCommandCompletion.js');
 vi.mock('../hooks/useInputHistory.js');
 vi.mock('../hooks/useReverseSearchCompletion.js');
-vi.mock('../hooks/use-voice-input.js');
-vi.mock('../voice/voice-recorder.js', () => ({
-  createVoiceRecorder: vi.fn(),
-}));
 vi.mock('../utils/clipboardUtils.js');
 vi.mock('../../services/prompt-stash.js');
 vi.mock('../contexts/UIStateContext.js', () => ({
-  useUIState: vi.fn(() => ({ isFeedbackDialogOpen: false, messageQueue: [] })),
+  useUIState: vi.fn(() => ({ messageQueue: [] })),
 }));
 vi.mock('../contexts/UIActionsContext.js', () => ({
   useUIActions: vi.fn(() => ({
     handleRetryLastPrompt: vi.fn(),
-    temporaryCloseFeedbackDialog: vi.fn(),
     popAllQueuedMessages: vi.fn(() => null),
     invalidateSubmittedPromptProvenance: vi.fn(),
   })),
@@ -213,7 +205,6 @@ describe('InputPrompt', () => {
   const mockedUseReverseSearchCompletion = vi.mocked(
     useReverseSearchCompletion,
   );
-  const mockedUseVoiceInput = vi.mocked(useVoiceInput);
   const mockedSavePromptStash = vi.mocked(savePromptStash);
   const mockedClearPromptStash = vi.mocked(clearPromptStash);
 
@@ -229,13 +220,11 @@ describe('InputPrompt', () => {
     mockViewActions.enterBgDetailFromPanel.mockReset();
 
     mockedUseUIState.mockReturnValue({
-      isFeedbackDialogOpen: false,
       messageQueue: [],
       pendingLlmHistoryItems: [],
     } as unknown as ReturnType<typeof useUIState>);
     mockedUseUIActions.mockReturnValue({
       handleRetryLastPrompt: vi.fn(),
-      temporaryCloseFeedbackDialog: vi.fn(),
       popAllQueuedMessages: vi.fn(() => null),
       invalidateSubmittedPromptProvenance: vi.fn(),
     } as unknown as ReturnType<typeof useUIActions>);
@@ -364,13 +353,6 @@ describe('InputPrompt', () => {
     mockedUseReverseSearchCompletion.mockReturnValue(
       mockReverseSearchCompletion,
     );
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'idle',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: vi.fn(() => false),
-    });
-
     props = {
       buffer: mockBuffer,
       onSubmit: vi.fn(),
@@ -462,7 +444,6 @@ describe('InputPrompt', () => {
     const invalidateSubmittedPromptProvenance = vi.fn();
     mockedUseUIActions.mockReturnValue({
       handleRetryLastPrompt: vi.fn(),
-      temporaryCloseFeedbackDialog: vi.fn(),
       popAllQueuedMessages: vi.fn(() => null),
       invalidateSubmittedPromptProvenance,
     } as unknown as ReturnType<typeof useUIActions>);
@@ -516,382 +497,6 @@ describe('InputPrompt', () => {
         pending,
       ),
     ).toBe('before full pasted content after');
-  });
-
-  it('routes Space through voice input when the prompt is empty', async () => {
-    const handleVoiceKeypress = vi.fn(() => true);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'idle',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write(' ');
-
-    await waitFor(() => {
-      expect(handleVoiceKeypress).toHaveBeenCalled();
-    });
-    expect(props.buffer.handleInput).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('keeps normal Space typing when the prompt already has text', async () => {
-    const handleVoiceKeypress = vi.fn(() => true);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'idle',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-    props.buffer.setText('hello');
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write(' ');
-
-    await waitFor(() => {
-      expect(props.buffer.handleInput).toHaveBeenCalled();
-    });
-    expect(handleVoiceKeypress).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('lets Space stop voice recording even when shell mode is active', async () => {
-    const handleVoiceKeypress = vi.fn(() => true);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'recording',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-    props.shellModeActive = true;
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write(' ');
-
-    await waitFor(() => {
-      expect(handleVoiceKeypress).toHaveBeenCalled();
-    });
-    expect(props.buffer.handleInput).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('does not route voice keys while the background dialog is open', async () => {
-    const handleVoiceKeypress = vi.fn(() => true);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'recording',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-    mockedUseBackgroundTaskViewState.mockReturnValue({
-      entries: [],
-      selectedIndex: 0,
-      dialogMode: 'list',
-      dialogOpen: true,
-      pillFocused: false,
-      livePanelFocused: false,
-      livePanelSelectedIndex: 0,
-    });
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write(' ');
-
-    await waitFor(() => {
-      expect(handleVoiceKeypress).not.toHaveBeenCalled();
-    });
-    expect(props.buffer.handleInput).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('passes a voice refinement callback when a fast model is configured', () => {
-    props.config = {
-      ...props.config,
-      getFastModel: () => 'qwen-fast',
-    } as unknown as Config;
-
-    const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-    expect(mockedUseVoiceInput).toHaveBeenCalledWith(
-      expect.objectContaining({ refine: expect.any(Function) }),
-    );
-    unmount();
-  });
-
-  it('omits voice refinement when refineTranscript is disabled', () => {
-    props.config = {
-      ...props.config,
-      getFastModel: () => 'qwen-fast',
-    } as unknown as Config;
-    const settings = {
-      merged: {
-        general: { voice: { refineTranscript: false } },
-      },
-    } as LoadedSettings;
-
-    const { unmount } = renderWithProviders(<InputPrompt {...props} />, {
-      settings,
-    });
-
-    expect(mockedUseVoiceInput).toHaveBeenCalledWith(
-      expect.objectContaining({ refine: undefined }),
-    );
-    unmount();
-  });
-
-  it('lets the feedback dialog consume option keys before active voice input', async () => {
-    const handleVoiceKeypress = vi.fn(() => true);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'recording',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-    mockedUseUIState.mockReturnValue({
-      isFeedbackDialogOpen: true,
-      messageQueue: [],
-      pendingLlmHistoryItems: [],
-    } as unknown as ReturnType<typeof useUIState>);
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write('1');
-
-    await waitFor(() => {
-      expect(handleVoiceKeypress).not.toHaveBeenCalled();
-    });
-    expect(props.buffer.handleInput).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  describe('voice microphone permission', () => {
-    const setupRecorder = (status: MicrophonePermission) => {
-      const microphoneStatus = vi.fn().mockResolvedValue(status);
-      const { addItem } = setupRecorderWith(microphoneStatus);
-      return { addItem, microphoneStatus };
-    };
-
-    const setupRecorderWith = (
-      microphoneStatus: (() => Promise<MicrophonePermission>) | undefined,
-    ) => {
-      const addItem = vi.fn();
-      mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
-        messageQueue: [],
-        pendingLlmHistoryItems: [],
-        historyManager: { addItem },
-      } as unknown as ReturnType<typeof useUIState>);
-      vi.mocked(createVoiceRecorder).mockReturnValue({
-        start: vi.fn(),
-        stop: vi.fn(),
-        warmup: vi.fn(),
-        microphoneStatus,
-      } as unknown as ReturnType<typeof createVoiceRecorder>);
-      return { addItem };
-    };
-
-    const lastVoiceArgs = () =>
-      mockedUseVoiceInput.mock.calls.at(-1)![0] as Parameters<
-        typeof useVoiceInput
-      >[0];
-
-    it('does not probe or warn about microphone permission during warmup', async () => {
-      const { addItem, microphoneStatus } = setupRecorder('prompt');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        await lastVoiceArgs().warmup?.();
-      });
-
-      expect(microphoneStatus).not.toHaveBeenCalled();
-      expect(addItem).not.toHaveBeenCalled();
-      unmount();
-    });
-
-    it('warns about a pending permission when a recording starts', async () => {
-      const { addItem, microphoneStatus } = setupRecorder('prompt');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledWith(
-          expect.objectContaining({
-            type: 'info',
-            text: expect.stringContaining('needs microphone access'),
-          }),
-          expect.any(Number),
-        );
-      });
-      expect(microphoneStatus).toHaveBeenCalledTimes(1);
-      unmount();
-    });
-
-    it('reports a denied permission as an error when a recording starts', async () => {
-      const { addItem } = setupRecorder('denied');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledWith(
-          expect.objectContaining({
-            type: 'error',
-            text: expect.stringContaining('Microphone access is denied.'),
-          }),
-          expect.any(Number),
-        );
-      });
-      unmount();
-    });
-
-    it('warns only once for repeated recordings with the same status', async () => {
-      const { addItem } = setupRecorder('prompt');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledTimes(1);
-      });
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await act(async () => {});
-
-      expect(addItem).toHaveBeenCalledTimes(1);
-      unmount();
-    });
-
-    it('warns again when the permission status changes between recordings', async () => {
-      const { addItem, microphoneStatus } = setupRecorder('prompt');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledTimes(1);
-      });
-
-      // The user dismisses or denies the OS dialog: the next probe reports
-      // 'denied', which must re-warn — as an error — despite the earlier
-      // 'prompt' notice.
-      microphoneStatus.mockResolvedValue('denied');
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledTimes(2);
-      });
-      expect(addItem).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          type: 'error',
-          text: expect.stringContaining('Microphone access is denied'),
-        }),
-        expect.any(Number),
-      );
-      unmount();
-    });
-
-    it('warns only once across remounts when a session ref is supplied', async () => {
-      const { addItem } = setupRecorder('prompt');
-      const voiceMicWarnedStatusRef = { current: null };
-
-      const first = renderWithProviders(
-        <InputPrompt
-          {...props}
-          voiceMicWarnedStatusRef={voiceMicWarnedStatusRef}
-        />,
-      );
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await waitFor(() => {
-        expect(addItem).toHaveBeenCalledTimes(1);
-      });
-      first.unmount();
-
-      const second = renderWithProviders(
-        <InputPrompt
-          {...props}
-          voiceMicWarnedStatusRef={voiceMicWarnedStatusRef}
-        />,
-      );
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await act(async () => {});
-
-      expect(addItem).toHaveBeenCalledTimes(1);
-      second.unmount();
-    });
-
-    it('stays quiet when the recorder cannot report permission', async () => {
-      const { addItem } = setupRecorderWith(undefined);
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await act(async () => {});
-
-      expect(addItem).not.toHaveBeenCalled();
-      unmount();
-    });
-
-    it('stays quiet when the permission probe rejects', async () => {
-      const { addItem } = setupRecorderWith(() =>
-        Promise.reject(new Error('TCC query failed')),
-      );
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await act(async () => {});
-
-      expect(addItem).not.toHaveBeenCalled();
-      unmount();
-    });
-
-    it('stays quiet when permission is already granted', async () => {
-      const { addItem } = setupRecorder('granted');
-      const { unmount } = renderWithProviders(<InputPrompt {...props} />);
-
-      await act(async () => {
-        lastVoiceArgs().checkMicrophonePermission?.();
-      });
-      await act(async () => {});
-
-      expect(addItem).not.toHaveBeenCalled();
-      unmount();
-    });
-  });
-
-  it('lets non-voice keys fall through while voice recording is active', async () => {
-    const handleVoiceKeypress = vi.fn(() => false);
-    mockedUseVoiceInput.mockReturnValue({
-      status: 'recording',
-      interimText: '',
-      audioLevel: 0,
-      handleKeypress: handleVoiceKeypress,
-    });
-
-    const { stdin, unmount } = renderWithProviders(<InputPrompt {...props} />);
-    stdin.write('a');
-
-    await waitFor(() => {
-      expect(handleVoiceKeypress).toHaveBeenCalled();
-    });
-    expect(props.buffer.handleInput).toHaveBeenCalled();
-    unmount();
   });
 
   // Two microtask yields are intentional: Ink 7 + React 19 split a render
@@ -1491,7 +1096,6 @@ describe('InputPrompt', () => {
     const invalidateSubmittedPromptProvenance = vi.fn();
     mockedUseUIActions.mockReturnValue({
       handleRetryLastPrompt: vi.fn(),
-      temporaryCloseFeedbackDialog: vi.fn(),
       popAllQueuedMessages: vi.fn(() => null),
       invalidateSubmittedPromptProvenance,
     } as unknown as ReturnType<typeof useUIActions>);
@@ -1765,7 +1369,6 @@ describe('InputPrompt', () => {
       const addItem = vi.fn();
       const clipboardUnavailableShownRef = { current: false };
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
         pendingLlmHistoryItems: [],
         historyManager: { addItem },
@@ -4439,7 +4042,6 @@ describe('InputPrompt', () => {
       const invalidateSubmittedPromptProvenance = vi.fn();
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: vi.fn(() => null),
         invalidateSubmittedPromptProvenance,
       } as unknown as ReturnType<typeof useUIActions>);
@@ -4496,7 +4098,6 @@ describe('InputPrompt', () => {
       const invalidateSubmittedPromptProvenance = vi.fn();
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: vi.fn(() => null),
         invalidateSubmittedPromptProvenance,
       } as unknown as ReturnType<typeof useUIActions>);
@@ -4691,7 +4292,6 @@ describe('InputPrompt', () => {
       const invalidateSubmittedPromptProvenance = vi.fn();
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: vi.fn(() => null),
         invalidateSubmittedPromptProvenance,
       } as unknown as ReturnType<typeof useUIActions>);
@@ -5283,14 +4883,12 @@ describe('InputPrompt', () => {
   describe('Ctrl+Y retry shortcut', () => {
     let mockUIActions: {
       handleRetryLastPrompt: ReturnType<typeof vi.fn>;
-      temporaryCloseFeedbackDialog: ReturnType<typeof vi.fn>;
       popAllQueuedMessages: ReturnType<typeof vi.fn>;
     };
 
     beforeEach(() => {
       mockUIActions = {
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: vi.fn(() => null),
       };
 
@@ -5373,45 +4971,16 @@ describe('InputPrompt', () => {
 
       unmount();
     });
-
-    /**
-     * When feedback dialog is open, Ctrl+Y should be passed through after
-     * temporarily closing the dialog.
-     */
-    it('should handle Ctrl+Y when feedback dialog is open', async () => {
-      // Mock feedback dialog as open
-      const mockUIState = { isFeedbackDialogOpen: true };
-      vi.doMock('../contexts/UIStateContext.js', () => ({
-        useUIState: vi.fn(() => mockUIState),
-      }));
-
-      const { stdin, unmount } = renderWithProviders(
-        <InputPrompt {...props} />,
-      );
-      await wait();
-
-      // Send Ctrl+Y
-      stdin.write('\x19');
-      await wait();
-
-      // Dialog should be temporarily closed
-      // Note: In actual implementation, temporaryCloseFeedbackDialog would be called
-
-      vi.doUnmock('../contexts/UIStateContext.js');
-      unmount();
-    });
   });
 
   describe('queue input editing', () => {
     afterEach(() => {
       // Restore default mocks
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
       } as unknown as ReturnType<typeof useUIState>);
       vi.mocked(useUIActions).mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: vi.fn(() => null),
       } as unknown as ReturnType<typeof useUIActions>);
     });
@@ -5419,12 +4988,10 @@ describe('InputPrompt', () => {
     it('should pop queued messages into input on Up arrow when queue is non-empty', async () => {
       const mockPopAll = vi.fn(() => 'queued msg 1\n\nqueued msg 2');
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued msg 1', 'queued msg 2'],
       } as unknown as ReturnType<typeof useUIState>);
       vi.mocked(useUIActions).mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAll,
       } as unknown as ReturnType<typeof useUIActions>);
 
@@ -5446,12 +5013,10 @@ describe('InputPrompt', () => {
     it('should prepend queued messages before existing input text', async () => {
       const mockPopAll = vi.fn(() => 'queued msg');
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued msg'],
       } as unknown as ReturnType<typeof useUIState>);
       vi.mocked(useUIActions).mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAll,
       } as unknown as ReturnType<typeof useUIActions>);
 
@@ -5479,12 +5044,10 @@ describe('InputPrompt', () => {
     it('should pop queued messages on ESC when queue is non-empty', async () => {
       const mockPopAll = vi.fn(() => 'queued msg');
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued msg'],
       } as unknown as ReturnType<typeof useUIState>);
       vi.mocked(useUIActions).mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAll,
       } as unknown as ReturnType<typeof useUIActions>);
 
@@ -5506,12 +5069,10 @@ describe('InputPrompt', () => {
       // already drained by another pop/drain — popAllQueuedMessages returns null.
       const mockPopAll = vi.fn(() => null);
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['stale msg'],
       } as unknown as ReturnType<typeof useUIState>);
       vi.mocked(useUIActions).mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAll,
       } as unknown as ReturnType<typeof useUIActions>);
 
@@ -5544,7 +5105,6 @@ describe('InputPrompt', () => {
 
     it('should not intercept Ctrl+P when queue is non-empty', async () => {
       vi.mocked(useUIState).mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued msg'],
       } as unknown as ReturnType<typeof useUIState>);
 
@@ -5633,7 +5193,6 @@ describe('InputPrompt', () => {
 
     it('Ctrl+P/N and arrows do not change input history while a tool confirmation owns navigation', async () => {
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
         pendingLlmHistoryItems: [
           {
@@ -6136,7 +5695,6 @@ describe('InputPrompt', () => {
   describe('ESC during active agent response (#8201)', () => {
     it('does not pop queued messages into input when responding', async () => {
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued message'],
         pendingLlmHistoryItems: [],
         streamingState: StreamingState.Responding,
@@ -6144,7 +5702,6 @@ describe('InputPrompt', () => {
       const mockPopAllQueued = vi.fn(() => null);
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAllQueued,
         invalidateSubmittedPromptProvenance: vi.fn(),
       } as unknown as ReturnType<typeof useUIActions>);
@@ -6167,7 +5724,6 @@ describe('InputPrompt', () => {
 
     it('does not silently clear typed input on single ESC when responding', async () => {
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
         pendingLlmHistoryItems: [],
         streamingState: StreamingState.Responding,
@@ -6194,7 +5750,6 @@ describe('InputPrompt', () => {
       // handler runs after this one regardless of return values and cancels
       // because the buffer stayed empty. #8201.
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
         pendingLlmHistoryItems: [],
         streamingState: StreamingState.Responding,
@@ -6202,12 +5757,13 @@ describe('InputPrompt', () => {
       const mockPopAllQueued = vi.fn(() => null);
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAllQueued,
         invalidateSubmittedPromptProvenance: vi.fn(),
       } as unknown as ReturnType<typeof useUIActions>);
       props.buffer.setText('');
       const setTextSpy = vi.spyOn(props.buffer, 'setText');
+      // vitest 4's spyOn reuses an existing vi.fn(), keeping the call above.
+      setTextSpy.mockClear();
 
       const { stdin, unmount } = renderWithProviders(
         <InputPrompt {...props} />,
@@ -6229,7 +5785,6 @@ describe('InputPrompt', () => {
       // without this. A mutation to `!== Responding || buffer.text !== ''`
       // survives all tests unless this combination is covered.
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: ['queued follow-up'],
         pendingLlmHistoryItems: [],
         streamingState: StreamingState.Responding,
@@ -6237,7 +5792,6 @@ describe('InputPrompt', () => {
       const mockPopAllQueued = vi.fn(() => null);
       mockedUseUIActions.mockReturnValue({
         handleRetryLastPrompt: vi.fn(),
-        temporaryCloseFeedbackDialog: vi.fn(),
         popAllQueuedMessages: mockPopAllQueued,
         invalidateSubmittedPromptProvenance: vi.fn(),
       } as unknown as ReturnType<typeof useUIActions>);
@@ -6263,7 +5817,6 @@ describe('InputPrompt', () => {
       // adding `if (streamingState === Responding) return true` before the
       // double-ESC block ships green.
       mockedUseUIState.mockReturnValue({
-        isFeedbackDialogOpen: false,
         messageQueue: [],
         pendingLlmHistoryItems: [],
         streamingState: StreamingState.Responding,

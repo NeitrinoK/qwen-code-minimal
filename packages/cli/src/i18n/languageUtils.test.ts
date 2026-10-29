@@ -111,37 +111,18 @@ describe('languageUtils', () => {
       expect(normalizeOutputLanguage('en-US')).toBe('English');
     });
 
-    it('should convert "zh" to "Chinese"', () => {
-      expect(normalizeOutputLanguage('zh')).toBe('Chinese');
-    });
-
     it('should convert "ru" to "Russian"', () => {
       expect(normalizeOutputLanguage('ru')).toBe('Russian');
     });
 
-    it('should convert "de" to "German"', () => {
-      expect(normalizeOutputLanguage('de')).toBe('German');
-    });
-
-    it('should convert "ja" to "Japanese"', () => {
-      expect(normalizeOutputLanguage('ja')).toBe('Japanese');
-    });
-
     it('should be case insensitive for locale codes', () => {
-      expect(normalizeOutputLanguage('ZH')).toBe('Chinese');
       expect(normalizeOutputLanguage('Ru')).toBe('Russian');
-    });
-
-    it('should convert "zh-TW" (mixed case) to "Traditional Chinese"', () => {
-      expect(normalizeOutputLanguage('zh-TW')).toBe('Traditional Chinese');
-      expect(normalizeOutputLanguage('zh-tw')).toBe('Traditional Chinese');
-      expect(normalizeOutputLanguage('ZH-TW')).toBe('Traditional Chinese');
+      expect(normalizeOutputLanguage('RU')).toBe('Russian');
     });
 
     it('should preserve explicit language names as-is', () => {
       expect(normalizeOutputLanguage('Japanese')).toBe('Japanese');
       expect(normalizeOutputLanguage('French')).toBe('French');
-      expect(normalizeOutputLanguage('french')).toBe('French');
     });
 
     it('should preserve unknown language names as-is', () => {
@@ -159,7 +140,7 @@ describe('languageUtils', () => {
     });
 
     it('should normalize explicit locale codes', () => {
-      expect(resolveOutputLanguage('zh')).toBe('Chinese');
+      expect(resolveOutputLanguage('ru')).toBe('Russian');
       expect(i18n.detectSystemLanguage).not.toHaveBeenCalled();
     });
 
@@ -183,7 +164,7 @@ describe('languageUtils', () => {
     });
 
     it('should normalize explicit languages', () => {
-      expect(resolveOutputLanguageOrPreserveAuto('zh')).toBe('Chinese');
+      expect(resolveOutputLanguageOrPreserveAuto('ru')).toBe('Russian');
       expect(resolveOutputLanguageOrPreserveAuto('english')).toBe('English');
     });
   });
@@ -334,10 +315,10 @@ describe('languageUtils', () => {
     });
 
     it('should normalize locale codes and write full name', () => {
-      updateOutputLanguageFile('ja');
+      updateOutputLanguageFile('ru');
 
       const writtenContent = vi.mocked(fs.writeFileSync).mock.calls[0][1];
-      expect(writtenContent).toContain('Japanese');
+      expect(writtenContent).toContain('Russian');
     });
 
     it('should write explicit language names directly', () => {
@@ -526,18 +507,6 @@ Always use formal tone.
       expect(() => initializeLlmOutputLanguage()).not.toThrow();
     });
 
-    it('should normalize Chinese locale and create Chinese rule file', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false);
-
-      initializeLlmOutputLanguage('zh');
-
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('output-language.md'),
-        expect.stringContaining('Chinese'),
-        'utf-8',
-      );
-    });
-
     it('should normalize Russian locale and create Russian rule file', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
 
@@ -546,18 +515,6 @@ Always use formal tone.
       expect(fs.writeFileSync).toHaveBeenCalledWith(
         expect.stringContaining('output-language.md'),
         expect.stringContaining('Russian'),
-        'utf-8',
-      );
-    });
-
-    it('should normalize German locale and create German rule file', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false);
-
-      initializeLlmOutputLanguage('de');
-
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('output-language.md'),
-        expect.stringContaining('German'),
         'utf-8',
       );
     });

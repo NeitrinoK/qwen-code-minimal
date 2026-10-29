@@ -29,6 +29,7 @@ describe('loadSimpleGit', () => {
     expect(simpleGit).toHaveBeenCalledWith('/repo', {
       config: ['core.fsmonitor=', 'log.showSignature=false'],
       unsafe: { allowUnsafeFsMonitor: true },
+      allowEnvironment: expect.arrayContaining(['GIT_ALLOW_PROTOCOL']),
     });
   });
 
@@ -44,6 +45,7 @@ describe('loadSimpleGit', () => {
     guarded('/repo', {
       config: ['core.quotepath=false'],
       unsafe: { allowUnsafeHooksPath: true },
+      allowEnvironment: ['GIT_DIR'],
     });
 
     // Git honours the last `-c` for a key, so ours has to come after any the
@@ -55,6 +57,11 @@ describe('loadSimpleGit', () => {
         'log.showSignature=false',
       ],
       unsafe: { allowUnsafeHooksPath: true, allowUnsafeFsMonitor: true },
+      // The caller's own allowlist entries survive alongside ours.
+      allowEnvironment: expect.arrayContaining([
+        'GIT_DIR',
+        'GIT_ALLOW_PROTOCOL',
+      ]),
     });
   });
 
@@ -72,12 +79,14 @@ describe('loadSimpleGit', () => {
       baseDir: '/repo',
       config: ['core.fsmonitor=', 'log.showSignature=false'],
       unsafe: { allowUnsafeFsMonitor: true },
+      allowEnvironment: expect.arrayContaining(['GIT_ALLOW_PROTOCOL']),
     });
 
     guarded();
     expect(simpleGit).toHaveBeenLastCalledWith({
       config: ['core.fsmonitor=', 'log.showSignature=false'],
       unsafe: { allowUnsafeFsMonitor: true },
+      allowEnvironment: expect.arrayContaining(['GIT_ALLOW_PROTOCOL']),
     });
   });
 
@@ -99,6 +108,7 @@ describe('loadSimpleGit', () => {
     expect(simpleGit).toHaveBeenCalledWith('/repo', {
       config: ['core.fsmonitor=', 'log.showSignature=false'],
       unsafe: { allowUnsafeFsMonitor: true },
+      allowEnvironment: expect.arrayContaining(['GIT_ALLOW_PROTOCOL']),
     });
   });
 

@@ -25,10 +25,7 @@ const EXPLICIT_BREAKPOINT_COUNT = 2;
 export function supportsOpenAIPrefixCaching(
   contentGeneratorConfig: ContentGeneratorConfig,
 ): boolean {
-  return (
-    contentGeneratorConfig.authType === AuthType.USE_OPENAI ||
-    contentGeneratorConfig.authType === AuthType.QWEN_OAUTH
-  );
+  return contentGeneratorConfig.authType === AuthType.USE_OPENAI;
 }
 
 export function isOfficialOpenAIEndpoint(

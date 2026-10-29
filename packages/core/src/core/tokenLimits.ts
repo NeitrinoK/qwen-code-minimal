@@ -262,6 +262,15 @@ const PATTERNS: Array<[RegExp, TokenCount]> = [
   // Commercial API models (1,000,000 context)
   [/^qwen3-coder-plus/, LIMITS['1m']],
   [/^qwen3-coder-flash/, LIMITS['1m']],
+  // Open-weights `qwen3.<minor>-<params>B` builds (e.g. Qwen3.8-27B) are 256K
+  // native and must be matched BEFORE the commercial rule below, which would
+  // otherwise claim 1M for them. The distinction is the parameter-count suffix:
+  // `qwen3.5-plus` is Alibaba's hosted 1M API model, `qwen3.8-27b` is a
+  // self-hosted checkpoint. Getting this wrong is not cosmetic — the value
+  // feeds the auto-compaction threshold and the output clamp, so a 1M guess
+  // against a 262144 backend means compression can never fire before the
+  // provider starts rejecting requests.
+  [/^qwen3\.\d+-\d+b/, LIMITS['256k']],
   [/^qwen3\.\d/, LIMITS['1m']],
   [/^qwen-plus-latest$/, LIMITS['1m']],
   [/^qwen-flash-latest$/, LIMITS['1m']],

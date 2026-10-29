@@ -58,12 +58,6 @@ export default tseslint.config(
     ignores: [
       'node_modules/*',
       'packages/**/dist/**',
-      'packages/web-templates/src/generated/**',
-      // Generated UTS #39 confusables table (6.5k-entry literal): the
-      // type-aware rules OOM the eslint heap on it, and generated data
-      // has no idiom to enforce. Regenerate via
-      // packages/web-shell/scripts/generate-confusables.mjs.
-      'packages/web-shell/client/utils/unicodeConfusables.ts',
       'integrations/**/dist/**',
       'bundle/**',
       'package/bundle/**',
@@ -75,11 +69,6 @@ export default tseslint.config(
       'docs-site/out/**',
       '.qwen/**',
       'scripts/codemod/fixtures/**', // codemod test data; intentionally non-idiomatic ink input/output
-      'packages/desktop/runtime/**',
-      'packages/core/src/skills/bundled/browser-use/runtime/**',
-      'packages/desktop/src-tauri/target/**',
-      'packages/live-host/**', // standalone Electron app with its own Node test conventions
-      'packages/cua-driver/**', // vendored trycua/cua driver (Rust + scripts); not qwen-code TS
       'packages/mobile-mcp/**', // vendored mobile-next/mobile-mcp; has own eslint config
     ],
   },
@@ -254,30 +243,12 @@ export default tseslint.config(
     files: [
       'packages/**/src/**/*.{ts,tsx}',
       'integrations/**/src/**/*.{ts,tsx}',
-      // web-shell is published and keeps its shipped sources in client/, not
-      // src/, so the globs above reach none of it.
-      'packages/web-shell/client/**/*.{ts,tsx}',
     ],
     ignores: extraneousDependencyTestFiles,
     rules: {
       'import/no-extraneous-dependencies': [
         'error',
         extraneousDependencyOptions,
-      ],
-    },
-  },
-  {
-    // export-html and insight carry a package.json only for "type" and their
-    // build script; web-templates declares what they import.
-    files: ['packages/web-templates/src/**/*.{ts,tsx}'],
-    ignores: extraneousDependencyTestFiles,
-    rules: {
-      'import/no-extraneous-dependencies': [
-        'error',
-        {
-          ...extraneousDependencyOptions,
-          packageDir: `${import.meta.dirname}/packages/web-templates`,
-        },
       ],
     },
   },
@@ -348,88 +319,6 @@ export default tseslint.config(
     },
   },
   {
-    files: [
-      'packages/web-shell/client/**/*.{ts,tsx}',
-      'packages/web-shell/*.config.ts',
-    ],
-    plugins: {
-      import: importPlugin,
-    },
-    settings: {
-      'import/resolver': {
-        node: true,
-      },
-    },
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        ...globals.es2021,
-        ...globals.node,
-      },
-    },
-    rules: {
-      'react/prop-types': 'off',
-      '@typescript-eslint/consistent-type-imports': [
-        'error',
-        { disallowTypeAnnotations: false },
-      ],
-      '@typescript-eslint/no-explicit-any': 'error',
-      '@typescript-eslint/no-unused-vars': [
-        'error',
-        {
-          argsIgnorePattern: '^_',
-          varsIgnorePattern: '^_',
-          caughtErrorsIgnorePattern: '^_',
-        },
-      ],
-      'no-console': ['error', { allow: ['warn', 'error'] }],
-      'no-debugger': 'error',
-      'object-shorthand': 'error',
-      'prefer-const': ['error', { destructuring: 'all' }],
-    },
-  },
-  {
-    files: ['packages/web-shell/client/daemon/**/*.{ts,tsx}'],
-    rules: {
-      'no-console': ['error', { allow: ['debug', 'warn', 'error'] }],
-    },
-  },
-  {
-    files: [
-      'packages/web-shell/client/**/*.test.{ts,tsx}',
-      'packages/web-shell/client/test/**/*.{ts,tsx}',
-    ],
-    plugins: {
-      vitest,
-    },
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        ...globals.es2021,
-        ...globals.vitest,
-      },
-    },
-    rules: {
-      ...vitest.configs.recommended.rules,
-      'vitest/expect-expect': 'off',
-      'vitest/no-commented-out-tests': 'off',
-      'no-console': 'off',
-    },
-  },
-  {
-    files: ['packages/web-shell/client/e2e/**/*.{ts,tsx}'],
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        ...globals.es2021,
-        ...globals.node,
-      },
-    },
-    rules: {
-      'no-console': 'off',
-    },
-  },
-  {
     files: ['packages/core/src/**/*.ts'],
     ignores: [
       'packages/core/src/config/config.ts',
@@ -487,6 +376,10 @@ export default tseslint.config(
       'vitest/expect-expect': 'off',
       'vitest/no-commented-out-tests': 'off',
       'no-console': 'off', // Allow console in tests
+      // vitest 4 cannot `new` an arrow-function mock, so class/constructor
+      // mocks must use `function () { return obj; }`. Exempt tests from
+      // prefer-arrow-callback so the auto-fixer doesn't revert those.
+      'prefer-arrow-callback': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',
         {
@@ -506,14 +399,8 @@ export default tseslint.config(
       'packages/*/scripts/**/*.js',
       'packages/*/scripts/**/*.mjs',
       'packages/*/build.mjs',
-      // web-templates' export-html template build scripts also run with `node`.
-      'packages/*/src/export-html/*.mjs',
       // Verification reproducer scripts under docs/ also run with `node`.
       'docs/**/*.mjs',
-      // Plan C CDP-tunnel acceptance harness (issue #5626) runs with `node`.
-      'packages/cli/src/serve/cdp-tunnel/acceptance/**/*.mjs',
-      // Desktop skill helper scripts also run with `node`.
-      'packages/desktop/.agents/skills/**/scripts/**/*.mjs',
     ],
     languageOptions: {
       globals: {
@@ -557,50 +444,9 @@ export default tseslint.config(
       },
     },
   },
-  {
-    files: ['packages/desktop/bootstrap/**/*.js'],
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-      },
-    },
-  },
-
-  // The VS Code companion renders through @qwen-code/web-shell; the legacy
-  // @qwen-code/webui surface must not re-enter the extension bundle.
-  {
-    files: ['packages/vscode-ide-companion/src/**/*.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['@qwen-code/webui', '@qwen-code/webui/*'],
-              message:
-                'vscode-ide-companion must render through @qwen-code/web-shell; do not re-introduce @qwen-code/webui.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
   // ==================== no-console allowlist ====================
   // The following files/packages are allowed to use console.*
 
-  // VS Code IDE companion - out of scope for no-console rule
-  {
-    files: ['packages/vscode-ide-companion/**/*.ts', 'packages/vscode-ide-companion/**/*.tsx', 'packages/vscode-ide-companion/**/*.js'],
-    rules: { 'no-console': 'off' },
-  },
-  // Chrome extension (chrome-extension) - the MV3 background service
-  // worker and content scripts run in the browser with no stdio; console is
-  // the only logging / debugging channel available there.
-  {
-    files: ['packages/chrome-extension/**/*.ts', 'packages/chrome-extension/**/*.tsx'],
-    rules: { 'no-console': 'off' },
-  },
   // Specific CLI files that intentionally wrap console usage
   {
     files: [
@@ -608,46 +454,6 @@ export default tseslint.config(
       'packages/cli/src/utils/stdioHelpers.ts',            // wraps console.clear()
     ],
     rules: { 'no-console': 'off' },
-  },
-  // Specific esbuild configs not covered by scripts pattern
-  {
-    files: ['packages/vscode-ide-companion/esbuild.js'],
-    languageOptions: {
-      globals: {
-        ...globals.node,
-        process: 'readonly',
-        console: 'readonly',
-      },
-    },
-    rules: {
-      'no-restricted-syntax': 'off',
-      '@typescript-eslint/no-require-imports': 'off',
-      'no-console': 'off',
-    },
-  },
-  // Settings for web-templates assets
-  {
-    files: [
-      'packages/web-templates/src/**/*.{js,jsx,ts,tsx}',
-      'packages/web-templates/*.mjs',
-    ],
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        ...globals.node,
-      },
-      parserOptions: {
-        ecmaFeatures: {
-          jsx: true,
-        },
-      },
-    },
-    rules: {
-      'react/react-in-jsx-scope': 'off',
-      'react/prop-types': 'off',
-      'no-console': 'off',
-      'no-undef': 'off',
-    },
   },
   // Prettier config must be last
   prettierConfig,

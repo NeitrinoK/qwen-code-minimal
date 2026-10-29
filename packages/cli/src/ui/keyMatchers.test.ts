@@ -71,6 +71,7 @@ describe('keyMatchers', () => {
     [Command.EXIT]: (key: Key) => key.ctrl && key.name === 'd',
     [Command.SHOW_MORE_LINES]: (key: Key) => key.ctrl && key.name === 's',
     [Command.RETRY_LAST]: (key: Key) => key.ctrl && key.name === 'y',
+    [Command.TOGGLE_COMPACT_MODE]: (key: Key) => key.ctrl && key.name === 'o',
     [Command.TOGGLE_RENDER_MODE]: (key: Key) => key.meta && key.name === 'm',
     [Command.PROMOTE_SHELL_TO_BACKGROUND]: (key: Key) =>
       key.ctrl && key.name === 'b',
@@ -98,8 +99,9 @@ describe('keyMatchers', () => {
     [Command.PAGE_DOWN]: (key: Key) => key.name === 'pagedown',
     [Command.SCROLL_HOME]: (key: Key) => key.ctrl && key.name === 'home',
     [Command.SCROLL_END]: (key: Key) => key.ctrl && key.name === 'end',
+    // Alt+T only: this fork reserves Ctrl+O for TOGGLE_COMPACT_MODE.
     [Command.TOGGLE_THINKING_EXPANDED]: (key: Key) =>
-      (key.ctrl && key.name === 'o') || (key.meta && key.name === 't'),
+      key.meta && key.name === 't',
   };
 
   // Test data for each command with positive and negative test cases
@@ -465,15 +467,14 @@ describe('keyMatchers', () => {
     },
     {
       command: Command.TOGGLE_THINKING_EXPANDED,
-      positive: [
-        createKey('t', { meta: true }),
-        createKey('o', { ctrl: true }),
-      ],
+      positive: [createKey('t', { meta: true })],
       negative: [
         createKey('t'),
         createKey('t', { ctrl: true }),
         createKey('o'),
         createKey('o', { meta: true }),
+        // Ctrl+O is TOGGLE_COMPACT_MODE in this fork, not thinking-expand.
+        createKey('o', { ctrl: true }),
       ],
     },
   ];

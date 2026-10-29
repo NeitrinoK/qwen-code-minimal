@@ -25,7 +25,6 @@ import { InstalledTab } from './tabs/InstalledTab.js';
 import { SourcesTab } from './tabs/SourcesTab.js';
 import { ConsentPrompt } from '../ConsentPrompt.js';
 import { SettingInputPrompt } from '../SettingInputPrompt.js';
-import { PluginChoicePrompt } from '../PluginChoicePrompt.js';
 
 export interface StatusMessage {
   type: 'info' | 'success' | 'warning' | 'error';
@@ -65,7 +64,6 @@ export function ExtensionsManagerDialog({
     extensionsUpdateState,
     confirmUpdateExtensionRequests,
     settingInputRequests,
-    pluginChoiceRequests,
     commandContext,
   } = useUIState();
   const { columns } = useTerminalSize();
@@ -81,9 +79,7 @@ export function ExtensionsManagerDialog({
   // reload signal that refreshes the Installed tab after an install.)
   const consentRequest = confirmUpdateExtensionRequests?.[0];
   const settingRequest = settingInputRequests?.[0];
-  const pluginChoiceRequest = pluginChoiceRequests?.[0];
-  const hasPendingRequest =
-    !!consentRequest || !!settingRequest || !!pluginChoiceRequest;
+  const hasPendingRequest = !!consentRequest || !!settingRequest;
 
   const [activeTab, setActiveTab] = useState<ExtensionsTab>(
     initialTab ?? EXTENSIONS_TABS.INSTALLED,
@@ -200,15 +196,6 @@ export function ExtensionsManagerDialog({
           sensitive={settingRequest.sensitive}
           onSubmit={settingRequest.onSubmit}
           onCancel={settingRequest.onCancel}
-          terminalWidth={boxWidth}
-        />
-      ) : pluginChoiceRequest ? (
-        <PluginChoicePrompt
-          key={pluginChoiceRequest.marketplaceName}
-          marketplaceName={pluginChoiceRequest.marketplaceName}
-          plugins={pluginChoiceRequest.plugins}
-          onSelect={pluginChoiceRequest.onSelect}
-          onCancel={pluginChoiceRequest.onCancel}
           terminalWidth={boxWidth}
         />
       ) : null}

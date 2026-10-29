@@ -155,6 +155,29 @@ const FILE_READ_WINDOW = 15;
 // Action stagnation tracking
 const STAGNATION_THRESHOLD = 8;
 
+// Numeric pagination-cursor arg names. When the same tool is called again with
+// one of these strictly larger than the previous call, it is forward progress
+// (paginating a large resource), not action stagnation — so it must not feed
+// the sameNameStreak. String/opaque cursors are intentionally excluded.
+//
+// Trade-off: this keys off generic argument names, not a tool-declared
+// pagination signal, so it is deliberately a bit more permissive than "provably
+// genuine pagination" — an agent that appends an ever-increasing `offset` to
+// otherwise-useless repeated calls would dodge *this* heuristic. That is
+// acceptable: the non-negotiable `TURN_TOOL_CALL_CAP` backstop still hard-stops
+// the turn regardless of loop-detection config, and the threat model here is a
+// confused model, not an adversary. Real forward progress should not false-halt.
+const PAGINATION_CURSOR_KEYS = [
+  'offset',
+  'start',
+  'skip',
+  'page',
+  'from',
+  'position',
+  'start_byte',
+  'byte_offset',
+] as const;
+
 // Similar shell inspection commands are precise enough to guard always-on
 // when the model keeps rewriting overview-style repository checks instead of
 // making progress. Use the same threshold as the heuristic action-stagnation
@@ -331,6 +354,7 @@ export class LoopDetectionService {
   // the model keeps calling one tool with varying arguments.
   private sameNameStreak = 0;
   private lastSeenToolName: string | null = null;
+  private lastSeenToolArgs: object | null = null;
 
   // Always-on shell inspection stagnation tracking. This is narrower than
   // action stagnation: it only covers overview-style git inspection commands
@@ -1519,11 +1543,35 @@ export class LoopDetectionService {
     // checkToolCallLoop which requires identical args; this detector catches
     // "thrashing" where the same tool is called with varying arguments.
     if (this.lastSeenToolName === toolCall.name) {
-      this.sameNameStreak++;
+      if (this.isPaginationProgress(this.lastSeenToolArgs, toolCall.args)) {
+        // Advancing pagination cursor = forward progress, not stagnation.
+        this.sameNameStreak = 1;
+      } else {
+        this.sameNameStreak++;
+      }
     } else {
       this.lastSeenToolName = toolCall.name;
       this.sameNameStreak = 1;
     }
+    this.lastSeenToolArgs = toolCall.args;
+  }
+
+  /**
+   * True when `next` advances a numeric pagination cursor beyond `prev` for the
+   * same tool — i.e. the model is paginating forward (progress), not thrashing.
+   */
+  private isPaginationProgress(prev: object | null, next: object): boolean {
+    if (!prev) return false;
+    const p = prev as Record<string, unknown>;
+    const n = next as Record<string, unknown>;
+    for (const key of PAGINATION_CURSOR_KEYS) {
+      const a = p[key];
+      const b = n[key];
+      if (typeof a === 'number' && typeof b === 'number' && b > a) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1700,6 +1748,7 @@ export class LoopDetectionService {
     this.recentToolCalls = [];
     this.sameNameStreak = 0;
     this.lastSeenToolName = null;
+    this.lastSeenToolArgs = null;
     this.hasSeenNonReadTool = false;
     this.lastLoopType = null;
     this.globalToolCallCounts.clear();

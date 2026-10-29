@@ -11,11 +11,19 @@ import type { Config } from '@qwen-code/qwen-code-core';
 
 describe('PlanEmitter', () => {
   let mockContext: SessionContext;
-  let sendUpdateSpy: ReturnType<typeof vi.fn>;
+  // Param typed `any` (not SessionUpdate) so `.mock.calls[0][0]` stays loosely
+  // typed for the ad-hoc property reads in the assertions below.
+  let sendUpdateSpy: ReturnType<
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    typeof vi.fn<(update: any) => Promise<void>>
+  >;
   let emitter: PlanEmitter;
 
   beforeEach(() => {
-    sendUpdateSpy = vi.fn().mockResolvedValue(undefined);
+    sendUpdateSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .fn<(update: any) => Promise<void>>()
+      .mockResolvedValue(undefined);
     mockContext = {
       sessionId: 'test-session-id',
       config: {} as Config,

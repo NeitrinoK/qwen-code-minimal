@@ -4,7 +4,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  vi,
+  type Mock,
+} from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,7 +42,7 @@ const failingPublisher = (err: unknown): ArtifactPublisher => ({
 describe('ArtifactTool', () => {
   let workdir: string;
   let outDir: string;
-  let openSpy: ReturnType<typeof vi.fn>;
+  let openSpy: Mock<UrlOpener>;
   let tool: ArtifactTool;
 
   const makeConfig = (): Config =>

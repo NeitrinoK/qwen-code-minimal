@@ -197,9 +197,6 @@ const SETTINGS_DIALOG_ORDER: readonly string[] = [
 
   // System Settings - rarely changed
   'general.disableAutoUpdate',
-
-  // Privacy
-  'privacy.usageStatisticsEnabled',
 ] as const;
 
 export const MAX_SETTING_STRING_VALUE_LENGTH = 1024;
@@ -282,10 +279,8 @@ export const WORKSPACE_RESTRICTED_SETTINGS = [
   { section: 'tools', key: 'executionSandbox' },
   { section: 'tools', key: 'workflowsEnabled' },
   { section: 'security', key: 'allowPrivateNetworkHooks' },
-  { section: 'security', key: 'allowedInsecureVoiceBaseUrls' },
   { section: 'goals', key: 'modelProposed' },
   { section: 'outboundCorrelation', key: 'allowDynamicHeaderValues' },
-  { section: 'serve', key: 'tokenQr' },
 ] as const satisfies ReadonlyArray<{
   readonly section: keyof Settings;
   readonly key: string;
@@ -300,6 +295,7 @@ export const WORKSPACE_RESTRICTED_SETTINGS = [
 export const WORKSPACE_RESTRICTED_ROOT_SETTINGS = [
   'advisorModel',
   'advisorMaxUses',
+  'hub',
 ] as const;
 
 /**

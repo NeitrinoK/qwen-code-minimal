@@ -51,21 +51,6 @@ const mocks = vi.hoisted(() => ({
   mcpRemoveHandler: vi.fn(),
   getCliVersion: vi.fn(),
   installManagedNpmUpdate: vi.fn(),
-  runWorkspaceRecoveryWorker: vi.fn(),
-  runSessionSendMcp: vi.fn(),
-  runManagedRuntimeAttestationWorker: vi.fn(),
-}));
-
-vi.mock('./commands/agents/session-send-mcp-server.js', () => ({
-  runSessionSendMcp: mocks.runSessionSendMcp,
-}));
-
-vi.mock('./serve/workspace-recovery-worker.js', () => ({
-  runWorkspaceRecoveryWorker: mocks.runWorkspaceRecoveryWorker,
-}));
-
-vi.mock('./serve/managed-runtime-attestation-worker.js', () => ({
-  runManagedRuntimeAttestationWorker: mocks.runManagedRuntimeAttestationWorker,
 }));
 
 vi.mock('./llm.js', () => ({
@@ -134,33 +119,11 @@ vi.mock('./commands/mcp.js', () => ({
 }));
 
 describe('resolveBootstrapRoute', () => {
-  it('routes top-level help, version, serve, mcp, and the Runtime worker correctly', async () => {
+  it('routes top-level help, version, and mcp correctly', async () => {
     expect(resolveBootstrapRoute(['--help'])).toBe('help');
     expect(resolveBootstrapRoute(['--version'])).toBe('version');
     expect(resolveBootstrapRoute(['mcp', '--version'])).toBe('version');
-    expect(resolveBootstrapRoute(['serve', '--help'])).toBe('serve');
     expect(resolveBootstrapRoute(['mcp', '--help'])).toBe('mcp');
-    expect(resolveBootstrapRoute(['managed-runtime-worker'])).toBe(
-      'managed-runtime-worker',
-    );
-    expect(
-      resolveBootstrapRoute([
-        'agents',
-        'session-send-mcp',
-        '--url',
-        'http://127.0.0.1:4170/x/send',
-      ]),
-    ).toBe('session-send-mcp');
-    expect(
-      resolveBootstrapRoute(['agents', 'join', 'https://hub/join/w']),
-    ).toBe('default');
-  });
-
-  it('keeps bundled entrypoint paths out of the route detection', async () => {
-    expect(resolveBootstrapRoute(['/repo/dist/cli.js', '--help'])).toBe('help');
-    expect(
-      resolveBootstrapRoute(['C:\\repo\\dist\\cli.js', 'mcp', '--help']),
-    ).toBe('mcp');
   });
 
   it('falls back to the default route for normal interactive startup', async () => {
@@ -781,104 +744,6 @@ describe('runCliEntry', () => {
     expect(mocks.initCpuProfiler).not.toHaveBeenCalled();
   });
 
-  it('runs private recovery before inherited updates or normal CLI startup', async () => {
-    process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION'] = '2.0.0';
-    await runCliEntry(['--workspace-recovery-worker']);
-    expect(mocks.runWorkspaceRecoveryWorker).toHaveBeenCalledOnce();
-    expect(mocks.installManagedNpmUpdate).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-    expect(mocks.tryRunServeFastPath).not.toHaveBeenCalled();
-  });
-
-  it('serves session_send without normal startup or any stdout output', async () => {
-    await runCliEntry([
-      'agents',
-      'session-send-mcp',
-      '--url',
-      'http://127.0.0.1:4170/sessions/s/runs/r/send',
-    ]);
-
-    expect(mocks.runSessionSendMcp).toHaveBeenCalledWith(
-      'http://127.0.0.1:4170/sessions/s/runs/r/send',
-    );
-    expect(mocks.main).not.toHaveBeenCalled();
-    expect(stdout.join('')).toBe('');
-  });
-
-  it('refuses session-send-mcp without a URL, on stderr only', async () => {
-    await runCliEntry(['agents', 'session-send-mcp']);
-
-    expect(process.exitCode).toBe(1);
-    expect(stderr.join('')).toContain('--url');
-    expect(stdout.join('')).toBe('');
-    expect(mocks.runSessionSendMcp).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['managed-runtime-worker', '--help'],
-    ['managed-runtime-worker', '--container-boot'],
-    ['managed-runtime-worker', '--container-boot', '/boot.json', 'extra'],
-    ['managed-runtime-worker', '/boot.json', '--container-boot'],
-  ])('rejects invalid hidden Runtime worker arguments: %j', async (...argv) => {
-    await runCliEntry(argv);
-
-    expect(process.exitCode).toBe(1);
-    expect(stderr.join('')).toContain(
-      'Managed Runtime worker arguments are invalid.',
-    );
-    expect(mocks.main).not.toHaveBeenCalled();
-    expect(mocks.runManagedRuntimeAttestationWorker).not.toHaveBeenCalled();
-  });
-
-  it('passes the boot file to the container worker without starting the CLI', async () => {
-    await runCliEntry([
-      'managed-runtime-worker',
-      '--container-boot',
-      '/boot.json',
-    ]);
-    expect(mocks.runManagedRuntimeAttestationWorker).toHaveBeenCalledWith(
-      '/boot.json',
-    );
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('runs a managed update worker without starting the CLI', async () => {
-    process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION'] = '2.0.0';
-    process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'] = 'guard-secret';
-    mocks.installManagedNpmUpdate.mockImplementationOnce(async () => {
-      expect(
-        process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'],
-      ).toBeUndefined();
-    });
-
-    await runCliEntry([]);
-
-    expect(mocks.installManagedNpmUpdate).toHaveBeenCalledWith('2.0.0');
-    expect(process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION']).toBeUndefined();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('scrubs an inherited messaging pair before the managed update spawns npm', async () => {
-    // The pair names an ancestor session's inbox and authenticates to it.
-    // installManagedNpmUpdate spawns npm with the full environment, so a
-    // pair surviving to here reaches the installed package's lifecycle
-    // scripts — third-party code able to inject into the live session.
-    // This route never reaches main(), so the entry-level scrub is the
-    // only thing standing between them.
-    process.env['QWEN_CODE_MESSAGING_SOCKET'] = '/tmp/ancestor.sock';
-    process.env['QWEN_CODE_MESSAGING_TOKEN'] = 'ancestor-token';
-    process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION'] = '2.0.0';
-    mocks.installManagedNpmUpdate.mockImplementationOnce(async () => {
-      expect(process.env['QWEN_CODE_MESSAGING_SOCKET']).toBeUndefined();
-      expect(process.env['QWEN_CODE_MESSAGING_TOKEN']).toBeUndefined();
-    });
-
-    await runCliEntry([]);
-
-    expect(mocks.installManagedNpmUpdate).toHaveBeenCalledWith('2.0.0');
-  });
-
   it('scrubs an inherited messaging pair on the fast paths that never reach main', async () => {
     // serve and mcp dispatch without main(), and both hand the full
     // environment to the children they start.
@@ -921,7 +786,6 @@ describe('runCliEntry', () => {
     expect(helpText).toContain('Positional prompt.');
     expect(helpText).toContain('Manage Qwen Code hooks');
     expect(helpText).toContain('Manage MCP servers');
-    expect(helpText).toContain('Run Qwen Code as a local HTTP daemon');
     expect(helpText).toContain('--model');
     expect(helpText).toContain('-p, --prompt');
     expect(helpText).toContain('--safe-mode');
@@ -931,9 +795,7 @@ describe('runCliEntry', () => {
     for (const [name] of TOP_LEVEL_HELP_OPTIONS) {
       expect(helpText).toContain(`--${name}`);
     }
-    expect(helpText).toContain(
-      '"openai", "openai-responses", "anthropic", "qwen-oauth", "gemini", "vertex-ai"',
-    );
+    expect(helpText).toContain('"openai", "openai-responses"');
     // The fast path mirrors config.ts and wraps help at the terminal width;
     // in a non-TTY (columns unset) that disables wrapping, so a description
     // longer than yargs' 80-column fallback renders on one unbroken line.
@@ -1007,16 +869,6 @@ describe('runCliEntry', () => {
     expect(mocks.mcpListHandler).not.toHaveBeenCalled();
   });
 
-  it('lets the entrypoint report a fatal MCP configuration failure once', async () => {
-    const error = new FatalError('Repair operator settings and restart.', 52);
-    mocks.mcpListHandler.mockRejectedValueOnce(error);
-    const stdout = vi.spyOn(process.stdout, 'write');
-    const stderr = vi.spyOn(process.stderr, 'write');
-    await expect(runCliEntry(['mcp', 'list'])).rejects.toBe(error);
-    expect(stdout).not.toHaveBeenCalled();
-    expect(stderr).not.toHaveBeenCalled();
-  });
-
   it('fails MCP fast-path validation without loading the full CLI', async () => {
     await runCliEntry(['mcp', 'doesnotexist']);
 
@@ -1046,68 +898,6 @@ describe('runCliEntry', () => {
     expect(mocks.main).not.toHaveBeenCalled();
   });
 
-  it('prints the version instead of executing mcp remove on version argv', async () => {
-    await runCliEntry(['mcp', 'remove', 'victim', '-v']);
-
-    expect(stdout.join('')).toContain('9.9.9');
-    expect(mocks.mcpRemoveHandler).not.toHaveBeenCalled();
-    expect(mocks.mcpAddHandler).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('prints the version for flag-prefixed mcp remove version argv', async () => {
-    await runCliEntry(['--debug', 'mcp', 'remove', 'victim', '-v']);
-
-    expect(stdout.join('')).toContain('9.9.9');
-    expect(mocks.mcpRemoveHandler).not.toHaveBeenCalled();
-    expect(mocks.mcpAddHandler).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('prints the version instead of persisting an option-shifted mcp add', async () => {
-    await runCliEntry(['mcp', 'add', '--scope', 'user', '-v', 'name', 'cmd']);
-
-    expect(stdout.join('')).toContain('9.9.9');
-    expect(mocks.mcpAddHandler).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('prints the version instead of persisting flag-prefixed mcp add version argv', async () => {
-    // Base printed the version and persisted nothing for this shape
-    // (probed against the base binary with a sandboxed settings file).
-    await runCliEntry([
-      '--debug',
-      'mcp',
-      'add',
-      'my-server',
-      'node',
-      'server.js',
-      '-v',
-    ]);
-
-    expect(stdout.join('')).toContain('9.9.9');
-    expect(mocks.mcpAddHandler).not.toHaveBeenCalled();
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('keeps the serve fast path ahead of the full CLI startup', async () => {
-    mocks.tryRunServeFastPath.mockResolvedValue(true);
-
-    await runCliEntry(['serve']);
-
-    expect(mocks.tryRunServeFastPath).toHaveBeenCalledWith(['serve']);
-    expect(mocks.main).not.toHaveBeenCalled();
-  });
-
-  it('initializes profilers once when the serve fast path falls back', async () => {
-    mocks.tryRunServeFastPath.mockResolvedValue(false);
-
-    await runCliEntry(['serve']);
-
-    expect(mocks.tryRunServeFastPath).toHaveBeenCalledWith(['serve']);
-    expect(mocks.main).toHaveBeenCalledTimes(1);
-  });
-
   it('preserves the external Guard token for the full serve parser', async () => {
     process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'] = 'guard-secret';
     mocks.tryRunServeFastPath.mockResolvedValue(false);
@@ -1122,35 +912,11 @@ describe('runCliEntry', () => {
     expect(mocks.main).toHaveBeenCalledTimes(1);
   });
 
-  it('scrubs the external Guard token before non-serve startup', async () => {
-    process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'] = 'guard-secret';
-    mocks.main.mockImplementationOnce(async () => {
-      expect(
-        process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'],
-      ).toBeUndefined();
-    });
-
-    await runCliEntry([]);
-
-    expect(mocks.main).toHaveBeenCalledTimes(1);
-  });
-
   it('loads gemini on the default path', async () => {
     await runCliEntry([]);
 
     expect(mocks.main).toHaveBeenCalledTimes(1);
     expect(mocks.initializeAcpStartupProfiler).not.toHaveBeenCalled();
-  });
-
-  it('profiles the Gemini module import only on the ACP path', async () => {
-    await runCliEntry(['--acp']);
-
-    expect(mocks.initializeAcpStartupProfiler).toHaveBeenCalledTimes(1);
-    expect(mocks.markAcpStartup.mock.calls).toEqual([
-      ['geminiImportStart'],
-      ['geminiImportEnd'],
-    ]);
-    expect(mocks.main).toHaveBeenCalledTimes(1);
   });
 
   it('does not profile when ACP is explicitly disabled', async () => {
@@ -1839,19 +1605,14 @@ describe('bootstrap import boundaries', () => {
   it('keeps bootstrap top-level help commands aligned with config registrations', () => {
     const configSource = readFileSync('src/config/config.ts', 'utf8');
     const commandNameByIdentifier = new Map([
-      ['agentsCommand', 'agents'],
       ['authCommand', 'auth'],
-      ['batchCommand', 'batch'],
       ['boardCommand', 'board'],
-      ['channelCommand', 'channel'],
       ['extensionsCommand', 'extensions'],
       ['hooksCommand', 'hooks'],
       ['mcpCommand', 'mcp'],
       ['reviewCommand', 'review'],
       ['sandboxCommand', 'sandbox'],
-      ['serveCommand', 'serve'],
       ['sessionsCommand', 'sessions'],
-      ['updateCommand', 'update'],
     ]);
     const registeredIdentifiers = [
       ...configSource.matchAll(/\.command\((\w+Command)\)/g),

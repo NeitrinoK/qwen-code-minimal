@@ -17,7 +17,6 @@ import { useVimModeState } from '../contexts/VimModeContext.js';
 import { useConfig } from '../contexts/ConfigContext.js';
 import { theme } from '../semantic-colors.js';
 import { StreamingState } from '../types.js';
-import { FeedbackDialog } from '../FeedbackDialog.js';
 import { t } from '../../i18n/index.js';
 
 interface ComposerProps {
@@ -113,8 +112,6 @@ export const Composer = ({ footerRef }: ComposerProps) => {
 
       <QueuedMessageDisplay messageQueue={uiState.messageQueue} />
 
-      {uiState.isFeedbackDialogOpen && <FeedbackDialog />}
-
       {uiState.isInputActive && (
         <InputPrompt
           buffer={uiState.buffer}
@@ -146,7 +143,6 @@ export const Composer = ({ footerRef }: ComposerProps) => {
           promptSuggestion={uiState.promptSuggestion}
           onPromptSuggestionDismiss={uiState.abortPromptSuggestion}
           clipboardUnavailableShownRef={clipboardUnavailableShownRef}
-          voiceMicWarnedStatusRef={uiState.voiceMicWarnedStatusRef}
         />
       )}
 

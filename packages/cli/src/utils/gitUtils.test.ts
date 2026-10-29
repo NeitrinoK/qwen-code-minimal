@@ -13,7 +13,21 @@ import {
   getGitHubRepoInfoAsync,
 } from './gitUtils.js';
 
-vi.mock('node:child_process');
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const execFile = vi.fn();
+  const execSync = vi.fn();
+  return {
+    ...actual,
+    default: {
+      ...(actual as { default?: object }).default,
+      execFile,
+      execSync,
+    },
+    execFile,
+    execSync,
+  };
+});
 
 function mockExecFileStdout(stdout: string): void {
   vi.mocked(child_process.execFile).mockImplementation(((
@@ -49,7 +63,7 @@ describe('isGitHubRepositoryAsync', async () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   it('returns false if the git command fails', async () => {
@@ -126,7 +140,7 @@ describe('getGitHubRepoInfoAsync', async () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   it('throws an error if github repo info cannot be determined', async () => {
@@ -209,7 +223,7 @@ describe('getGitRepoRootAsync', async () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   it('throws an error if git root cannot be determined', async () => {
@@ -240,7 +254,7 @@ describe('getLatestRelease', async () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   it('throws an error if the fetch fails', async () => {

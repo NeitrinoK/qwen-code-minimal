@@ -9,15 +9,12 @@ import {
   redactUrlCredentials,
   getExtensionDisplayName,
   getExtensionDescription,
-  resolveExtensionTelemetryProxy,
-  resolveUsageStatisticsEnabled,
   type Extension,
 } from '@qwen-code/qwen-code-core';
 import { loadSettings, SettingScope } from '../../config/settings.js';
 import {
   requestConsentOrFail,
   requestConsentNonInteractive,
-  requestChoicePluginNonInteractive,
 } from './consent.js';
 import { isWorkspaceTrusted } from '../../config/trustedFolders.js';
 import * as os from 'node:os';
@@ -27,7 +24,6 @@ import { t, getCurrentLanguage } from '../../i18n/index.js';
 
 export async function getExtensionManager(): Promise<ExtensionManager> {
   const workspaceDir = process.cwd();
-  const settings = loadSettings(workspaceDir).merged;
   const extensionManager = new ExtensionManager({
     workspaceDir,
     locale: getCurrentLanguage(),
@@ -35,12 +31,8 @@ export async function getExtensionManager(): Promise<ExtensionManager> {
       null,
       requestConsentNonInteractive,
     ),
-    requestChoicePlugin: requestChoicePluginNonInteractive,
-    isWorkspaceTrusted: isWorkspaceTrusted(settings).isTrusted ?? true,
-    usageStatisticsEnabled: resolveUsageStatisticsEnabled(
-      settings.privacy?.usageStatisticsEnabled,
-    ),
-    proxy: resolveExtensionTelemetryProxy(settings.proxy),
+    isWorkspaceTrusted:
+      isWorkspaceTrusted(loadSettings(workspaceDir).merged).isTrusted ?? true,
   });
   await extensionManager.refreshCache();
   return extensionManager;

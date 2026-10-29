@@ -42,9 +42,6 @@ import { goalCommand } from '../ui/commands/goalCommand.js';
 import { helpCommand } from '../ui/commands/helpCommand.js';
 import { historyCommand } from '../ui/commands/historyCommand.js';
 import { hooksCommand } from '../ui/commands/hooksCommand.js';
-import { ideCommand } from '../ui/commands/ideCommand.js';
-import { importConfigCommand } from '../ui/commands/importConfigCommand.js';
-import { createDebugLogger } from '@qwen-code/qwen-code-core';
 import { initCommand } from '../ui/commands/initCommand.js';
 import { languageCommand } from '../ui/commands/languageCommand.js';
 import { mcpCommand } from '../ui/commands/mcpCommand.js';
@@ -54,12 +51,12 @@ import { memoryCommand } from '../ui/commands/memoryCommand.js';
 import { modelCommand } from '../ui/commands/modelCommand.js';
 import { outputStyleCommand } from '../ui/commands/output-style-command.js';
 import { rememberCommand } from '../ui/commands/rememberCommand.js';
+import { reloadPluginsCommand } from '../ui/commands/reload-plugins-command.js';
 import { planCommand } from '../ui/commands/planCommand.js';
 import { permissionsCommand } from '../ui/commands/permissionsCommand.js';
 import { trustCommand } from '../ui/commands/trustCommand.js';
 import { quitCommand } from '../ui/commands/quitCommand.js';
 import { recapCommand } from '../ui/commands/recapCommand.js';
-import { reloadPluginsCommand } from '../ui/commands/reload-plugins-command.js';
 import { renameCommand } from '../ui/commands/renameCommand.js';
 import { restoreCommand } from '../ui/commands/restoreCommand.js';
 import { resumeCommand } from '../ui/commands/resumeCommand.js';
@@ -72,15 +69,9 @@ import { terminalSetupCommand } from '../ui/commands/terminalSetupCommand.js';
 import { themeCommand } from '../ui/commands/themeCommand.js';
 import { toolsCommand } from '../ui/commands/toolsCommand.js';
 import { vimCommand } from '../ui/commands/vimCommand.js';
-import { voiceCommand } from '../ui/commands/voice-command.js';
 import { setupGithubCommand } from '../ui/commands/setupGithubCommand.js';
-import { insightCommand } from '../ui/commands/insightCommand.js';
-import { learnCommand } from '../ui/commands/learn-command.js';
 import { statuslineCommand } from '../ui/commands/statuslineCommand.js';
 import { lspCommand } from '../ui/commands/lspCommand.js';
-import { updateCommand } from '../ui/commands/update-command.js';
-
-const builtinDebugLogger = createDebugLogger('BUILTIN_COMMAND_LOADER');
 
 /**
  * Loads the core, hard-coded slash commands that are an integral part
@@ -97,30 +88,6 @@ export class BuiltinCommandLoader implements ICommandLoader {
    * @returns A promise that resolves to an array of `SlashCommand` objects.
    */
   async loadCommands(_signal: AbortSignal): Promise<SlashCommand[]> {
-    // Load ideCommand separately with error handling so that a failure
-    // (e.g., platform-specific process detection on Windows) does not
-    // prevent ALL built-in commands from loading.
-    let resolvedIdeCommand: SlashCommand | null = null;
-    try {
-      // `/ide` is interactive-only, and building it walks the process tree
-      // with one `ps` per ancestor; headless and ACP runs would filter it out
-      // after paying for that on the way to their first request. This saves
-      // nothing when `ideMode` is on — `connectIdeForStartup` performs the
-      // same walk earlier, on the awaited startup path.
-      if (
-        !this.config?.getExecutionEnvironment?.() &&
-        !this.config?.getShellExecutionSandbox?.() &&
-        this.config?.isInteractive?.() !== false
-      ) {
-        resolvedIdeCommand = await ideCommand();
-      }
-    } catch (error) {
-      builtinDebugLogger.warn(
-        'Failed to load IDE command:',
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-
     const allDefinitions: Array<SlashCommand | null> = [
       aboutCommand,
       advisorCommand,
@@ -161,11 +128,8 @@ export class BuiltinCommandLoader implements ICommandLoader {
       helpCommand,
       historyCommand,
       hooksCommand,
-      resolvedIdeCommand,
-      importConfigCommand,
       initCommand,
       languageCommand,
-      learnCommand,
       mcpCommand,
       ...(this.config?.isManagedMemoryAvailable()
         ? [dreamCommand, forgetCommand]
@@ -175,12 +139,12 @@ export class BuiltinCommandLoader implements ICommandLoader {
       modelCommand,
       outputStyleCommand,
       rememberCommand,
+      reloadPluginsCommand,
       planCommand,
       permissionsCommand,
       ...(this.config?.getFolderTrust() ? [trustCommand] : []),
       quitCommand,
       recapCommand,
-      reloadPluginsCommand,
       renameCommand,
       restoreCommand(this.config),
       resumeCommand,
@@ -192,11 +156,8 @@ export class BuiltinCommandLoader implements ICommandLoader {
       toolsCommand,
       settingsCommand,
       vimCommand,
-      updateCommand,
-      voiceCommand,
       setupGithubCommand,
       terminalSetupCommand,
-      insightCommand,
       statuslineCommand,
       ...(this.config?.isLspEnabled() ? [lspCommand] : []),
     ];

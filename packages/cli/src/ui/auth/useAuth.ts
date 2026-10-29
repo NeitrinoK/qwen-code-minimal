@@ -19,7 +19,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LoadedSettings } from '../../config/settings.js';
 import { createLoadedSettingsAdapter } from '../../config/loadedSettingsAdapter.js';
-import { useQwenAuth } from '../hooks/useQwenAuth.js';
 import { AuthState, MessageType } from '../types.js';
 import type { HistoryItemWithoutId } from '../types.js';
 import { t } from '../../i18n/index.js';
@@ -47,8 +46,6 @@ export function maskApiKey(apiKey: string): string {
   return `${trimmed.slice(0, 3)}...${trimmed.slice(-4)}`;
 }
 
-export type { QwenAuthState } from '../hooks/useQwenAuth.js';
-
 export type AuthUiState = {
   authError: string | null;
   isAuthDialogOpen: boolean;
@@ -59,7 +56,6 @@ export type AuthUiState = {
     message: string;
     detail?: string;
   } | null;
-  qwenAuthState: ReturnType<typeof useQwenAuth>['qwenAuthState'];
 };
 
 export type AuthController = {
@@ -102,15 +98,9 @@ export const useAuthCommand = (
     detail?: string;
   } | null>(null);
 
-  const { qwenAuthState, cancelQwenAuth } = useQwenAuth(
-    pendingAuthType,
-    isAuthenticating,
-  );
-
   // The dialog also auto-opens at startup when unauthenticated; only a
   // command-opened dialog has an /auth invocation record to pair with.
   const openedViaCommandRef = useRef(false);
-
   // -- Shared helpers -------------------------------------------------------
 
   const onAuthError = useCallback(
@@ -260,9 +250,6 @@ export const useAuthCommand = (
   }, []);
 
   const cancelAuthentication = useCallback(() => {
-    if (isAuthenticating && pendingAuthType === AuthType.QWEN_OAUTH) {
-      cancelQwenAuth();
-    }
     if (isAuthenticating && pendingAuthType) {
       logAuth(config, new AuthEvent(pendingAuthType, 'manual', 'cancelled'));
     }
@@ -270,20 +257,13 @@ export const useAuthCommand = (
     setExternalAuthState(null);
     setIsAuthDialogOpen(true);
     setAuthError(null);
-  }, [isAuthenticating, pendingAuthType, cancelQwenAuth, config]);
+  }, [isAuthenticating, pendingAuthType, config]);
 
   // -- Validate QWEN_DEFAULT_AUTH_TYPE env var on mount --------------------
 
   useEffect(() => {
     const val = process.env['QWEN_DEFAULT_AUTH_TYPE'];
-    const valid = [
-      AuthType.QWEN_OAUTH,
-      AuthType.USE_OPENAI,
-      AuthType.USE_OPENAI_RESPONSES,
-      AuthType.USE_ANTHROPIC,
-      AuthType.USE_GEMINI,
-      AuthType.USE_VERTEX_AI,
-    ];
+    const valid = [AuthType.USE_OPENAI, AuthType.USE_OPENAI_RESPONSES];
     if (val && !valid.includes(val as AuthType)) {
       onAuthError(
         t(
@@ -303,7 +283,6 @@ export const useAuthCommand = (
       isAuthenticating,
       pendingAuthType,
       externalAuthState,
-      qwenAuthState,
     }),
     [
       authError,
@@ -311,7 +290,6 @@ export const useAuthCommand = (
       isAuthenticating,
       pendingAuthType,
       externalAuthState,
-      qwenAuthState,
     ],
   );
 
@@ -343,7 +321,6 @@ export const useAuthCommand = (
     isAuthenticating,
     pendingAuthType,
     externalAuthState,
-    qwenAuthState,
     closeAuthDialog,
     handleProviderSubmit,
     openAuthDialog,

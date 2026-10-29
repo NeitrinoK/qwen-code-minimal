@@ -95,7 +95,7 @@ jobs:
             done
           }
           status=0
-          audit corepack pnpm audit --prod --audit-level high || status=$?
+          audit npm audit --omit=dev --audit-level high || status=$?
           for lockfile in packages/*/package-lock.json; do
             [ -f "$lockfile" ] || continue
             # Covered by the root workspace audit; this vendored lockfile is not installed directly.

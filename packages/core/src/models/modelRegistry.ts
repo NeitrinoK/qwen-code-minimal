@@ -15,13 +15,9 @@ import {
   type ResolvedModelConfig,
   type AvailableModel,
 } from './types.js';
-import { DEFAULT_QWEN_MODEL } from '../config/models.js';
-import { QWEN_OAUTH_MODELS } from './constants.js';
 import { createDebugLogger } from '../utils/debugLogger.js';
 
 const debugLogger = createDebugLogger('MODEL_REGISTRY');
-
-export { QWEN_OAUTH_MODELS } from './constants.js';
 
 /**
  * Validates if a string key is a valid AuthType enum value.
@@ -205,8 +201,6 @@ export class ModelRegistry {
 
   private getDefaultBaseUrl(authType: AuthType): string {
     switch (authType) {
-      case AuthType.QWEN_OAUTH:
-        return 'DYNAMIC_QWEN_OAUTH_BASE_URL';
       case AuthType.USE_OPENAI:
         return DEFAULT_OPENAI_BASE_URL;
       default:
@@ -223,10 +217,7 @@ export class ModelRegistry {
     this.providerProtocolConfig = providerProtocolConfig ?? {};
     this.modelProvidersConfig = modelProvidersConfig;
 
-    // Always register qwen-oauth models (hard-coded, cannot be overridden)
-    this.registerAuthTypeModels(AuthType.QWEN_OAUTH, QWEN_OAUTH_MODELS);
-
-    // Register user-configured models for other providers
+    // Register user-configured models for providers
     this.registerProvidersConfig(modelProvidersConfig);
   }
 
@@ -262,20 +253,6 @@ export class ModelRegistry {
               `(${knownProtocols}) and has no providerProtocol mapping; skipping. ` +
               `Add providerProtocol["${providerId}"] to route it to an SDK protocol.`;
         debugLogger.warn(message);
-        continue;
-      }
-
-      // qwen-oauth uses hard-coded models and cannot be overridden
-      if (protocol === AuthType.QWEN_OAUTH) {
-        if (Array.isArray(models)) {
-          for (const model of models) {
-            resolveModelProtocol(
-              providerId,
-              model,
-              this.providerProtocolConfig,
-            );
-          }
-        }
         continue;
       }
 
@@ -423,15 +400,11 @@ export class ModelRegistry {
 
   /**
    * Get default model for an authType.
-   * For qwen-oauth, returns the coder model.
-   * For others, returns the first configured primary-capable model.
+   * Returns the first configured model.
    */
   getDefaultModelForAuthType(
     authType: AuthType,
   ): ResolvedModelConfig | undefined {
-    if (authType === AuthType.QWEN_OAUTH) {
-      return this.getModel(authType, DEFAULT_QWEN_MODEL);
-    }
     const models = this.modelsByAuthType.get(authType);
     if (!models || models.size === 0) return undefined;
     return Array.from(models.values()).find(
@@ -497,7 +470,6 @@ export class ModelRegistry {
   /**
    * Reload models from updated configuration.
    * Clears existing user-configured models and re-registers from new config.
-   * Preserves hard-coded qwen-oauth models.
    *
    * @param providerProtocolConfig - Updated provider->protocol map. `undefined`
    *   PRESERVES the existing map (so a reload carrying only modelProviders does

@@ -48,6 +48,7 @@ function renderSessionTab(metrics: SessionMetrics) {
       sessionStartTime: new Date(),
       metrics,
       lastPromptTokenCount: 0,
+      basePromptTokenCount: 0,
       promptCount: 1,
     },
     startNewSession: vi.fn(),

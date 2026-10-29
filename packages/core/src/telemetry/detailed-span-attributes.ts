@@ -14,11 +14,10 @@ import { extractLlmContent, stringifyGenAiJson } from './gen-ai-content.js';
 const SHORT_TRUNCATION_SUFFIX = '...[TRUNCATED]';
 const debugLogger = createDebugLogger('GEN_AI_CONTENT');
 
-export function areSensitiveSpanAttributesEnabled(config: Config): boolean {
-  return (
-    isTelemetrySdkInitialized() &&
-    config.getTelemetryIncludeSensitiveSpanAttributes()
-  );
+export function areSensitiveSpanAttributesEnabled(_config: Config): boolean {
+  // Sensitive span attributes are only recorded when telemetry export is
+  // active. Export has been removed, so this is always disabled.
+  return isTelemetrySdkInitialized() && false;
 }
 
 export function truncateContent(
@@ -71,8 +70,10 @@ export function truncateContent(
   };
 }
 
-function getMaxContentSize(config: Config): number {
-  return config.getTelemetrySensitiveSpanAttributeMaxLength();
+function getMaxContentSize(_config: Config): number {
+  // The telemetry sensitive-span config surface was removed; use the former
+  // default inline (sensitive-span collection is disabled anyway).
+  return DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH;
 }
 
 function truncatePrefixedContent(
@@ -161,89 +162,6 @@ function normalizeAgentFinishReason(
     return 'content_filter';
   }
   return reason;
-}
-
-export class AgentOutputMessageCapture {
-  private readonly enabled: boolean;
-  private readonly maxLength: number;
-  private responseText = '';
-  private finishReason: string | undefined;
-  private overflow = false;
-  private committed: { responseText: string; finishReason: string } | undefined;
-
-  constructor(private readonly config: Config) {
-    this.enabled = areSensitiveSpanAttributesEnabled(config);
-    this.maxLength = this.enabled
-      ? config.getTelemetrySensitiveSpanAttributeMaxLength()
-      : 0;
-  }
-
-  beginResponse(): void {
-    if (!this.enabled) return;
-    this.clearResponse();
-    this.committed = undefined;
-  }
-
-  appendText(text: string): void {
-    if (!this.enabled || !text || this.overflow) return;
-    const remaining = this.maxLength - this.responseText.length;
-    if (text.length > remaining) {
-      this.responseText = '';
-      this.overflow = true;
-      this.committed = undefined;
-      return;
-    }
-    this.responseText += text;
-  }
-
-  observeFinishReason(finishReason: string | undefined): void {
-    if (!this.enabled) return;
-    const normalized = normalizeAgentFinishReason(finishReason);
-    if (normalized) this.finishReason = normalized;
-  }
-
-  restartAttempt(preserveText: boolean): void {
-    if (!this.enabled) return;
-    if (!preserveText) {
-      this.clearResponse();
-    } else {
-      this.finishReason = undefined;
-    }
-    this.committed = undefined;
-  }
-
-  commitResponse(hasToolCalls: boolean): void {
-    if (
-      !this.enabled ||
-      hasToolCalls ||
-      this.overflow ||
-      this.responseText.trim().length === 0 ||
-      !this.finishReason
-    ) {
-      this.committed = undefined;
-      return;
-    }
-    this.committed = {
-      responseText: this.responseText,
-      finishReason: this.finishReason,
-    };
-  }
-
-  writeToSpan(span: Span | undefined): void {
-    if (!span || !this.committed) return;
-    addAgentOutputMessageAttributes(
-      this.config,
-      span,
-      this.committed.responseText,
-      this.committed.finishReason,
-    );
-  }
-
-  private clearResponse(): void {
-    this.responseText = '';
-    this.finishReason = undefined;
-    this.overflow = false;
-  }
 }
 
 export function addUserPromptAttributes(

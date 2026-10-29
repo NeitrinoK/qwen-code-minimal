@@ -78,6 +78,7 @@ describe('ITermBackend', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     savedItermSessionId = process.env['ITERM_SESSION_ID'];
     delete process.env['ITERM_SESSION_ID'];
     setupDefaultMocks();

@@ -50,7 +50,6 @@ The custom API key path is currently a dead end inside `/auth`:
 ```text
 /auth
 └─ Select Authentication Method
-   ├─ Alibaba Cloud Coding Plan
    ├─ API Key
    │  └─ Select API Key Type
    │     ├─ Alibaba Cloud ModelStudio Standard API Key
@@ -92,7 +91,7 @@ This causes several usability issues:
 2. Do not introduce provider name as a separate concept.
 3. Do not add advanced `generationConfig`, `capabilities`, or per-model overrides to the wizard.
 4. Do not remove the documentation link entirely; it should remain available for advanced configuration.
-5. Do not change the existing Coding Plan or ModelStudio Standard API key flows.
+5. Do not change the existing ModelStudio Standard API key flow.
 6. Do not attempt to auto-detect protocol from `baseUrl` in the first version; users select the protocol explicitly.
 
 ## Target Users
@@ -113,11 +112,11 @@ gemini
 
 Each protocol maps directly to a `modelProviders` key and `security.auth.selectedType` value.
 
-| Protocol option      | Auth type / modelProviders key | Notes                                                                             |
-| -------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| OpenAI-compatible    | `openai`                       | OpenAI, OpenRouter, Fireworks, local OpenAI-compatible servers, internal gateways |
-| Anthropic-compatible | `anthropic`                    | Anthropic-compatible endpoints                                                    |
-| Gemini-compatible    | `gemini`                       | Gemini-compatible endpoints                                                       |
+| Protocol option      | Auth type / modelProviders key | Notes                                                      |
+| -------------------- | ------------------------------ | ---------------------------------------------------------- |
+| OpenAI-compatible    | `openai`                       | OpenAI, local OpenAI-compatible servers, internal gateways |
+| Anthropic-compatible | `anthropic`                    | Anthropic-compatible endpoints                             |
+| Gemini-compatible    | `gemini`                       | Gemini-compatible endpoints                                |
 
 ## User Experience Overview
 
@@ -126,11 +125,6 @@ Each protocol maps directly to a `modelProviders` key and `security.auth.selecte
 ```text
 /auth
 └─ Select Authentication Method
-   ├─ Alibaba Cloud Coding Plan
-   │  └─ Select Region
-   │     └─ Enter API Key
-   │        └─ Save + authenticate
-   │
    ├─ API Key
    │  └─ Select API Key Type
    │     ├─ Alibaba Cloud ModelStudio Standard API Key
@@ -205,7 +199,7 @@ custom-protocol-select
 │ Custom API Key · Select Protocol                             │
 │                                                              │
 │  ◉ OpenAI-compatible                                         │
-│    OpenAI, OpenRouter, Fireworks, vLLM, Ollama, LM Studio    │
+│    OpenAI, vLLM, Ollama, LM Studio                           │
 │                                                              │
 │  ○ Anthropic-compatible                                      │
 │    Anthropic-compatible endpoints                            │
@@ -238,12 +232,10 @@ For OpenAI-compatible:
 │                                                              │
 │ Enter the OpenAI-compatible API endpoint.                    │
 │                                                              │
-│ Base URL: https://openrouter.ai/api/v1_                      │
+│ Base URL: https://api.openai.com/v1_                         │
 │                                                              │
 │ Examples:                                                    │
 │   OpenAI:      https://api.openai.com/v1                     │
-│   OpenRouter: https://openrouter.ai/api/v1                   │
-│   Fireworks:  https://api.fireworks.ai/inference/v1          │
 │   Ollama:     http://localhost:11434/v1                      │
 │   LM Studio:  http://localhost:1234/v1                       │
 │                                                              │
@@ -302,11 +294,11 @@ On valid submit:
 │ Custom API Key · API Key                                     │
 │                                                              │
 │ Protocol: OpenAI-compatible                                  │
-│ Endpoint: https://openrouter.ai/api/v1                       │
+│ Endpoint: https://api.openai.com/v1                          │
 │                                                              │
 │ Enter the API key for this endpoint.                         │
 │                                                              │
-│ API key: sk-or-v1-••••••••••••••••_                          │
+│ API key: sk-••••••••••••••••_                                │
 │                                                              │
 │ Enter to continue, Esc to go back                            │
 └──────────────────────────────────────────────────────────────┘
@@ -329,7 +321,7 @@ Notes:
 │ Custom API Key · Model IDs                                   │
 │                                                              │
 │ Protocol: OpenAI-compatible                                  │
-│ Endpoint: https://openrouter.ai/api/v1                       │
+│ Endpoint: https://api.openai.com/v1                          │
 │                                                              │
 │ Enter one or more model IDs, separated by commas.            │
 │                                                              │
@@ -377,7 +369,7 @@ OpenAI-compatible example:
 │                                                              │
 │ {                                                            │
 │   "env": {                                                   │
-│     "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1":│
+│     "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_API_V1":│
 │       "sk-••••••••••••••••"                                  │
 │   },                                                         │
 │   "modelProviders": {                                        │
@@ -385,8 +377,8 @@ OpenAI-compatible example:
 │       {                                                      │
 │         "id": "qwen/qwen3-coder",                           │
 │         "name": "qwen/qwen3-coder",                         │
-│         "baseUrl": "https://openrouter.ai/api/v1",          │
-│         "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1"│
+│         "baseUrl": "https://api.openai.com/v1",             │
+│         "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_API_V1"│
 │       }                                                      │
 │     ]                                                        │
 │   },                                                         │
@@ -501,8 +493,8 @@ Base URL: https://api.openai.com/v1
 -> QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_V1
 
 Protocol: openai
-Base URL: https://openrouter.ai/api/v1
--> QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1
+Base URL: https://gateway.example.com/api/v1
+-> QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_GATEWAY_EXAMPLE_COM_API_V1
 
 Protocol: anthropic
 Base URL: https://api.anthropic.com/v1
@@ -557,8 +549,8 @@ Given user input:
 
 ```text
 Protocol: openai
-Base URL: https://openrouter.ai/api/v1
-API key: sk-or-v1-xxx
+Base URL: https://api.openai.com/v1
+API key: sk-xxx
 Model IDs: qwen/qwen3-coder,openai/gpt-4.1
 ```
 
@@ -567,21 +559,21 @@ The wizard should produce:
 ```json
 {
   "env": {
-    "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1": "sk-or-v1-xxx"
+    "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_V1": "sk-xxx"
   },
   "modelProviders": {
     "openai": [
       {
         "id": "qwen/qwen3-coder",
         "name": "qwen/qwen3-coder",
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1"
+        "baseUrl": "https://api.openai.com/v1",
+        "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_V1"
       },
       {
         "id": "openai/gpt-4.1",
         "name": "openai/gpt-4.1",
-        "baseUrl": "https://openrouter.ai/api/v1",
-        "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_OPENROUTER_AI_API_V1"
+        "baseUrl": "https://api.openai.com/v1",
+        "envKey": "QWEN_CUSTOM_API_KEY_OPENAI_HTTPS_API_OPENAI_COM_V1"
       }
     ]
   },
@@ -624,7 +616,7 @@ This keeps behavior consistent with existing `modelProviders` ownership rules.
 
 ### Backup
 
-Before writing, back up the target settings file, consistent with existing Coding Plan and ModelStudio Standard flows.
+Before writing, back up the target settings file, consistent with the existing ModelStudio Standard flow.
 
 ### Process env sync
 
@@ -670,7 +662,7 @@ Rationale:
 
 - Reconfiguring the same protocol + `baseUrl` replaces old models for that endpoint.
 - Configuring a different protocol or `baseUrl` uses a different env key and does not overwrite previous custom endpoints.
-- Coding Plan, ModelStudio Standard, and other user configs are preserved unless they use the same generated env key under the same protocol.
+- ModelStudio Standard and other user configs are preserved unless they use the same generated env key under the same protocol.
 - New configs are placed first so the newly configured models are immediately visible and selected by default.
 
 ## Error Handling
@@ -845,7 +837,7 @@ maskApiKey(apiKey: string): string
   - same generated env key replaces old custom entries under the same protocol;
   - different env keys are preserved;
   - other protocol keys are preserved;
-  - Coding Plan and ModelStudio Standard entries are preserved.
+  - ModelStudio Standard entries are preserved.
 - Add tests for generated JSON preview content where practical.
 
 ## Open Questions

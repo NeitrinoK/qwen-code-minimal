@@ -1,4 +1,16 @@
-export const DEFAULT_TIMEOUT = 120000;
+// Request timeout (ms) handed to the provider SDK. For a streaming call this
+// bounds connect + response headers only — once the SSE stream is open the
+// stream guards below take over.
+//
+// 120s was too short for large-context self-hosted models: time-to-first-token
+// scales with prompt size, and a 27B vLLM deployment crossed 120s at ~90k prompt
+// tokens.
+// Every request past that point then failed identically, and the failure was
+// invisible for eight minutes because the SDK silently re-ran it (see
+// DEFAULT_MAX_RETRIES). 600s covers a full-window prefill on a loaded shared
+// gateway with headroom; a genuinely unreachable endpoint is still bounded,
+// just by one long wait instead of many short doomed ones.
+export const DEFAULT_TIMEOUT = 600000;
 /**
  * Sentinel request timeout (ms) representing a *disabled* timeout.
  *
@@ -63,21 +75,19 @@ export const DEFAULT_STREAM_MAX_LIFETIME_MS = 900000;
 // ContentGeneratorConfig.streamMaxLifetimeMs wins, `0` disables, a malformed
 // value falls back to the default with a warning.
 export const QWEN_STREAM_MAX_LIFETIME_MS_ENV = 'QWEN_STREAM_MAX_LIFETIME_MS';
-export const DEFAULT_MAX_RETRIES = 3;
+// Provider-SDK-level retries. Deliberately 0: this fork already retries at the
+// application layer (`retryWithBackoff`, utils/retry.ts), and stacking the two
+// multiplies rather than adds. With the SDK's own 3 retries, one doomed request
+// burned 1 + 3 = 4 x DEFAULT_TIMEOUT before surfacing a single
+// APIConnectionTimeoutError (measured: durationMs 482763 for a 120s timeout),
+// which retryWithBackoff then treated as one retryable failure and repeated up
+// to 7 more times — 28 re-sends of the same oversized prompt, ~56 minutes of
+// wall clock, and nothing in the log between them. Leaving retries to the outer
+// layer keeps one retry policy, with backoff and a log line per attempt.
+export const DEFAULT_MAX_RETRIES = 0;
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-export const DEFAULT_DASHSCOPE_BASE_URL =
-  'https://dashscope.aliyuncs.com/compatible-mode/v1';
 export const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1';
-export const DEFAULT_OPEN_ROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-/**
- * Read at call time, not at module load: `.env` files and `settings.env` are
- * applied after this module is imported, and the CLI keeps running in the same
- * process when those files only hold values that are read per request.
- */
-export function getDashscopeProxyBaseUrl(): string | undefined {
-  return process.env['DASHSCOPE_PROXY_BASE_URL'];
-}
 
 /**
  * Normalize an OpenAI-family baseUrl to the origin the Responses wire dials:

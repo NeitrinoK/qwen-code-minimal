@@ -16,7 +16,6 @@ import {
   validateExecutionSandboxSelection,
 } from './execution-sandbox-settings.js';
 import { createMinimalSettings, loadSettings } from './settings.js';
-import { loadServeFastPathSettings } from '../serve/fast-path-settings.js';
 
 const restricted = { filesystem: 'read-only', network: 'closed' } as const;
 const writable = { filesystem: 'workspace-write', network: 'open' } as const;
@@ -29,11 +28,6 @@ const write = (file: string, value: unknown) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ $version: 4, ...(value as object) }));
 };
-/** The two readers that carry the privacy choice: a normal load and `--bare`. */
-const normalAndBareMerged = () => [
-  loadSettings(workspace, { skipLoadEnvironment: true }).merged,
-  createMinimalSettings().merged,
-];
 beforeEach(() => {
   fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'public-sandbox-policy-'));
   workspace = path.join(fixture, 'workspace');
@@ -111,9 +105,6 @@ describe('operator execution sandbox policy', () => {
         workspaceTrusted: true,
       }).merged.tools?.executionSandbox,
     ).toBeUndefined();
-    expect(
-      loadServeFastPathSettings(workspace).tools?.executionSandbox,
-    ).toBeUndefined();
   });
   it('system replaces the whole user object, including backend', () => {
     write(defaults, { tools: { executionSandbox: writable } });
@@ -125,7 +116,6 @@ describe('operator execution sandbox policy', () => {
       readOperatorSandboxSettings(),
       createMinimalSettings().merged,
       loadSettings(workspace, { skipLoadEnvironment: true }).merged,
-      loadServeFastPathSettings(workspace),
     ]) {
       expect(settings.tools?.executionSandbox).toEqual(restricted);
     }
@@ -139,67 +129,6 @@ describe('operator execution sandbox policy', () => {
     expect(minimal.tools?.executionSandbox).toEqual(restricted);
     expect(minimal.tools?.discoveryCommand).toBeUndefined();
     expect(minimal.hooks).toBeUndefined();
-  });
-  it.each([
-    [
-      'privacy.usageStatisticsEnabled',
-      { privacy: { usageStatisticsEnabled: false } },
-    ],
-    [
-      'a pre-v2 top-level usageStatisticsEnabled',
-      { $version: 1, usageStatisticsEnabled: false },
-    ],
-  ])('bare mode keeps a usage-statistics opt-out from %s', (_shape, value) => {
-    write(user, value);
-    const minimal = createMinimalSettings().merged;
-    expect(minimal.privacy?.usageStatisticsEnabled).toBe(false);
-    // Only the privacy choice survives; confinement stays unset.
-    expect(minimal.tools?.executionSandbox).toBeUndefined();
-  });
-  it('bare mode prefers privacy.* over a stale pre-v2 key in the same file', () => {
-    write(user, {
-      $version: 1,
-      privacy: { usageStatisticsEnabled: false },
-      usageStatisticsEnabled: true,
-    });
-    expect(createMinimalSettings().merged.privacy?.usageStatisticsEnabled).toBe(
-      false,
-    );
-  });
-  it('bare mode ignores a stray legacy key in a current-version file', () => {
-    write(defaults, { privacy: { usageStatisticsEnabled: false } });
-    write(user, { usageStatisticsEnabled: true });
-    for (const merged of normalAndBareMerged()) {
-      // `?? true` is the coercion config.ts applies before sending a beacon.
-      expect(merged.privacy?.usageStatisticsEnabled ?? true).toBe(false);
-    }
-  });
-  it.each([0, ''])(
-    'bare mode keeps a falsy %j usage-statistics value as an opt-out',
-    (value) => {
-      write(user, { privacy: { usageStatisticsEnabled: value } });
-      for (const merged of normalAndBareMerged()) {
-        expect(merged.privacy?.usageStatisticsEnabled ?? true).toBeFalsy();
-      }
-    },
-  );
-  it('bare mode resolves usage statistics with normal scope precedence', () => {
-    write(defaults, { privacy: { usageStatisticsEnabled: false } });
-    write(user, { privacy: { usageStatisticsEnabled: true } });
-    write(system, { privacy: { usageStatisticsEnabled: false } });
-    for (const merged of normalAndBareMerged()) {
-      expect(merged.privacy?.usageStatisticsEnabled).toBe(false);
-    }
-    write(system, {});
-    for (const merged of normalAndBareMerged()) {
-      expect(merged.privacy?.usageStatisticsEnabled).toBe(true);
-    }
-  });
-  it('bare mode leaves usage statistics unset when no scope configures it', () => {
-    write(user, { privacy: { usageStatisticsEnabled: 'no' } });
-    expect(
-      createMinimalSettings().merged.privacy?.usageStatisticsEnabled,
-    ).toBeUndefined();
   });
   it('does not migrate or repair project files on the host under confinement', () => {
     write(user, { tools: { executionSandbox: restricted } });
@@ -228,7 +157,6 @@ describe('operator execution sandbox policy', () => {
     });
     expect(() => loadSettings(workspace)).toThrow('literal');
     expect(() => createMinimalSettings()).toThrow('literal');
-    expect(() => loadServeFastPathSettings(workspace)).toThrow('literal');
   });
   it.each(['user', 'system', 'defaults'] as const)(
     'uses the fatal configuration contract for malformed %s settings',
@@ -274,7 +202,6 @@ describe('operator execution sandbox policy', () => {
       readOperatorSandboxSettings(),
       createMinimalSettings().merged,
       loadSettings(workspace, { skipLoadEnvironment: true }).merged,
-      loadServeFastPathSettings(workspace),
     ]) {
       expect(settings.tools?.executionSandbox).toEqual(restricted);
     }
@@ -293,10 +220,6 @@ describe('operator execution sandbox policy', () => {
         () => loadSettings(workspace, { skipLoadEnvironment: true }),
         /Cannot read operator sandbox policy/,
       ],
-      [
-        () => loadServeFastPathSettings(workspace),
-        /Cannot read operator sandbox policy/,
-      ],
     ];
     for (const [load, error] of loaders) {
       expect(load).toThrow(error);
@@ -312,9 +235,6 @@ describe('operator execution sandbox policy', () => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '{broken');
     expect(() => readOperatorSandboxSettings()).toThrow(
-      'Cannot read operator sandbox policy',
-    );
-    expect(() => loadServeFastPathSettings(workspace)).toThrow(
       'Cannot read operator sandbox policy',
     );
     expect(fs.readFileSync(file, 'utf8')).toBe('{broken');

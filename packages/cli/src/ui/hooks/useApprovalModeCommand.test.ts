@@ -5,7 +5,7 @@
  */
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { ApprovalMode } from '@qwen-code/qwen-code-core/config/approval-mode.js';
 import type { Config } from '@qwen-code/qwen-code-core/config/config.js';
@@ -13,14 +13,19 @@ import { SettingScope, type LoadedSettings } from '../../config/settings.js';
 import { MessageType } from '../types.js';
 import { useApprovalModeCommand } from './useApprovalModeCommand.js';
 
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
+
 const TRUST_GATE_MESSAGE =
   'Cannot enable privileged approval modes in an untrusted folder.';
 
 describe('useApprovalModeCommand', () => {
-  let setApprovalMode: ReturnType<typeof vi.fn>;
-  let isTrustedFolder: ReturnType<typeof vi.fn>;
-  let setValue: ReturnType<typeof vi.fn>;
-  let addItem: ReturnType<typeof vi.fn>;
+  let setApprovalMode: MockAny;
+  let isTrustedFolder: MockAny;
+  let setValue: MockAny;
+  let addItem: MockAny;
   let config: Config;
   let settings: LoadedSettings;
 

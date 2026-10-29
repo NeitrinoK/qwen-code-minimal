@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import path from 'node:path';
 
 export default defineConfig({
@@ -37,6 +37,10 @@ export default defineConfig({
     },
   },
   test: {
+    // vitest 4 no longer excludes build output by default; keep the compiled
+    // dist/ (which contains *.test.js copies) out of test discovery so
+    // `build` followed by `test` doesn't run stale duplicates.
+    exclude: [...configDefaults.exclude, '**/dist/**'],
     // Shared ECS hosts can pause an otherwise healthy test past Vitest's 5s
     // default when several CI runners on the same machine are busy.
     testTimeout: process.env['RUNNER_NAME']?.startsWith('ecs-qwen-')

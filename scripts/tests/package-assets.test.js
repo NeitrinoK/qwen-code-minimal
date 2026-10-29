@@ -12,7 +12,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,75 +46,6 @@ describe('package asset scripts', () => {
     for (const tempDir of tempDirs.splice(0)) {
       rmSync(tempDir, { force: true, recursive: true });
     }
-  });
-
-  it('copies the manifest and service worker into the published shell', () => {
-    const rootDir = createFixtureRoot();
-    stubConsole();
-    writeFile(rootDir, 'packages/web-shell/dist/index.html', '<!doctype html>');
-    writeFile(
-      rootDir,
-      'packages/web-shell/dist/assets/index-abc.js',
-      'export {};',
-    );
-    writeFile(
-      rootDir,
-      'packages/web-shell/dist/manifest.webmanifest',
-      '{"name":"Qwen Code"}',
-    );
-    writeFile(
-      rootDir,
-      'packages/web-shell/dist/sw.js',
-      'self.addEventListener("fetch", () => {});',
-    );
-    copyBundleAssets({ root: rootDir });
-    for (const file of ['manifest.webmanifest', 'sw.js']) {
-      expect(
-        readFileSync(path.join(rootDir, 'dist/web-shell', file), 'utf8'),
-      ).toBe(
-        readFileSync(
-          path.join(rootDir, 'packages/web-shell/dist', file),
-          'utf8',
-        ),
-      );
-    }
-  });
-
-  it('warns and skips a missing service worker from a stale shell build', () => {
-    const rootDir = createFixtureRoot();
-    stubConsole();
-    writeFile(rootDir, 'packages/web-shell/dist/index.html', '<!doctype html>');
-    writeFile(
-      rootDir,
-      'packages/web-shell/dist/assets/index-abc.js',
-      'export {};',
-    );
-    writeFile(
-      rootDir,
-      'packages/web-shell/dist/manifest.webmanifest',
-      '{"name":"Qwen Code"}',
-    );
-
-    expect(() => copyBundleAssets({ root: rootDir })).not.toThrow();
-
-    expect(
-      readFileSync(
-        path.join(rootDir, 'dist/web-shell/manifest.webmanifest'),
-        'utf8',
-      ),
-    ).toBe('{"name":"Qwen Code"}');
-    expect(existsSync(path.join(rootDir, 'dist/web-shell/sw.js'))).toBe(false);
-    expect(
-      console.warn.mock.calls
-        .map(([message]) => String(message))
-        .some(
-          (message) =>
-            message.includes('PWA asset not found') &&
-            message.includes(
-              path.join(rootDir, 'packages/web-shell/dist/sw.js'),
-            ),
-        ),
-    ).toBe(true);
   });
 
   it('emits an executable dist/cli.js — shebang plus the exec bit, once', () => {
@@ -638,81 +568,6 @@ describe('package asset scripts', () => {
     ).toBe(true);
   });
 
-  it('copies the HTML export renderer into the published package', () => {
-    const rootDir = createFixtureRoot();
-    createBundleArtifacts(rootDir);
-    writeFile(
-      rootDir,
-      'packages/web-templates/src/export-html/dist/export-transcript-document.js',
-      'window.QwenExportRenderer = true;',
-    );
-    writeFile(
-      rootDir,
-      'packages/web-templates/src/export-html/dist/export-transcript-document.css',
-      'body{color:red}',
-    );
-    stubConsole();
-
-    copyBundleAssets({ root: rootDir });
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
-
-    expect(
-      readFileSync(
-        path.join(rootDir, 'dist', 'export-transcript-document.js'),
-        'utf8',
-      ),
-    ).toBe('window.QwenExportRenderer = true;');
-    expect(
-      readFileSync(
-        path.join(rootDir, 'dist', 'export-transcript-document.css'),
-        'utf8',
-      ),
-    ).toBe('body{color:red}');
-    const distPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    expect(distPackageJson.files).toContain('export-transcript-document.js');
-    expect(distPackageJson.files).toContain('export-transcript-document.css');
-    expect(distPackageJson.files).toContain('execution-worker.js');
-    expect(distPackageJson.files).toContain('mem0');
-  });
-
-  it('names the missing stylesheet when only the renderer JS was built', () => {
-    const rootDir = createFixtureRoot();
-    writeFile(
-      rootDir,
-      'packages/web-templates/src/export-html/dist/export-transcript-document.js',
-      'window.QwenExportRenderer = true;',
-    );
-    stubConsole();
-
-    copyBundleAssets({ root: rootDir });
-
-    const warning = console.warn.mock.calls
-      .map(([message]) => String(message))
-      .find((message) => message.includes('HTML export renderer assets'));
-    // The reachable way into that branch with the JS present is a stale
-    // web-templates build, so the warning has to name the CSS that is actually
-    // missing rather than send the operator looking for a JS file that exists.
-    expect(warning).toContain(
-      path.join(
-        rootDir,
-        'packages',
-        'web-templates',
-        'src',
-        'export-html',
-        'dist',
-        'export-transcript-document.css',
-      ),
-    );
-    expect(warning).not.toContain('export-transcript-document.js');
-    // All-or-nothing stays: prepare-package.js requires both artifacts, so the
-    // renderer JS that *was* found must not be half-published into dist/.
-    expect(
-      existsSync(path.join(rootDir, 'dist', 'export-transcript-document.js')),
-    ).toBe(false);
-  });
-
   it.each([
     'execution-worker.js',
     'mem0/main.js',
@@ -720,7 +575,6 @@ describe('package asset scripts', () => {
     'sandboxBwrapRelay.js',
     'sandboxLandlockRelay.js',
     'sandboxFileWorker.js',
-    'export-transcript-document.css',
   ])('fails packaging when the published %s is missing', (missingArtifact) => {
     const rootDir = createFixtureRoot();
     createBundleArtifacts(rootDir);
@@ -733,9 +587,7 @@ describe('package asset scripts', () => {
       throw new Error('process.exit(1)');
     });
 
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: false }),
-    ).toThrow('process.exit(1)');
+    expect(() => preparePackage({ rootDir })).toThrow('process.exit(1)');
     expect(exit).toHaveBeenCalledWith(1);
     // verifyBundleArtifacts builds `requiredPath` with path.join, so on Windows
     // the reported message carries `\`. The two multi-segment entries above
@@ -747,82 +599,6 @@ describe('package asset scripts', () => {
         reportsMissingArtifact(message, missingArtifact),
       ),
     ).toBe(true);
-  });
-
-  it.each(['mem0/main.js', 'mem0/write-confirmation.js'])(
-    'recognizes a Windows missing-artifact error for %s',
-    (missingArtifact) => {
-      const message =
-        'Error: Required package artifact not found: ' +
-        path.win32.join('D:\\publish\\dist', ...missingArtifact.split('/'));
-      expect(reportsMissingArtifact(message, missingArtifact, path.win32)).toBe(
-        true,
-      );
-    },
-  );
-
-  it.each(['manifest.webmanifest', 'sw.js'])(
-    'rejects a published shell missing %s',
-    (file) => {
-      const rootDir = createFixtureRoot();
-      createBundleArtifacts(rootDir);
-      rmSync(path.join(rootDir, 'dist', 'web-shell', file));
-      stubConsole();
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-      // verifyBundleArtifacts reports with console.error + process.exit(1), not a
-      // throw, so the exit has to become one to keep the rest of the suite alive.
-      const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
-        throw new Error('process.exit(1)');
-      });
-
-      expect(() =>
-        preparePackage({ rootDir, requireNativeAudioCapture: false }),
-      ).toThrow('process.exit(1)');
-      expect(exit).toHaveBeenCalledWith(1);
-      expect(
-        console.error.mock.calls
-          .map(([message]) => String(message))
-          .some(
-            (message) =>
-              message.includes('Required package artifact not found') &&
-              message.includes(file),
-          ),
-      ).toBe(true);
-    },
-  );
-
-  it('copies Computer Use platform references to both CLI and core distributions', () => {
-    const rootDir = createFixtureRoot();
-    const coreDir = path.join(rootDir, 'packages', 'core');
-    const resources = [
-      'SKILL.md',
-      'references/macos.md',
-      'references/windows-linux.md',
-    ];
-    for (const resource of resources) {
-      writeFile(
-        rootDir,
-        `packages/core/src/skills/bundled/computer-use/${resource}`,
-        resource,
-      );
-    }
-    stubConsole();
-    copyBundleAssets({ root: rootDir });
-    copyFiles({ root: coreDir });
-    for (const resource of resources) {
-      expect(
-        readFileSync(
-          path.join(rootDir, 'dist/bundled/computer-use', resource),
-          'utf8',
-        ),
-      ).toBe(resource);
-      expect(
-        readFileSync(
-          path.join(coreDir, 'dist/src/skills/bundled/computer-use', resource),
-          'utf8',
-        ),
-      ).toBe(resource);
-    }
   });
 
   it('copies bundled skill scripts and references into the runtime dist', () => {
@@ -1023,34 +799,16 @@ describe('package asset scripts', () => {
     createBundleArtifacts(rootDir);
     stubConsole();
 
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
+    preparePackage({ rootDir });
 
     const distPackageJson = JSON.parse(
       readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    const rootPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'package.json'), 'utf8'),
     );
 
     expect(distPackageJson.files).toContain('examples');
     expect(distPackageJson.private).not.toBe(true);
     expect(distPackageJson.bundledDependencies).toBeUndefined();
-    expect(distPackageJson.optionalDependencies).toMatchObject({
-      '@qwen-code/audio-capture': rootPackageJson.version,
-    });
-
     expect(distPackageJson.optionalDependencies.sharp).toBe('0.35.4');
-    expect(
-      existsSync(
-        path.join(
-          rootDir,
-          'dist',
-          'node_modules',
-          '@qwen-code',
-          'audio-capture',
-        ),
-      ),
-    ).toBe(false);
     expect(
       existsSync(
         path.join(rootDir, 'dist', 'examples', 'mcp-server', 'package.json'),
@@ -1082,7 +840,7 @@ describe('package asset scripts', () => {
     createBundleArtifacts(rootDir);
     stubConsole();
 
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
+    preparePackage({ rootDir });
 
     const distPackageJson = JSON.parse(
       readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
@@ -1115,7 +873,7 @@ describe('package asset scripts', () => {
     createBundleArtifacts(rootDir);
     stubConsole();
 
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
+    preparePackage({ rootDir });
 
     const published = JSON.parse(
       readFileSync(path.join(rootDir, 'dist/package.json'), 'utf8'),
@@ -1139,9 +897,9 @@ describe('package asset scripts', () => {
     createBundleArtifacts(rootDir);
     stubConsole();
 
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: false }),
-    ).toThrow(/installed 0\.35\.4, packages\/core declares \^0\.34\.0/);
+    expect(() => preparePackage({ rootDir })).toThrow(
+      /installed 0\.35\.4, packages\/core declares \^0\.34\.0/,
+    );
   });
 
   it('omits browser MCP install hooks and deps from the prepared dist package', () => {
@@ -1153,7 +911,7 @@ describe('package asset scripts', () => {
     const installScriptFile = ['postinstall', 'js'].join('.');
     const browserMcpPatchFile = `${browserMcpPackageName}+1.4.0.patch`;
 
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
+    preparePackage({ rootDir });
 
     const distDir = path.join(rootDir, 'dist');
     const distPackageJson = JSON.parse(
@@ -1176,277 +934,6 @@ describe('package asset scripts', () => {
     expect(existsSync(path.join(distDir, 'patches', browserMcpPatchFile))).toBe(
       false,
     );
-  });
-
-  it.each([
-    ['dist/web-shell/assets/icon.svg', '<svg>chrome-devtools-mcp</svg>\n'],
-    ['dist/chunks/server.js.map', '{"sources":["Chrome-Devtools-MCP"]}\n'],
-  ])(
-    'fails packaging when prepared dist contains scanner-sensitive literals in %s',
-    (packagePath, contents) => {
-      const rootDir = createFixtureRoot();
-      createBundleArtifacts(rootDir);
-      const browserMcpPackageName = ['chrome', 'devtools', 'mcp'].join('-');
-      writeFile(rootDir, packagePath, contents);
-      stubConsole();
-
-      const expectedPath = path.relative(
-        path.join(rootDir, 'dist'),
-        path.join(rootDir, packagePath),
-      );
-
-      expect(() =>
-        preparePackage({ rootDir, requireNativeAudioCapture: false }),
-      ).toThrow(
-        `Prepared package contains forbidden string "${browserMcpPackageName}" in ${expectedPath}`,
-      );
-    },
-  );
-
-  it('fails packaging when prepared dist exceeds the unpacked size budget', () => {
-    const rootDir = createFixtureRoot();
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    preparePackage({
-      rootDir,
-      requireNativeAudioCapture: false,
-      maxPackageUnpackedBytes: 50_000,
-    });
-
-    const oversizedRootDir = createFixtureRoot();
-    createBundleArtifacts(oversizedRootDir);
-    writeFile(oversizedRootDir, 'dist/chunks/large.js', 'x'.repeat(64 * 1024));
-
-    expect(() =>
-      preparePackage({
-        rootDir: oversizedRootDir,
-        requireNativeAudioCapture: false,
-        maxPackageUnpackedBytes: 50_000,
-      }),
-    ).toThrow(/Prepared package unpacked size \d+ bytes exceeds 50000 bytes/);
-  });
-
-  it('enforces a 128 MiB default unpacked size budget', () => {
-    const rootDir = createFixtureRoot();
-    createBundleArtifacts(rootDir);
-    writeFile(rootDir, 'dist/chunks/large.bin', '');
-    const largeFile = path.join(rootDir, 'dist', 'chunks', 'large.bin');
-    truncateSync(largeFile, 127 * 1024 * 1024);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({
-        rootDir,
-        requireNativeAudioCapture: false,
-      }),
-    ).not.toThrow();
-
-    truncateSync(largeFile, 128 * 1024 * 1024);
-
-    expect(() =>
-      preparePackage({
-        rootDir,
-        requireNativeAudioCapture: false,
-      }),
-    ).toThrow(
-      /Prepared package unpacked size \d+ bytes exceeds 134217728 bytes/,
-    );
-  });
-
-  it('omits bundledDependencies when audio-capture artifacts are missing', () => {
-    const rootDir = createFixtureRoot();
-    rmSync(path.join(rootDir, 'packages', 'audio-capture', 'prebuilds'), {
-      recursive: true,
-      force: true,
-    });
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
-
-    const distPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    expect(distPackageJson.bundledDependencies).toBeUndefined();
-    expect(
-      existsSync(
-        path.join(
-          rootDir,
-          'dist',
-          'node_modules',
-          '@qwen-code',
-          'audio-capture',
-        ),
-      ),
-    ).toBe(false);
-  });
-
-  it('removes stale bundled audio-capture files when artifacts are missing', () => {
-    const rootDir = createFixtureRoot();
-    createBundleArtifacts(rootDir);
-    writeFile(
-      rootDir,
-      'dist/node_modules/@qwen-code/audio-capture/prebuilds/darwin-arm64/@qwen-code+audio-capture.node',
-      'stale native addon\n',
-    );
-    stubConsole();
-
-    rmSync(path.join(rootDir, 'packages', 'audio-capture', 'prebuilds'), {
-      recursive: true,
-      force: true,
-    });
-
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
-
-    const distPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    expect(distPackageJson.bundledDependencies).toBeUndefined();
-    expect(
-      existsSync(
-        path.join(
-          rootDir,
-          'dist',
-          'node_modules',
-          '@qwen-code',
-          'audio-capture',
-        ),
-      ),
-    ).toBe(false);
-  });
-
-  it('fails packaging when required audio-capture artifacts are missing', () => {
-    const rootDir = createFixtureRoot();
-    rmSync(path.join(rootDir, 'packages', 'audio-capture', 'prebuilds'), {
-      recursive: true,
-      force: true,
-    });
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: true }),
-    ).toThrow(/Required audio capture package artifact not found at/);
-  });
-
-  it('fails packaging when required audio-capture runtime output is empty', () => {
-    const rootDir = createFixtureRoot();
-    rmSync(path.join(rootDir, 'packages', 'audio-capture', 'dist', 'index.js'));
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: true }),
-    ).toThrow(/Required audio capture package artifact has no runtime JS/);
-  });
-
-  it('fails packaging when required audio-capture prebuilds are empty', () => {
-    const rootDir = createFixtureRoot();
-    rmSync(
-      path.join(
-        rootDir,
-        'packages',
-        'audio-capture',
-        'prebuilds',
-        'darwin-arm64',
-        '@qwen-code+audio-capture.node',
-      ),
-    );
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: true }),
-    ).toThrow(/Required audio capture package artifact has no native prebuild/);
-  });
-
-  it('omits bundledDependencies when audio-capture dependencies are missing and not required', () => {
-    const rootDir = createFixtureRoot();
-    const audioPackagePath = path.join(
-      rootDir,
-      'packages',
-      'audio-capture',
-      'package.json',
-    );
-    const audioPackageJson = JSON.parse(readFileSync(audioPackagePath, 'utf8'));
-    audioPackageJson.dependencies['missing-audio-runtime'] = '1.0.0';
-    writeFileSync(audioPackagePath, JSON.stringify(audioPackageJson, null, 2));
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
-
-    const distPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    expect(distPackageJson.bundledDependencies).toBeUndefined();
-    expect(
-      existsSync(
-        path.join(
-          rootDir,
-          'dist',
-          'node_modules',
-          '@qwen-code',
-          'audio-capture',
-        ),
-      ),
-    ).toBe(false);
-  });
-
-  it('fails packaging when required audio-capture dependencies are missing', () => {
-    const rootDir = createFixtureRoot();
-    const audioPackagePath = path.join(
-      rootDir,
-      'packages',
-      'audio-capture',
-      'package.json',
-    );
-    const audioPackageJson = JSON.parse(readFileSync(audioPackagePath, 'utf8'));
-    audioPackageJson.dependencies['missing-audio-runtime'] = '1.0.0';
-    writeFileSync(audioPackagePath, JSON.stringify(audioPackageJson, null, 2));
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: true }),
-    ).toThrow(/Required audio capture dependency not resolvable/);
-  });
-
-  it('omits bundledDependencies when audio-capture package JSON is invalid and not required', () => {
-    const rootDir = createFixtureRoot();
-    writeFile(rootDir, 'packages/audio-capture/package.json', '{ invalid json');
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    preparePackage({ rootDir, requireNativeAudioCapture: false });
-
-    const distPackageJson = JSON.parse(
-      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
-    );
-    expect(distPackageJson.bundledDependencies).toBeUndefined();
-    expect(
-      existsSync(
-        path.join(
-          rootDir,
-          'dist',
-          'node_modules',
-          '@qwen-code',
-          'audio-capture',
-        ),
-      ),
-    ).toBe(false);
-  });
-
-  it('fails packaging when required audio-capture package JSON is invalid', () => {
-    const rootDir = createFixtureRoot();
-    writeFile(rootDir, 'packages/audio-capture/package.json', '{ invalid json');
-    createBundleArtifacts(rootDir);
-    stubConsole();
-
-    expect(() =>
-      preparePackage({ rootDir, requireNativeAudioCapture: true }),
-    ).toThrow(/Required audio capture package\.json is not valid JSON/);
   });
 
   function createFixtureRoot() {
@@ -1512,60 +999,6 @@ describe('package asset scripts', () => {
         2,
       ),
     );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/package.json',
-      JSON.stringify(
-        {
-          name: '@qwen-code/audio-capture',
-          version: '0.17.0',
-          type: 'module',
-          main: 'dist/index.js',
-          dependencies: {
-            'node-gyp-build': '^4.8.4',
-          },
-          scripts: {
-            install: 'node install.js',
-          },
-          devDependencies: {
-            typescript: '^5.3.3',
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    writeFile(rootDir, 'packages/audio-capture/dist/index.js', '');
-    writeFile(
-      rootDir,
-      'packages/audio-capture/dist/index.test.js',
-      'throw new Error("should not copy tests");\n',
-    );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/dist/index.spec.js',
-      'throw new Error("should not copy specs");\n',
-    );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/prebuilds/darwin-arm64/@qwen-code+audio-capture.node',
-      'fake native addon\n',
-    );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/prebuilds/darwin-arm64/debug.log',
-      'should not ship\n',
-    );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/node_modules/node-gyp-build/package.json',
-      '{"name":"node-gyp-build","version":"4.8.4"}\n',
-    );
-    writeFile(
-      rootDir,
-      'packages/audio-capture/node_modules/node-gyp-build/index.js',
-      '',
-    );
 
     for (const template of [
       'agent',
@@ -1596,28 +1029,6 @@ describe('package asset scripts', () => {
     mkdirSync(path.join(rootDir, 'dist', 'bundled', 'qc-helper', 'docs'), {
       recursive: true,
     });
-    // Web Shell release gate (prepare-package.js verifyBundleArtifacts): the
-    // published package must ship the UI, so the fixture provides it too.
-    writeFile(rootDir, 'dist/web-shell/index.html', '<!doctype html>');
-    writeFile(rootDir, 'dist/web-shell/manifest.webmanifest', '{}');
-    writeFile(
-      rootDir,
-      'dist/web-shell/sw.js',
-      'self.addEventListener("fetch", () => {});',
-    );
-    mkdirSync(path.join(rootDir, 'dist', 'web-shell', 'assets'), {
-      recursive: true,
-    });
-    writeFile(
-      rootDir,
-      'dist/export-transcript-document.js',
-      'window.QwenExportRenderer = true;\n',
-    );
-    writeFile(
-      rootDir,
-      'dist/export-transcript-document.css',
-      'body{color:red}\n',
-    );
   }
 
   function writeFile(rootDir, relativePath, content) {

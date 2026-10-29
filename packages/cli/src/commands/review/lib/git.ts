@@ -15,7 +15,13 @@ import {
   sanitizedGitEnv,
   untrustedRepositoryFrom,
 } from './worktree.js';
-import { existsSync, lstatSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 /** Deadline for a single `git` invocation. Generous; a hang must still end. */
@@ -484,7 +490,11 @@ export function releaseWorktree(worktreePath: string): WorktreeRelease {
     if (lstatSync(worktreePath).isSymbolicLink()) {
       let removeError: unknown;
       try {
-        rmSync(worktreePath, { force: true });
+        // `unlinkSync`, not `rmSync`: on macOS `rmSync(symlink, {force})` throws
+        // EISDIR for a symlink→dir and silently no-ops on a dangling symlink,
+        // leaving the link in place. `unlinkSync` removes the link itself (never
+        // following it) for live and dangling symlinks on every platform.
+        unlinkSync(worktreePath);
       } catch (e) {
         removeError = e;
       }

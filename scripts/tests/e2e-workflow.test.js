@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -35,7 +35,7 @@ describe('e2e workflow', () => {
     expect(group).toContain('github.head_ref || github.ref_name');
   });
 
-  it('isolates child-process-heavy suites from the three parallel forks', () => {
+  it('runs the shard with three workers and keeps cron-interactive out of it', () => {
     const linuxJob = yml.jobs['e2e-test-linux'];
     const runStep = linuxJob.steps.find(
       (step) => step.name === 'Run E2E tests',
@@ -49,45 +49,13 @@ describe('e2e workflow', () => {
     expect(e2eRunScript).toContain(
       'QWEN_E2E_RENDERER=ink npm run test:integration:sandbox:none -- "$@"',
     );
-    expect(
-      e2eRunScript.match(/--exclude '\*\*\/qwen-serve-routes\.test\.ts'/g),
-    ).toHaveLength(1);
-    expect(
-      e2eRunScript.match(/--exclude '\*\*\/sdk-typescript\/\*\*'/g),
-    ).toHaveLength(1);
-    expect(e2eRunScript).toContain(
-      'run_vitest sdk-typescript cli/qwen-serve-routes.test.ts --poolOptions.forks.maxForks=1',
-    );
-    expect(e2eRunScript).not.toContain('--poolOptions.forks.singleFork');
-    // The arrangement is load-bearing: the batch must run first and the
-    // isolated suites second, joined by `&&` with no other command between
-    // or after. Counts and substrings are order- and backgrounding-blind;
-    // the pattern tolerates formatting-only rewrites (continuations, comment
-    // lines, trailing spaces) so a benign edit cannot turn CI red.
-    expect(e2eRunScript).toMatch(
-      /run_vitest "\$\{bulk_args\[@\]\}"[ \t]*&&[ \t]*\\?\n?(?:[ \t]*#[^\n]*\n)*[ \t]*run_vitest sdk-typescript cli\/qwen-serve-routes\.test\.ts --poolOptions\.forks\.maxForks=1[ \t]*\n\}/,
-    );
-    // Text pins never touch the tree: renaming the file or directory these
-    // filters name silently returns the suites to the three-fork batch.
-    expect(existsSync('integration-tests/cli/qwen-serve-routes.test.ts')).toBe(
-      true,
-    );
-    expect(existsSync('integration-tests/sdk-typescript')).toBe(true);
-    expect(existsSync('integration-tests/channel-plugin.test.ts')).toBe(true);
-    expect(
-      existsSync('integration-tests/chat-transcript-document.test.ts'),
-    ).toBe(true);
+    // vitest 4 removed --poolOptions; the worker cap is --maxWorkers.
+    expect(e2eRunScript).toContain('--maxWorkers=3');
+    expect(e2eRunScript).not.toContain('--poolOptions');
+    // A text pin never touches the tree: renaming the file the filter names
+    // would silently return the suite to the shared batch.
     expect(
       existsSync('integration-tests/interactive/cron-interactive.test.ts'),
-    ).toBe(true);
-    // existsSync pins the directory's name, not its contents: suites moved
-    // out of it would rejoin the three-fork batch through the dead exclude,
-    // while vitest silently ignores a positional filter that matches nothing
-    // as long as a sibling filter still matches.
-    expect(
-      readdirSync('integration-tests/sdk-typescript').some((file) =>
-        file.endsWith('.test.ts'),
-      ),
     ).toBe(true);
   });
 
@@ -271,7 +239,7 @@ describe('e2e workflow', () => {
 
     it('retries the full shard command, shard and excludes included', () => {
       expect(e2eRunScript).toContain('run_vitest "${bulk_args[@]}"');
-      expect(e2eRunScript).toContain('--poolOptions.forks.maxForks=3');
+      expect(e2eRunScript).toContain('--maxWorkers=3');
       expect(e2eRunScript).toContain('--shard="$shard"');
     });
 
@@ -552,7 +520,7 @@ describe('e2e workflow', () => {
       for (const [jobName, step] of installSteps) {
         expect(step.run, jobName).toContain('for attempt in 1 2 3; do');
         expect(step.run, jobName).toContain(
-          'if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then',
+          'if npm ci --no-audit --progress=false; then',
         );
         expect(step.run, jobName).toContain('exit 1');
         expect(step.run, jobName).toContain('sleep $((attempt * 15))');
@@ -567,11 +535,9 @@ describe('e2e workflow', () => {
         // though the recovered job concludes green — the same rule the
         // upload-artifact retry's announce step follows. Deleting the echo
         // from any one copy must red this loop.
-        expect(step.run, jobName).toContain(
-          'echo "::warning::corepack pnpm install',
-        );
-        // The defect under test is a bare `corepack pnpm install` line outside the loop.
-        expect(step.run, jobName).not.toMatch(/^\s*corepack pnpm install/m);
+        expect(step.run, jobName).toContain('echo "::warning::npm ci');
+        // The defect under test is a bare `npm ci` line outside the loop.
+        expect(step.run, jobName).not.toMatch(/^\s*npm ci/m);
       }
     });
 
@@ -579,18 +545,18 @@ describe('e2e workflow', () => {
     // shell can write one command cannot be enumerated against a regex. The
     // previous pair exempted a whole body for carrying any retry loop — a
     // trailing bare install rode the exemption — and saw only installs
-    // opening their line, so `cd … && pnpm install` and `time pnpm install` were
+    // opening their line, so `cd … && npm ci` and `time npm ci` were
     // invisible. The exemption is keyed on the line's shape, never the
     // step's name: a name key pardons the six pinned bodies wholesale, so a
     // bare install appended after `done` would ride the step's identity
     // with its body never read. Require every executable line mentioning
-    // `pnpm install` to open with one of the two retry-loop lines pinned above,
+    // `npm ci` to open with one of the two retry-loop lines pinned above,
     // so an unrecognised shape reddens the suite for a human to judge
     // instead of passing silently. Full-line `#` comments never execute, so
     // a body quoting the recipe in prose is excluded rather than flagged.
     const retriedInstallLines = [
-      'if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then',
-      'echo "::warning::corepack pnpm install',
+      'if npm ci --no-audit --progress=false; then',
+      'echo "::warning::npm ci',
     ];
     const findUnretriedInstalls = (jobs) =>
       Object.entries(jobs).flatMap(([jobName, job]) =>
@@ -603,7 +569,7 @@ describe('e2e workflow', () => {
                 .filter((line) => !line.trimStart().startsWith('#'))
                 .some(
                   (line) =>
-                    line.includes('pnpm install') &&
+                    line.includes('npm ci') &&
                     !retriedInstallLines.some((ok) =>
                       line.trimStart().startsWith(ok),
                     ),
@@ -612,7 +578,7 @@ describe('e2e workflow', () => {
           .map((step) => `${jobName}/${step.name ?? '(unnamed)'}`),
       );
 
-    it('retries every pnpm install run body, whatever the step is named', () => {
+    it('retries every npm ci run body, whatever the step is named', () => {
       // The name-keyed collection above misses an install hiding under any
       // other step name — repo-hygiene.yml and qwen-autofix.yml call theirs
       // 'Install dependencies and build' — so scan the command itself.
@@ -637,9 +603,9 @@ describe('e2e workflow', () => {
               name: 'Install dependencies',
               run: [
                 'for attempt in 1 2 3; do',
-                '  if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then',
+                '  if npm ci --no-audit --progress=false; then',
                 '    if [[ "${attempt}" != "1" ]]; then',
-                '      echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s)"',
+                '      echo "::warning::npm ci failed $((attempt - 1)) time(s)"',
                 '    fi',
                 '    break',
                 '  fi',
@@ -648,7 +614,7 @@ describe('e2e workflow', () => {
                 '  fi',
                 '  sleep $((attempt * 15))',
                 'done',
-                'cd integration-tests && pnpm install',
+                'cd integration-tests && npm ci',
               ].join('\n'),
             },
           ],
@@ -661,21 +627,21 @@ describe('e2e workflow', () => {
                 'for attempt in 1 2 3; do',
                 '  npx playwright install --with-deps chromium && break',
                 'done',
-                'corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only',
+                'npm ci --no-audit --progress=false',
               ].join('\n'),
             },
             {
               name: 'Install integration dependencies',
-              run: 'cd integration-tests && pnpm install',
+              run: 'cd integration-tests && npm ci',
             },
-            { name: 'Time the install', run: 'time pnpm install' },
+            { name: 'Time the install', run: 'time npm ci' },
             {
               name: 'Retry the install once',
-              run: 'for attempt in 1; do pnpm install --prefer-offline; done',
+              run: 'for attempt in 1; do npm ci --prefer-offline; done',
             },
             {
               name: 'Mention the recipe',
-              run: '# pnpm install is retried elsewhere\necho done',
+              run: '# npm ci is retried elsewhere\necho done',
             },
           ],
         },

@@ -95,10 +95,12 @@ describe('opentui key-map: history navigation parity', () => {
 });
 
 describe('opentui key-map: global shortcuts (AppContainer)', () => {
-  it('Ctrl+O and Alt+T toggle thinking expansion', () => {
+  // Ctrl+O is this build's compact-mode toggle, so thinking expansion is
+  // Alt+T only.
+  it('Ctrl+O toggles compact mode and Alt+T toggles thinking expansion', () => {
     expect(
       matchesCommand(
-        Command.TOGGLE_THINKING_EXPANDED,
+        Command.TOGGLE_COMPACT_MODE,
         key({ name: 'o', ctrl: true }),
       ),
     ).toBe(true);
@@ -169,7 +171,10 @@ describe('opentui key-map: priority resolution', () => {
   });
 
   it('Ctrl+O / Ctrl+T / Ctrl+S resolve to their toggles', () => {
-    expect(resolveCommand(key({ name: 'o', ctrl: true }))).toBe(
+    // Ctrl+O is the ink compact-mode toggle; OpenTUI has no compact mode, so
+    // it resolves to nothing here and thinking expansion stays on Alt+T.
+    expect(resolveCommand(key({ name: 'o', ctrl: true }))).toBeUndefined();
+    expect(resolveCommand(key({ name: 't', option: true }))).toBe(
       Command.TOGGLE_THINKING_EXPANDED,
     );
     expect(resolveCommand(key({ name: 't', ctrl: true }))).toBe(

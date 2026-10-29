@@ -9,7 +9,6 @@ export {
   collectSessionMetadata,
   generateExportFilename,
   normalizeSessionData,
-  toHtml,
   toJson,
   toJsonl,
   toMarkdown,

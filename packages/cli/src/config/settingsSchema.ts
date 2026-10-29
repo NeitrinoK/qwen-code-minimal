@@ -7,11 +7,11 @@
 import type {
   MCPServerConfig,
   BugCommandSettings,
-  TelemetrySettings,
   OutboundCorrelationSettings,
   AuthType,
   ChatCompressionSettings,
   ModelProvidersConfig,
+  HubSettings,
   ProviderProtocolConfig,
 } from '@qwen-code/qwen-code-core';
 import {
@@ -24,7 +24,6 @@ import {
   MAX_WEB_SEARCH_MAX_PER_SESSION,
   MAX_WEB_SEARCH_TIMEOUT_MS,
   DEFAULT_MAX_TOOL_CALLS_PER_TURN,
-  DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH,
   DEFAULT_QWEN_CUSTOM_IGNORE_FILE_NAMES,
   DEFAULT_STOP_HOOK_BLOCK_CAP,
   DEFAULT_TOOL_OUTPUT_BATCH_BUDGET,
@@ -33,7 +32,6 @@ import {
   DEFAULT_TRUNCATE_TOOL_OUTPUT_THRESHOLD,
   OutputFormat,
   REASONING_EFFORT_TIERS,
-  SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT,
 } from '@qwen-code/qwen-code-core';
 import type { CustomTheme } from '../ui/themes/theme.js';
 import { getLanguageSettingsOptions } from '../i18n/languages.js';
@@ -319,75 +317,6 @@ const SETTINGS_SCHEMA = {
     mergeStrategy: MergeStrategy.SHALLOW_MERGE,
   },
 
-  // Channels configuration (Telegram, Discord, etc.)
-  channels: {
-    type: 'object',
-    label: 'Channels',
-    category: 'Advanced',
-    requiresRestart: true,
-    default: {} as Record<string, Record<string, unknown>>,
-    description: 'Configuration for messaging channels.',
-    showInDialog: false,
-    mergeStrategy: MergeStrategy.SHALLOW_MERGE,
-  },
-
-  serve: {
-    type: 'object',
-    label: 'Serve',
-    category: 'Advanced',
-    requiresRestart: true,
-    default: {},
-    description: 'Persistent qwen serve settings.',
-    showInDialog: false,
-    mergeStrategy: MergeStrategy.SHALLOW_MERGE,
-    properties: {
-      channels: {
-        type: 'array',
-        label: 'Startup Channels',
-        category: 'Advanced',
-        requiresRestart: true,
-        default: [] as string[],
-        description:
-          'Messaging channels to start automatically when the daemon boots.',
-        showInDialog: false,
-        items: { type: 'string' },
-      },
-      tokenQr: {
-        type: 'boolean',
-        label: 'Token QR',
-        category: 'Advanced',
-        requiresRestart: true,
-        default: false,
-        description:
-          "Print the token-bearing QR even when stdout is captured and the bearer is an operator-supplied (stable) token. Honored from user, system, and system-defaults settings only — a workspace settings file must not be able to push the operator's credential into logs; qwen serve --no-token-qr suppresses the QR for that run. Same effect as qwen serve --token-qr.",
-        showInDialog: false,
-      },
-      maxConcurrentSubSessionsPerCaller: {
-        type: 'integer',
-        label: 'Max Concurrent Sub-Sessions Per Caller',
-        category: 'Advanced',
-        requiresRestart: true,
-        default: 16,
-        minimum: 1,
-        description:
-          'Per-session ceiling on concurrent in-flight sub-sessions spawned via the create_sub_session tool.',
-        showInDialog: false,
-      },
-      maxConcurrentSubSessionsTotal: {
-        type: 'integer',
-        label: 'Max Concurrent Sub-Sessions Total',
-        category: 'Advanced',
-        requiresRestart: true,
-        default: 24,
-        minimum: 1,
-        maximum: 1024,
-        description:
-          'Workspace-wide ceiling on concurrent in-flight sub-sessions across all callers.',
-        showInDialog: false,
-      },
-    },
-  },
-
   // Model providers configuration grouped by provider id
   modelProviders: {
     type: 'object',
@@ -397,6 +326,18 @@ const SETTINGS_SCHEMA = {
     default: {} as ModelProvidersConfig,
     description:
       'Model providers configuration keyed by provider id (a built-in provider protocol such as "openai" or "gemini", or a custom id mapped via providerProtocol). Each entry is an array of model configurations. OpenAI-compatible models can select wireApi: "chat-completions" or "responses"; omitting wireApi keeps the declared protocol (Chat Completions under openai). Released openai-responses declarations remain readable; new setup writes openai plus wireApi.',
+    showInDialog: false,
+    mergeStrategy: MergeStrategy.REPLACE,
+  },
+
+  hub: {
+    type: 'object',
+    label: 'Model Hub',
+    category: 'Model',
+    requiresRestart: true,
+    default: undefined as HubSettings | undefined,
+    description:
+      'A self-hosted OpenAI-compatible model hub. When set, its endpoints appear in /auth, /model discovers its models, and an optional load pill shows request load from a public Grafana dashboard. Not honoured from workspace settings.',
     showInDialog: false,
     mergeStrategy: MergeStrategy.REPLACE,
   },
@@ -449,6 +390,28 @@ const SETTINGS_SCHEMA = {
     showInDialog: false,
   },
 
+  noProxy: {
+    type: 'array',
+    label: 'No Proxy',
+    category: 'Advanced',
+    requiresRestart: true,
+    default: undefined as string[] | undefined,
+    description:
+      'Hosts that bypass the proxy and connect directly. Merged with the NO_PROXY environment variable. Entries match an exact host or a domain suffix (`.example.com`).',
+    showInDialog: false,
+  },
+
+  caCertificates: {
+    type: 'array',
+    label: 'CA Certificates',
+    category: 'Advanced',
+    requiresRestart: true,
+    default: undefined as string[] | undefined,
+    description:
+      'Paths to additional PEM CA certificate files to trust for TLS, on top of the system roots and NODE_EXTRA_CA_CERTS.',
+    showInDialog: false,
+  },
+
   general: {
     type: 'object',
     label: 'General',
@@ -489,90 +452,6 @@ const SETTINGS_SCHEMA = {
         default: false,
         description: 'Enable Vim keybindings',
         showInDialog: true,
-      },
-      voice: {
-        type: 'object',
-        label: 'Voice Dictation',
-        category: 'General',
-        requiresRestart: false,
-        default: {},
-        description: 'Voice dictation settings.',
-        showInDialog: false,
-        properties: {
-          enabled: {
-            type: 'boolean',
-            label: 'Voice Dictation',
-            category: 'General',
-            requiresRestart: false,
-            default: false,
-            description: 'Enable voice dictation in the prompt input.',
-            showInDialog: false,
-          },
-          mode: {
-            type: 'enum',
-            label: 'Voice Dictation Mode',
-            category: 'General',
-            requiresRestart: false,
-            default: 'hold',
-            description:
-              'How push-to-talk behaves: "hold" to talk while held, or "tap" to start and tap (or pause) to stop and submit.',
-            showInDialog: false,
-            options: [
-              { value: 'hold', label: 'Hold to talk' },
-              { value: 'tap', label: 'Tap to toggle' },
-            ],
-          },
-          language: {
-            type: 'string',
-            label: 'Voice Dictation Language',
-            category: 'General',
-            requiresRestart: false,
-            default: '',
-            description:
-              'Preferred spoken language for voice transcription (e.g. "english", "chinese"). Leave empty to auto-detect.',
-            showInDialog: false,
-          },
-          keytermsFile: {
-            type: 'string',
-            label: 'Voice Dictation Keyterms File',
-            category: 'General',
-            requiresRestart: false,
-            default: '',
-            description:
-              'Path to a custom keyterms file (one term per line, "#" for comments) that biases voice transcription toward domain-specific terms. Relative paths resolve from the workspace root; defaults to ".qwen/voice-keyterms.txt" when present. The file contents are sent to the ASR provider and it is read only in trusted workspaces. Only applies to Qwen ASR models (qwen3-asr-*).',
-            showInDialog: false,
-          },
-          refineTranscript: {
-            type: 'boolean',
-            label: 'Refine Voice Transcript',
-            category: 'General',
-            requiresRestart: false,
-            default: true,
-            description:
-              'Clean up voice transcripts with the fast model before inserting them — removes filler words and fixes recognition errors while preserving meaning. Falls back to the raw transcript on failure, and is skipped when no fast model is configured.',
-            showInDialog: false,
-          },
-        },
-      },
-      enableAutoUpdate: {
-        type: 'boolean',
-        label: 'Enable Auto Update',
-        category: 'General',
-        requiresRestart: false,
-        default: true,
-        description:
-          'Enable automatic update checks and installations on startup.',
-        showInDialog: true,
-      },
-      batchAutoCollect: {
-        type: 'boolean',
-        label: 'Batch Auto Collect',
-        category: 'General',
-        requiresRestart: true,
-        default: true,
-        description:
-          "Collect this project's /batch-api tasks in interactive sessions when their batch finishes (also at startup) and write the results. Polls the provider over HTTP; never calls the model and never retries failed items.",
-        showInDialog: false,
       },
       showSessionRecap: {
         type: 'boolean',
@@ -1171,16 +1050,6 @@ const SETTINGS_SCHEMA = {
           'Show welcome back dialog when returning to a project with conversation history. Choosing "Start new chat session" suppresses the dialog for that project until the project summary changes.',
         showInDialog: true,
       },
-      enableUserFeedback: {
-        type: 'boolean',
-        label: 'Enable User Feedback',
-        category: 'UI',
-        requiresRestart: false,
-        default: true,
-        description:
-          'Show optional feedback dialog after conversations to help improve Qwen performance.',
-        showInDialog: true,
-      },
       enableFollowupSuggestions: {
         type: 'boolean',
         label: 'Enable Follow-up Suggestions',
@@ -1241,15 +1110,6 @@ const SETTINGS_SCHEMA = {
           },
         },
       },
-      feedbackLastShownTimestamp: {
-        type: 'number',
-        label: 'Feedback Last Shown Timestamp',
-        category: 'UI',
-        requiresRestart: false,
-        default: 0,
-        description: 'The last time the feedback dialog was shown.',
-        showInDialog: false,
-      },
       compactMode: {
         type: 'boolean',
         label: 'Compact Mode',
@@ -1264,6 +1124,16 @@ const SETTINGS_SCHEMA = {
         description:
           'Retired: compact view is always on in both the TUI and the web shell. The key is kept so existing settings files do not warn.',
         showInDialog: false,
+      },
+      compactInline: {
+        type: 'boolean',
+        label: 'Compact Inline',
+        category: 'UI',
+        requiresRestart: true,
+        default: false,
+        description:
+          'Compact tool display within each group instead of merging across groups. Requires compactMode to be enabled.',
+        showInDialog: true,
       },
       useTerminalBuffer: {
         type: 'boolean',
@@ -1341,7 +1211,7 @@ const SETTINGS_SCHEMA = {
         requiresRestart: false,
         default: '' as string,
         description:
-          'Replace the default ">_ Qwen Code" title shown in the banner info panel. The version suffix is always appended.',
+          'Replace the default ">_ Qwen Code Minimal" title shown in the banner info panel. The version suffix is always appended.',
         showInDialog: false,
       },
       customBannerSubtitle: {
@@ -1419,36 +1289,6 @@ const SETTINGS_SCHEMA = {
     },
   },
 
-  ide: {
-    type: 'object',
-    label: 'IDE',
-    category: 'IDE',
-    requiresRestart: true,
-    default: {},
-    description: 'IDE integration settings.',
-    showInDialog: false,
-    properties: {
-      enabled: {
-        type: 'boolean',
-        label: 'Auto-connect to IDE',
-        category: 'IDE',
-        requiresRestart: true,
-        default: false,
-        description: 'Enable IDE integration mode',
-        showInDialog: true,
-      },
-      hasSeenNudge: {
-        type: 'boolean',
-        label: 'Has Seen IDE Integration Nudge',
-        category: 'IDE',
-        requiresRestart: false,
-        default: false,
-        description: 'Whether the user has seen the IDE integration nudge.',
-        showInDialog: false,
-      },
-    },
-  },
-
   privacy: {
     type: 'object',
     label: 'Privacy',
@@ -1457,72 +1297,7 @@ const SETTINGS_SCHEMA = {
     default: {},
     description: 'Privacy-related settings.',
     showInDialog: false,
-    properties: {
-      usageStatisticsEnabled: {
-        type: 'boolean',
-        label: 'Enable Usage Statistics',
-        category: 'Privacy',
-        requiresRestart: true,
-        default: true,
-        description: 'Enable collection of usage statistics',
-        showInDialog: true,
-      },
-    },
-  },
-
-  telemetry: {
-    type: 'object',
-    label: 'Telemetry',
-    category: 'Advanced',
-    requiresRestart: true,
-    default: undefined as TelemetrySettings | undefined,
-    description: 'Telemetry configuration.',
-    showInDialog: false,
-    jsonSchemaOverride: {
-      type: 'object',
-      properties: {
-        userId: {
-          description:
-            'Stable end-user identifier written to GenAI spans as gen_ai.user.id for ARMS session analysis. This value is linkable personal data: prefer a pseudonymous ID, and configure it only when one process represents one user.',
-          type: 'string',
-        },
-        includeSensitiveSpanAttributes: {
-          description:
-            'When enabled, user prompts, system prompts, tool inputs/outputs, and model responses are written to native OTel span attributes in addition to the log-to-span bridge. Warning: this may expose sensitive data (file contents, shell commands, conversation history) to your OTLP backend.',
-          type: 'boolean',
-          default: false,
-        },
-        sensitiveSpanAttributeMaxLength: {
-          description:
-            'Maximum JavaScript string length for each sensitive native OTel span attribute content payload. Default: 1048576 (1 MiB). Maximum: 104857600 (100 MiB). Set lower if your collector or backend rejects large span attributes.',
-          type: 'integer',
-          minimum: 1,
-          maximum: SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT,
-          default: DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH,
-        },
-        resourceAttributes: {
-          description:
-            'Static resource attributes attached to every span/log/metric the SDK exports (OTLP or file outfile — they share the same Resource). Merged with the OTEL_RESOURCE_ATTRIBUTES env var; settings win on key conflict. Reserved keys (service.version, session.id) are dropped with a warning.',
-          type: 'object',
-          additionalProperties: { type: 'string' },
-          default: {},
-        },
-        metrics: {
-          description: 'Per-signal cardinality controls for exported metrics.',
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            includeSessionId: {
-              description:
-                'Include session.id on every metric data point. WARNING: each CLI session creates a new value, causing unbounded metric time-series fan-out at the backend. Only enable for short-term debugging — spans and logs still carry session.id.',
-              type: 'boolean',
-              default: false,
-            },
-          },
-        },
-      },
-      additionalProperties: true,
-    },
+    properties: {},
   },
 
   outboundCorrelation: {
@@ -1532,17 +1307,11 @@ const SETTINGS_SCHEMA = {
     requiresRestart: true,
     default: undefined as OutboundCorrelationSettings | undefined,
     description:
-      "SECURITY-RELEVANT. Controls what client-side correlation data qwen-code writes into outbound LLM API requests (DashScope, OpenAI, Anthropic, etc.) — separate from `telemetry.*` which governs data flow into the operator's OWN OTLP collector. All values default to off. Opt in only when the LLM provider also reports into your OTel collector for cross-process trace stitching (e.g. ARMS Tracing + DashScope).",
+      'SECURITY-RELEVANT. Controls what client-side correlation data qwen-code writes into outbound LLM API requests. All values default to off.',
     showInDialog: false,
     jsonSchemaOverride: {
       type: 'object',
       properties: {
-        propagateTraceContext: {
-          description:
-            "Requires `telemetry.enabled: true`. Inject W3C `traceparent` on outbound `fetch` requests (LLM SDK calls, MCP StreamableHTTP, WebFetch, ...) AND as a `TRACEPARENT` environment variable in shell child processes (Bash tool, hooks, monitor). When enabled, any existing `TRACEPARENT` in the parent environment is overwritten with qwen-code's own trace context. Default: false — trace context stays internal to the operator's OTLP collector. Set true when you want cross-process trace stitching with an OTel-aware LLM provider (e.g. ARMS+DashScope) or need shell scripts / CLI tools to participate in distributed tracing.",
-          type: 'boolean',
-          default: false,
-        },
         allowDynamicHeaderValues: {
           description:
             'SECURITY-RELEVANT. Allow `modelProviders[].generationConfig.customHeaders` values to contain runtime placeholders — currently `${session_id}` — expanded per request instead of frozen at client construction. Default false: a value containing a placeholder is dropped rather than sent. Enable when a gateway requires a stable per-conversation identifier (e.g. OpenCode Go requires `x-opencode-session`). Which hosts receive the value and what the header is called are decided by the provider entry you attach the header to; this switch only decides whether `${session_id}` may be expanded from live session state and does not identify which settings source supplied the header.',
@@ -1563,49 +1332,6 @@ const SETTINGS_SCHEMA = {
     description:
       'Model used for generating prompt suggestions and speculative execution. Leave empty to use the main model. A smaller/faster model (e.g., qwen3-coder-flash) reduces latency and cost.',
     showInDialog: true,
-  },
-
-  batch: {
-    type: 'object',
-    label: 'Batch',
-    category: 'Model',
-    requiresRestart: true,
-    default: {},
-    description:
-      'Independent model selection for /batch-api and qwen batch. Unset to reuse the main model configuration.',
-    showInDialog: false,
-    properties: {
-      model: {
-        type: 'string',
-        label: 'Batch Model',
-        category: 'Model',
-        requiresRestart: true,
-        default: undefined as string | undefined,
-        description:
-          'Model ID in modelProviders. The selected entry supplies the endpoint, envKey and generationConfig.',
-        showInDialog: false,
-      },
-      authType: {
-        type: 'string',
-        label: 'Batch Auth Type',
-        category: 'Model',
-        requiresRestart: true,
-        default: undefined as string | undefined,
-        description:
-          'Batch protocol. Defaults to openai; only OpenAI-compatible chat-completions is supported.',
-        showInDialog: false,
-      },
-      baseUrl: {
-        type: 'string',
-        label: 'Batch Model Base URL',
-        category: 'Model',
-        requiresRestart: true,
-        default: undefined as string | undefined,
-        description:
-          'Optional exact modelProviders baseUrl to distinguish entries with the same model ID.',
-        showInDialog: false,
-      },
-    },
   },
 
   advisorMaxUses: {
@@ -1688,17 +1414,6 @@ const SETTINGS_SCHEMA = {
     description:
       'Ordered list of fallback model IDs (comma-separated, max 3) to try when the primary model hits capacity errors (429/503/529). Example: "qwen-plus,qwen-turbo". Set via CLI with --fallback-model.',
     showInDialog: true,
-  },
-
-  voiceModel: {
-    type: 'string',
-    label: 'Voice Model',
-    category: 'Model',
-    requiresRestart: false,
-    default: '',
-    description:
-      'Model used for voice transcription. Set with /model --voice. Leave empty to keep voice dictation disabled until a voice model is selected.',
-    showInDialog: false,
   },
 
   model: {
@@ -2484,6 +2199,130 @@ const SETTINGS_SCHEMA = {
           'Switch memory recall from the flat MEMORY.md listing to the structured protocol: hierarchical memory tree, focused subtree, and the search_memory tool. Off by default — while off, the metadata migration that would make the corpus structured-ready is never scheduled, so the protocol costs no background model calls. Override with QWEN_CODE_MEMORY_STRUCTURED_RECALL=0|1.',
         showInDialog: false,
       },
+      searchIndex: {
+        type: 'object',
+        label: 'Memory Search Index',
+        category: 'Memory',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Settings for the local full-text search index over memory files and session transcripts.',
+        showInDialog: false,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Memory Search Index',
+            category: 'Memory',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Maintain a local full-text search index over memory files (and, if enabled below, session transcripts) for recall queries.',
+            showInDialog: false,
+          },
+          includeTranscripts: {
+            type: 'boolean',
+            label: 'Index Session Transcripts',
+            category: 'Memory',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Also index recent session transcripts (redacted, retention-capped) alongside memory files.',
+            showInDialog: false,
+          },
+          maxTranscriptSessions: {
+            type: 'number',
+            label: 'Max Transcript Sessions',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 50,
+            description:
+              'Keep at most this many of the newest-mtime session transcripts in the search index.',
+            showInDialog: false,
+          },
+          maxTranscriptAgeDays: {
+            type: 'number',
+            label: 'Max Transcript Age (days)',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 90,
+            description:
+              'Drop session transcripts older than this many days from the search index.',
+            showInDialog: false,
+          },
+        },
+      },
+      skillOutcomes: {
+        type: 'object',
+        label: 'Skill Outcomes',
+        category: 'Memory',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Settings for tracking skill usage outcomes and self-improvement heuristics.',
+        showInDialog: false,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Skill Outcomes',
+            category: 'Memory',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Track skill usage outcomes to inform self-improvement heuristics.',
+            showInDialog: false,
+          },
+          useCorrectionHeuristic: {
+            type: 'boolean',
+            label: 'Use Correction Heuristic',
+            category: 'Memory',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Detect user corrections following skill use as a signal that the skill hurt.',
+            showInDialog: false,
+          },
+          minSamples: {
+            type: 'number',
+            label: 'Minimum Samples',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 5,
+            description:
+              'Minimum number of recorded outcomes before a skill is considered for flagging.',
+            showInDialog: false,
+          },
+          hurtRatio: {
+            type: 'number',
+            label: 'Hurt Ratio Threshold',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 0.6,
+            description:
+              'Fraction of negative outcomes above which a skill is flagged as hurting more than helping.',
+            showInDialog: false,
+          },
+          unusedSessions: {
+            type: 'number',
+            label: 'Unused Sessions Threshold',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 20,
+            description:
+              'Number of sessions without use after which a skill is flagged as unused.',
+            showInDialog: false,
+          },
+          maxEvidencePerSkill: {
+            type: 'number',
+            label: 'Max Evidence Per Skill',
+            category: 'Memory',
+            requiresRestart: false,
+            default: 5,
+            description:
+              'Maximum number of evidence entries retained per skill for outcome tracking.',
+            showInDialog: false,
+          },
+        },
+      },
     },
   },
 
@@ -2622,6 +2461,63 @@ const SETTINGS_SCHEMA = {
           'skills can define hooks and commands.',
         showInDialog: false,
         mergeStrategy: MergeStrategy.UNION,
+      },
+      enforceInvocation: {
+        type: 'boolean',
+        label: 'Enforce Skill Invocation',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: true,
+        description:
+          'When enabled (default), prepend a policy to the <available_skills> ' +
+          'snapshot instructing the model to invoke a relevant skill before ' +
+          'responding (process skills first). Set false to restore plain ' +
+          'upstream behavior.',
+        showInDialog: false,
+      },
+      planFirstGate: {
+        type: 'boolean',
+        label: 'Plan-First Write Gate',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: true,
+        description:
+          'When enabled (default), block file-writing tools (write_file, ' +
+          'edit, notebook_edit) until the ' +
+          'superpowers:writing-plans skill has run this session. Interactive ' +
+          'only; docs/superpowers/ writes are always allowed. Choose "write ' +
+          'anyway" at the prompt to override for the session. Set false to ' +
+          'disable.',
+        showInDialog: false,
+      },
+      enforceAskQuestion: {
+        type: 'boolean',
+        label: 'Enforce AskUserQuestion Menu',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: true,
+        description:
+          'When enabled (default), while the superpowers:brainstorming skill ' +
+          'is active on an interactive session, re-prompt the model to re-ask ' +
+          'via the AskUserQuestion tool when it poses a multiple-choice ' +
+          'question as plain text (so it renders as a native menu). Bounded to ' +
+          '2 re-prompts. Set false to disable.',
+        showInDialog: false,
+      },
+      enforceWritingPlans: {
+        type: 'boolean',
+        label: 'Enforce Writing-Plans Before Implementation',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: true,
+        description:
+          'When enabled (default), once the superpowers:brainstorming skill has ' +
+          'been used this session and superpowers:writing-plans has not, ' +
+          're-prompt the model to invoke superpowers:writing-plans when it ' +
+          'concludes an interactive turn with a substantive declarative ' +
+          '(non-question) message — so a real plan is produced before ' +
+          'implementation. Bounded to 2 re-prompts. Set false to disable.',
+        showInDialog: false,
       },
     },
   },
@@ -3421,11 +3317,9 @@ const SETTINGS_SCHEMA = {
           'unreachable quorum. Unset = floor(M/2)+1. ' +
           'Requires daemon restart — read once at boot.',
         showInDialog: false,
-        // run-qwen-serve.ts validates `Number.isInteger(n) && n >= 1` and
-        // refuses to boot otherwise. Override the generated schema so IDE
-        // (VSCode, JetBrains via JSON Schema) flags `0`, `-1`, `1.5`
-        // BEFORE the user restarts the daemon. The bare `type:'number'`
-        // mapping accepts all of these.
+        // Override the generated schema so IDE (VSCode, JetBrains via JSON
+        // Schema) flags `0`, `-1`, `1.5`. The bare `type:'number'` mapping
+        // accepts all of these.
         jsonSchemaOverride: {
           type: 'integer',
           minimum: 1,
@@ -3608,21 +3502,6 @@ const SETTINGS_SCHEMA = {
         description:
           'When true, HTTP hooks may target private/link-local IP ranges (the SSRF IP-range checks are skipped). Cloud metadata hostnames (e.g. 169.254.169.254, metadata.google.internal) remain blocked. Only honored from User, System, and SystemDefaults settings scopes; values set in Workspace settings are ignored so a cloned repository cannot self-grant this bypass. Enable only in trusted, managed environments, and pair with security.allowedHttpHookUrls.',
         showInDialog: false,
-      },
-      allowedInsecureVoiceBaseUrls: {
-        type: 'array',
-        label: 'Allowed Insecure Voice Base URLs',
-        category: 'Security',
-        requiresRestart: false,
-        default: [] as string[],
-        description:
-          'Complete voice base URLs that may use HTTP or private-network addresses. Entries must include an explicit http:// or https:// scheme and the full provider path; only URL serialization and trailing slashes are normalized. Wildcards are not supported; metadata, link-local, local-use NAT64, 6to4, and Teredo addresses remain blocked even when listed, as do hostnames that resolve to loopback; IPv4-mapped, IPv4-compatible, and well-known NAT64 (64:ff9b::/96) literals are classified by their embedded IPv4 address. Only honored from User, System, and SystemDefaults settings scopes; values set in Workspace settings are ignored. Enable only for trusted endpoints in managed private networks. Cleartext HTTP also exposes the provider API key transmitted in the Authorization header. An allowlisted hostname is only as trustworthy as its DNS; prefer IP-literal entries when the gateway address is stable.',
-        showInDialog: false,
-        items: {
-          type: 'string',
-          description:
-            'Complete voice provider base URL with explicit scheme and full path (no wildcards)',
-        },
       },
     },
   },
@@ -4253,78 +4132,6 @@ const SETTINGS_SCHEMA = {
         description:
           'Run the experimental JavaScript Mod command subset from enabled extensions in trusted headless sessions.',
         showInDialog: false,
-      },
-      liveVoice: {
-        type: 'object',
-        label: 'Live Voice',
-        category: 'Experimental',
-        requiresRestart: false,
-        default: {},
-        description:
-          'Experimental realtime voice conversations through Qwen Live Host on macOS WebShell.',
-        showInDialog: false,
-        properties: {
-          enabled: {
-            type: 'boolean',
-            label: 'Live Voice',
-            category: 'Experimental',
-            requiresRestart: false,
-            default: false,
-            description:
-              'Enable experimental realtime voice conversations on macOS WebShell.',
-            showInDialog: false,
-          },
-          apiKey: {
-            type: 'string',
-            label: 'DashScope Realtime API Key',
-            category: 'Experimental',
-            requiresRestart: false,
-            default: '' as string,
-            description:
-              'Dedicated DashScope API key for qwen3.5-omni-plus-realtime.',
-            showInDialog: false,
-          },
-          model: {
-            type: 'string',
-            label: 'Live Voice Model',
-            category: 'Experimental',
-            requiresRestart: false,
-            default: 'qwen3.5-omni-plus-realtime' as string,
-            description:
-              'Realtime model used for Live Voice: a modelId or provider:modelId. When it names a modelProviders entry with realtimeOnly: true, that entry supplies the endpoint (derived from baseUrl) and the key (envKey); otherwise endpoint and apiKey below are used.',
-            showInDialog: false,
-          },
-          endpoint: {
-            type: 'string',
-            label: 'Live Voice Endpoint',
-            category: 'Experimental',
-            requiresRestart: false,
-            default:
-              'wss://dashscope.aliyuncs.com/api-ws/v1/realtime' as string,
-            description:
-              'Base URL of the DashScope Realtime service, such as https://dashscope.aliyuncs.com/compatible-mode/v1; a Realtime WebSocket URL is also accepted.',
-            showInDialog: false,
-          },
-          voice: {
-            type: 'string',
-            label: 'Live Voice Output Voice',
-            category: 'Experimental',
-            requiresRestart: false,
-            default: 'Tina' as string,
-            description: 'Voice used for Realtime model audio output.',
-            showInDialog: false,
-          },
-          shortcut: {
-            type: 'string',
-            label: 'Live Voice Global Shortcut',
-            category: 'Experimental',
-            requiresRestart: false,
-            default: 'Command+E' as string,
-            description:
-              'Electron accelerator registered globally by Qwen Live Host.',
-            showInDialog: false,
-          },
-        },
       },
       sessionWorkflow: {
         type: 'boolean',

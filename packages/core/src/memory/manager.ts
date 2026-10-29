@@ -62,8 +62,19 @@ import {
 import {
   getAutoMemoryConsolidationLockPath,
   getAutoMemoryMetadataPath,
+  getAutoMemoryProjectStateDir,
 } from './paths.js';
 import { ensureAutoMemoryScaffold } from './store.js';
+import {
+  scanAutoMemoryTopicDocuments,
+  scanUserAutoMemoryTopicDocuments,
+} from './scan.js';
+import { MemorySearchIndex, type MemoryIndexDoc } from './search-index.js';
+import {
+  readTranscriptDocsIncremental,
+  type IncrementalTranscriptResult,
+  type TranscriptFileState,
+} from './transcript-source.js';
 import { runAutoMemoryExtract } from './extract.js';
 import {
   runManagedAutoMemoryDream,
@@ -102,6 +113,10 @@ import {
   rejectPendingSkill,
   type PendingSkill,
 } from './pending-skills.js';
+import { readSkillStats, writeSkillStats } from './skill-stats-store.js';
+import { deactivateStaleSkills } from './skill-deactivation.js';
+import { SkillOutcomeTracker } from './skill-outcome-tracker.js';
+import type { NextTurnSignals } from './skill-outcome-scoring.js';
 import type { AutoMemoryMetadata } from './types.js';
 import type { AutoMemoryDocumentCache } from './scan.js';
 import type { MemoryBodyCoverage } from './search-memory.js';
@@ -623,6 +638,215 @@ async function releaseUserDreamLock(): Promise<void> {
   await fs.rm(getUserAutoMemoryConsolidationLockPath(), { force: true });
 }
 
+// ─── Search index reconciliation ───────────────────────────────────────────────
+
+const SEARCH_INDEX_FILENAME = 'search-index.json';
+
+function getSearchIndexJsonPath(projectRoot: string): string {
+  return path.join(
+    getAutoMemoryProjectStateDir(projectRoot),
+    SEARCH_INDEX_FILENAME,
+  );
+}
+
+/**
+ * Minimal shape of MiniSearch's `AsPlainObject` serialization that this
+ * module reads back out. `documentIds` maps an internal short id to the
+ * doc's real `id`; `storedFields` maps the same short id to the fields
+ * listed in `storeFields` (see search-index.ts's MINISEARCH_OPTIONS).
+ */
+interface StoredIndexEntry {
+  source?: 'memory' | 'transcript';
+  mtimeMs?: number;
+  sessionId?: string;
+}
+interface PersistedMiniShape {
+  mini?: {
+    documentIds?: Record<string, string>;
+    storedFields?: Record<string, StoredIndexEntry>;
+  };
+}
+
+/**
+ * Enumerate the ids (and stored fields) of every doc of the given `source`
+ * currently held by `index`, derived from the index's own `toJSON()`. This
+ * lets reconcile compute additions/removals without a separate persisted
+ * id-tracking structure that would go stale across MemoryManager restarts —
+ * the index itself is always the source of truth for what's indexed.
+ */
+function enumerateIndexedDocs(
+  index: MemorySearchIndex,
+  source: 'memory' | 'transcript',
+): Map<string, StoredIndexEntry> {
+  const result = new Map<string, StoredIndexEntry>();
+  let parsed: PersistedMiniShape;
+  try {
+    parsed = JSON.parse(index.toJSON()) as PersistedMiniShape;
+  } catch {
+    return result;
+  }
+  const documentIds = parsed.mini?.documentIds ?? {};
+  const storedFields = parsed.mini?.storedFields ?? {};
+  for (const [shortId, id] of Object.entries(documentIds)) {
+    const stored = storedFields[shortId];
+    if (stored?.source === source) {
+      result.set(id, stored);
+    }
+  }
+  return result;
+}
+
+async function loadOrCreateSearchIndex(
+  projectRoot: string,
+): Promise<MemorySearchIndex> {
+  try {
+    const raw = await fs.readFile(getSearchIndexJsonPath(projectRoot), 'utf-8');
+    const loaded = MemorySearchIndex.fromJSON(raw);
+    if (loaded) return loaded;
+  } catch {
+    // Missing file, unreadable, or corrupt JSON — rebuild from scratch.
+  }
+  return new MemorySearchIndex();
+}
+
+async function reconcileMemoryDocsInIndex(
+  projectRoot: string,
+  index: MemorySearchIndex,
+): Promise<void> {
+  // NOTE: no `.catch(() => [])` here. `scan.ts`'s listMarkdownFiles already
+  // maps ENOENT ("no memory dir yet") to `[]`, so a genuinely-missing dir
+  // reconciles to an empty scan and is safe. A real error (EACCES/EIO while
+  // listing the dir) MUST propagate to ensureSearchIndexReady's outer
+  // try/catch BEFORE the stale-id removal + persist below run — otherwise a
+  // transient read failure would coerce the scan to `[]`, delete every
+  // previously-indexed memory doc, and persist that emptied index over
+  // search-index.json (silent data loss). Propagating instead leaves the
+  // prior index untouched on disk and degrades getSearchIndex() to null so
+  // recall falls back.
+  const [projectDocs, userDocs] = await Promise.all([
+    scanAutoMemoryTopicDocuments(projectRoot),
+    scanUserAutoMemoryTopicDocuments(),
+  ]);
+
+  const existing = enumerateIndexedDocs(index, 'memory');
+  const seenIds = new Set<string>();
+  const toIndex: MemoryIndexDoc[] = [];
+
+  const collect = (tier: 'project' | 'user', docs: typeof projectDocs) => {
+    for (const doc of docs) {
+      const id = doc.filePath;
+      seenIds.add(id);
+      const prior = existing.get(id);
+      if (prior && prior.mtimeMs === doc.mtimeMs) {
+        continue; // unchanged since the last reconcile
+      }
+      toIndex.push({
+        id,
+        source: 'memory',
+        tier,
+        topic: doc.type,
+        name: doc.title,
+        description: doc.description,
+        body: doc.body,
+        mtimeMs: doc.mtimeMs,
+      });
+    }
+  };
+  collect('project', projectDocs);
+  collect('user', userDocs);
+
+  if (toIndex.length > 0) {
+    index.addOrReplace(toIndex);
+  }
+  const staleIds = [...existing.keys()].filter((id) => !seenIds.has(id));
+  if (staleIds.length > 0) {
+    index.remove(staleIds);
+  }
+}
+
+/**
+ * Reconciles transcript docs into `index`, reading only session files that
+ * are new or have changed since the last reconcile (per `known` — see
+ * {@link readTranscriptDocsIncremental}). Historical session files are
+ * immutable, so a file whose `{mtimeMs, size}` is unchanged contributes no
+ * work here at all: no read, no parse, no redact.
+ *
+ * Returns the updated per-file state map; the caller is responsible for
+ * persisting it (in `MemoryManager.transcriptFileStates`) and passing it
+ * back in as `known` on the next call for this `projectRoot`.
+ */
+async function reconcileTranscriptDocsInIndex(
+  projectRoot: string,
+  index: MemorySearchIndex,
+  settings: { maxTranscriptSessions: number; maxTranscriptAgeDays: number },
+  known: Map<string, TranscriptFileState>,
+): Promise<Map<string, TranscriptFileState>> {
+  const result: IncrementalTranscriptResult =
+    await readTranscriptDocsIncremental(
+      projectRoot,
+      {
+        maxSessions: settings.maxTranscriptSessions,
+        maxAgeDays: settings.maxTranscriptAgeDays,
+      },
+      known,
+    ).catch(
+      () =>
+        ({
+          newDocs: [],
+          fileStates: known,
+          currentSessionIds: new Set<string>(),
+        }) satisfies IncrementalTranscriptResult,
+    );
+
+  // Transcript docs are content-addressed (`${sessionId}#${uuid}`) and
+  // immutable once written, so `addOrReplace` is safe to call even for a
+  // grown file's already-indexed records (addOrReplace dedups by id) —
+  // there's no mtime-based "changed doc" case to detect the way memory
+  // docs have.
+  if (result.newDocs.length > 0) {
+    const newIndexDocs: MemoryIndexDoc[] = result.newDocs.map((d) => ({
+      id: d.id,
+      source: 'transcript',
+      sessionId: d.sessionId,
+      ts: d.ts,
+      text: d.text,
+    }));
+    index.addOrReplace(newIndexDocs);
+  }
+
+  // Prune stale docs by diffing the PERSISTED index against this pass's
+  // in-retention sessionIds — NOT against the in-memory `known` map. `known`
+  // starts empty on every fresh process (MemoryManager is per-Config, never
+  // seeded from the persisted index), so a `known`-based diff would never
+  // notice a session file deleted between two process lifetimes: process 1
+  // indexes + persists session-a, session-a.jsonl is deleted, process 2
+  // starts with empty `known` and would leave session-a's docs in the
+  // persisted index forever. Diffing the index itself is immune to that —
+  // it's the authoritative record of what's currently indexed.
+  const existing = enumerateIndexedDocs(index, 'transcript');
+  const staleIds = [...existing.entries()]
+    .filter(
+      ([, stored]) =>
+        stored.sessionId === undefined ||
+        !result.currentSessionIds.has(stored.sessionId),
+    )
+    .map(([id]) => id);
+  if (staleIds.length > 0) {
+    index.remove(staleIds);
+  }
+
+  return result.fileStates;
+}
+
+async function persistSearchIndexToDisk(
+  projectRoot: string,
+  index: MemorySearchIndex,
+): Promise<void> {
+  const jsonPath = getSearchIndexJsonPath(projectRoot);
+  await fs.mkdir(path.dirname(jsonPath), { recursive: true });
+  await atomicWriteFile(jsonPath, index.toJSON(), { encoding: 'utf-8' });
+}
+
 // ─── MemoryManager ────────────────────────────────────────────────────────────
 
 /**
@@ -694,6 +918,42 @@ export class MemoryManager {
   private readonly exhaustedBodyRefsInCurrentTurn = new Set<string>();
   private readonly searchMemoryRequestsInCurrentTurn = new Set<string>();
   private readonly recallDocumentCache: AutoMemoryDocumentCache = new Map();
+
+  // ── Search index state ───────────────────────────────────────────────────────
+  // One MemorySearchIndex per projectRoot, loaded (or built) lazily on the
+  // first ensureSearchIndexReady() call and kept live in memory thereafter.
+  // Absence of a key here (as opposed to a null value) means "not yet
+  // built"; a project whose index is disabled or failed to build is
+  // represented the same way, so getSearchIndex() returning null covers
+  // both "never called" and "disabled/unavailable" — callers only need to
+  // null-check, not distinguish the two.
+  private readonly searchIndexes = new Map<string, MemorySearchIndex>();
+
+  // One `{path -> {mtimeMs, size}}` map per projectRoot, tracking every
+  // in-retention transcript session file as of the last successful
+  // reconcile. `reconcileTranscriptDocsInIndex` passes this in as `known`
+  // so unchanged (immutable, already-indexed) session files are never
+  // re-read on subsequent turns — see transcript-source.ts's
+  // `readTranscriptDocsIncremental`. Absence of a projectRoot key means
+  // "no reconcile has succeeded yet for this project", identical in
+  // meaning to an empty map (both cause every file to be treated as new).
+  private readonly transcriptFileStates = new Map<
+    string,
+    Map<string, TranscriptFileState>
+  >();
+
+  // ── Skill outcome tracking state ─────────────────────────────────────────
+  // One SkillOutcomeTracker per projectRoot, created lazily on first
+  // registerSkillLaunch/scoreSkillLaunches call and kept live thereafter —
+  // mirrors the searchIndexes cache above.
+  private readonly skillOutcomeTrackers = new Map<
+    string,
+    SkillOutcomeTracker
+  >();
+
+  // Per-projectRoot promise chain serializing skill-stats.json
+  // read-modify-write — see withSkillStatsLock() below.
+  private readonly skillStatsLocks = new Map<string, Promise<unknown>>();
 
   constructor(sessionScanner: SessionScannerFn = defaultSessionScanner) {
     this.sessionScanner = sessionScanner;
@@ -1427,6 +1687,39 @@ export class MemoryManager {
         });
         debugLogger.warn('Skipping skill review: memory pressure too high.');
         return record;
+      }
+
+      // Best-effort: move any auto-skills that have consistently hurt more
+      // than they helped out of the scanned skills root (reversible — see
+      // skill-deactivation.ts). Runs before the review agent so a
+      // just-deactivated skill's `deactivatedAt` stamp is reflected in the
+      // stats block the agent's prompt is built from. Never allowed to
+      // break skill review.
+      try {
+        const settings = params.config?.getSkillOutcomesSettings?.();
+        if (settings?.enabled) {
+          const { minSamples, hurtRatio, unusedSessions } = settings;
+          await this.withSkillStatsLock(params.projectRoot, async () => {
+            const stats = await readSkillStats(params.projectRoot);
+            const now = params.now?.getTime() ?? Date.now();
+            const deactivated = await deactivateStaleSkills(
+              params.projectRoot,
+              stats,
+              { minSamples, hurtRatio, unusedSessions },
+              now,
+            );
+            if (deactivated.length > 0) {
+              await writeSkillStats(params.projectRoot, stats);
+              debugLogger.debug(
+                `Deactivated ${deactivated.length} stale auto-skill(s): ${deactivated.join(', ')}`,
+              );
+            }
+          });
+        }
+      } catch (err) {
+        debugLogger.warn(
+          `Skill deactivation pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
 
       // Snapshot existing skill dirs BEFORE the agent runs so staging can tell
@@ -2237,6 +2530,78 @@ export class MemoryManager {
     return record;
   }
 
+  // ─── Search index ─────────────────────────────────────────────────────────────
+
+  /**
+   * Return the live in-memory search index for `projectRoot`, or `null`
+   * when the search index is disabled, hasn't been built yet, or the last
+   * `ensureSearchIndexReady()` call for this project failed. Callers
+   * (recall) should treat `null` as "fall back to the non-indexed path" —
+   * never throw on it.
+   */
+  getSearchIndex(projectRoot: string): MemorySearchIndex | null {
+    return this.searchIndexes.get(projectRoot) ?? null;
+  }
+
+  /**
+   * Idempotent, incremental reconcile of the memory/transcript search
+   * index for `projectRoot`. Safe (and intended) to call once per turn:
+   * on the first call it loads the persisted index (or builds a fresh
+   * one), and every call re-scans current memory files (and, if enabled,
+   * transcripts) to add/replace changed docs and remove stale ones, then
+   * persists the result.
+   *
+   * Any failure along the way (disk I/O, corrupt persisted index, a scan
+   * throwing) is swallowed here: it leaves (or resets) `getSearchIndex()`
+   * to return `null` for this project so callers naturally fall back to
+   * the non-indexed recall path instead of throwing into the request loop.
+   */
+  async ensureSearchIndexReady(
+    projectRoot: string,
+    config?: Config,
+  ): Promise<void> {
+    try {
+      // Resolve settings INSIDE the guard: a missing/throwing accessor must
+      // degrade to a null index (leaving recall to fall back), not reject
+      // into the caller.
+      const settings = config?.getMemorySearchIndexSettings() ?? {
+        enabled: true,
+        includeTranscripts: true,
+        maxTranscriptSessions: 50,
+        maxTranscriptAgeDays: 90,
+      };
+      if (!settings.enabled) {
+        this.searchIndexes.delete(projectRoot);
+        return;
+      }
+      let index = this.searchIndexes.get(projectRoot);
+      if (!index) {
+        index = await loadOrCreateSearchIndex(projectRoot);
+      }
+      await reconcileMemoryDocsInIndex(projectRoot, index);
+      if (settings.includeTranscripts) {
+        const knownFileStates =
+          this.transcriptFileStates.get(projectRoot) ?? new Map();
+        const fileStates = await reconcileTranscriptDocsInIndex(
+          projectRoot,
+          index,
+          settings,
+          knownFileStates,
+        );
+        this.transcriptFileStates.set(projectRoot, fileStates);
+      }
+      await persistSearchIndexToDisk(projectRoot, index);
+      this.searchIndexes.set(projectRoot, index);
+    } catch (error) {
+      debugLogger.warn(
+        `Failed to reconcile search index for ${projectRoot}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      this.searchIndexes.delete(projectRoot);
+    }
+  }
+
   // ─── Recall ───────────────────────────────────────────────────────────────────
 
   /** Select and format relevant memory for the given query. */
@@ -2541,6 +2906,111 @@ export class MemoryManager {
    */
   buildConsolidationPrompt(memoryRoot: string, transcriptDir: string): string {
     return buildConsolidationTaskPrompt(memoryRoot, transcriptDir);
+  }
+
+  // ─── Skill outcome tracking ─────────────────────────────────────────────────
+
+  // NOTE: `config` is consulted only on cache-miss (the first call for a
+  // given projectRoot) — the tracker binds its settings source to whichever
+  // Config created it and later calls' `config` argument is ignored. This is
+  // safe under the 1:1 Config↔MemoryManager invariant (each Config owns its
+  // own MemoryManager via getMemoryManager()), so every call for a projectRoot
+  // carries the same Config anyway.
+  private getSkillOutcomeTracker(
+    projectRoot: string,
+    config: Config,
+  ): SkillOutcomeTracker {
+    let tracker = this.skillOutcomeTrackers.get(projectRoot);
+    if (!tracker) {
+      tracker = new SkillOutcomeTracker(projectRoot, () =>
+        config.getSkillOutcomesSettings(),
+      );
+      this.skillOutcomeTrackers.set(projectRoot, tracker);
+    }
+    return tracker;
+  }
+
+  /**
+   * Serialize read-modify-write on skill-stats.json per projectRoot so the
+   * scoring path (scoreSkillLaunches) and the deactivation pass
+   * (runSkillReview) can't lose each other's updates. A rejecting `fn` does
+   * not poison the chain for the next caller.
+   */
+  private withSkillStatsLock<T>(
+    projectRoot: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const prev = this.skillStatsLocks.get(projectRoot) ?? Promise.resolve();
+    const run = prev.then(fn, fn); // run fn regardless of prior outcome
+    // Keep the chain alive but swallow rejections so the map entry never rejects.
+    this.skillStatsLocks.set(
+      projectRoot,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  /**
+   * Register a completed skill launch attempt for outcome tracking. Called
+   * from the `skill` tool right after each launch. Fire-and-forget and
+   * best-effort: never throws, so a bug here can never break skill
+   * launching. No-ops when `memory.skillOutcomes.enabled` is false.
+   */
+  registerSkillLaunch(
+    projectRoot: string,
+    skill: string,
+    sessionId: string,
+    launchTs: number,
+    launchSucceeded: boolean,
+    config: Config,
+  ): void {
+    try {
+      this.getSkillOutcomeTracker(projectRoot, config).registerLaunch(
+        skill,
+        sessionId,
+        launchTs,
+        launchSucceeded,
+      );
+    } catch (error) {
+      debugLogger.debug(
+        `registerSkillLaunch(${skill}) failed — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Score and persist every skill launch pending for `projectRoot`, then
+   * clear the queue. Called once at the start of each UserQuery turn from
+   * client.ts, using that turn's incoming user message (and any other
+   * available signals) to judge launches queued in earlier turns.
+   * Best-effort: never throws, so a scoring failure can never affect the
+   * turn.
+   */
+  async scoreSkillLaunches(
+    projectRoot: string,
+    signals: NextTurnSignals,
+    redact: (s: string) => string,
+    config: Config,
+  ): Promise<void> {
+    try {
+      await this.withSkillStatsLock(projectRoot, () =>
+        this.getSkillOutcomeTracker(projectRoot, config).scorePending(
+          () => signals,
+          redact,
+        ),
+      );
+    } catch (error) {
+      debugLogger.debug(
+        `scoreSkillLaunches(${projectRoot}) failed — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   // ─── Test helpers ─────────────────────────────────────────────────────────────

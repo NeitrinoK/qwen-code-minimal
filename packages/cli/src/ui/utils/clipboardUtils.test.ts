@@ -45,7 +45,7 @@ vi.mock('@teddyzhu/clipboard', async () => {
   // Both exports share one implementation so the throw flags apply no matter
   // which shape the caller destructures. The flags are read per call, not per
   // factory evaluation.
-  const ClipboardManager = vi.fn().mockImplementation(() => {
+  const ClipboardManager = vi.fn().mockImplementation(function () {
     if (clipboardMockState.throwOnConstruct) {
       throw new Error('native clipboard addon ABI mismatch');
     }
@@ -1257,12 +1257,12 @@ describe('clipboardUtils', () => {
   describe('writeOsc52', () => {
     const originalStdoutIsTTY = process.stdout.isTTY;
     const originalStderrIsTTY = process.stderr.isTTY;
-    let stdoutWriteMock: ReturnType<typeof vi.fn>;
-    let stderrWriteMock: ReturnType<typeof vi.fn>;
+    let stdoutWriteMock: ReturnType<typeof vi.fn<typeof process.stdout.write>>;
+    let stderrWriteMock: ReturnType<typeof vi.fn<typeof process.stderr.write>>;
 
     beforeEach(() => {
-      stdoutWriteMock = vi.fn();
-      stderrWriteMock = vi.fn();
+      stdoutWriteMock = vi.fn<typeof process.stdout.write>();
+      stderrWriteMock = vi.fn<typeof process.stderr.write>();
       // Control multiplexer env vars for deterministic tests
       vi.stubEnv('TMUX', undefined as unknown as string);
       vi.stubEnv('STY', undefined as unknown as string);
@@ -1275,8 +1275,10 @@ describe('clipboardUtils', () => {
         value: false,
         configurable: true,
       });
-      process.stdout.write = stdoutWriteMock;
-      process.stderr.write = stderrWriteMock;
+      // vitest 4's Mock wrapper of an overloaded fn isn't directly assignable
+      // to the overloaded write() signature; cast at the assignment site.
+      process.stdout.write = stdoutWriteMock as typeof process.stdout.write;
+      process.stderr.write = stderrWriteMock as typeof process.stderr.write;
     });
 
     afterEach(() => {

@@ -10,7 +10,7 @@
  * OpenTUI arena dialogs (M4 deep-fidelity port of ink arena/*):
  *
  *  - start:  MultiSelect over config.getAllConfiguredModels() (runtime /
- *    image-only models filtered out, qwen-oauth disabled); confirming fills
+ *    image-only models filtered out); confirming fills
  *    the composer with `/arena start --models …` — the dialog never launches
  *    the session itself, exactly like ink's handleArenaModelsSelected.
  *  - status: live agent table (status/time/tokens/rounds/tools) refreshed on
@@ -25,7 +25,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import {
   ArenaSessionStatus,
-  AuthType,
   DISPLAY_MODE,
   isSettledStatus,
   isSuccessStatus,
@@ -183,7 +182,8 @@ function ArenaStart({
         return {
           key: token,
           label: `[${m.authType}] ${m.label}`,
-          disabled: m.authType === AuthType.QWEN_OAUTH,
+          // Every configured model is Arena-capable in this build.
+          disabled: false,
         };
       });
   }, [config]);

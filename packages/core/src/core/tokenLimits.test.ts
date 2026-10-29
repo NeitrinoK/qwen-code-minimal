@@ -257,6 +257,18 @@ describe('tokenLimit', () => {
       expect(tokenLimit('coder-model')).toBe(1000000);
     });
 
+    it('should return 256K for open-weights Qwen3.x parameter-count builds', () => {
+      // Self-hosted `qwen3.<minor>-<params>B` deployments are 256K native, not
+      // the 1M of Alibaba's commercial `qwen3.<minor>-plus` API models. Verified
+      // against a self-hosted hub on 2026-09-01: `Qwen/Qwen3.8-27B` reports
+      // max_model_len=262144.
+      expect(tokenLimit('Qwen/Qwen3.8-27B')).toBe(262144);
+      expect(tokenLimit('Qwen/Qwen3.6-27B')).toBe(262144);
+      expect(tokenLimit('qwen3.5-72b')).toBe(262144);
+      // The commercial carve-out must keep its 1M.
+      expect(tokenLimit('qwen3.5-plus')).toBe(1000000);
+    });
+
     it('should return 256K for Qwen3 non-commercial models', () => {
       expect(tokenLimit('qwen3-max')).toBe(262144);
       expect(tokenLimit('qwen3-max-2026-01-23')).toBe(262144);

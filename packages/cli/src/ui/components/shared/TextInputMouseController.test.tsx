@@ -43,7 +43,7 @@ function makeEvent(
 
 describe('TextInputMouseController', () => {
   const linesNode = { tag: 'lines' } as unknown as DOMElement;
-  let moveToOffset: ReturnType<typeof vi.fn>;
+  let moveToOffset: ReturnType<typeof vi.fn<(offset: number) => void>>;
 
   // Lines container rendered at screen row 5, col 2, two visual lines tall.
   function makeBuffer(overrides?: Partial<{ visualScrollRow: number }>) {
@@ -62,7 +62,7 @@ describe('TextInputMouseController', () => {
   // Frame fills the terminal here → anchor 0 → clickVisualRow = event.row-1-y.
   beforeEach(() => {
     vi.clearAllMocks();
-    moveToOffset = vi.fn();
+    moveToOffset = vi.fn<(offset: number) => void>();
     vi.mocked(useTerminalSize).mockReturnValue({ rows: 40, columns: 80 });
     // Frame fills the terminal → anchor 0 → layout row = terminalRow - 1.
     vi.mocked(layoutRowForEvent).mockImplementation(

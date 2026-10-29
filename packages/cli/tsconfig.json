@@ -52,21 +52,7 @@
       ],
       "@qwen-code/qwen-code-core/*": ["../core/src/*"],
       "@qwen-code/acp-bridge": ["../acp-bridge/src/index.ts"],
-      "@qwen-code/acp-bridge/transcriptReplay": [
-        "../acp-bridge/src/transcript-replay.ts"
-      ],
-      "@qwen-code/acp-bridge/daemonMemoryBudget": [
-        "../acp-bridge/src/daemon-memory-budget.ts"
-      ],
-      "@qwen-code/acp-bridge/*": ["../acp-bridge/src/*"],
-      "@qwen-code/audio-capture": ["../audio-capture/src/index.ts"],
-      "@qwen-code/audio-capture/*": ["../audio-capture/src/*"],
-      "@qwen-code/sdk": ["../sdk-typescript/src/index.ts"],
-      "@qwen-code/sdk/daemon/ui/transcript": [
-        "../sdk-typescript/src/daemon/ui/transcript.ts"
-      ],
-      "@qwen-code/sdk/daemon/types": ["../sdk-typescript/src/daemon/types.ts"],
-      "@qwen-code/sdk/*": ["../sdk-typescript/src/*"]
+      "@qwen-code/acp-bridge/*": ["../acp-bridge/src/*"]
     }
   },
   "include": [
@@ -151,19 +137,5 @@
     "src/services/prompt-processors/shellProcessor.test.ts",
     "src/commands/extensions/examples/**"
   ],
-  "references": [
-    { "path": "../core" },
-    { "path": "../acp-bridge" },
-    { "path": "../audio-capture" },
-    { "path": "../sdk-typescript/tsconfig.reference.json" },
-    { "path": "../channels/base" },
-    { "path": "../channels/telegram" },
-    { "path": "../channels/weixin" },
-    { "path": "../channels/dingtalk" },
-    { "path": "../channels/dws" },
-    { "path": "../channels/email" },
-    { "path": "../channels/wecom" },
-    { "path": "../channels/feishu" },
-    { "path": "../channels/gitlab" }
-  ]
+  "references": [{ "path": "../core" }, { "path": "../acp-bridge" }]
 }

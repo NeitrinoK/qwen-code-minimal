@@ -111,7 +111,6 @@ function managedConfig(params: Partial<ConfigParameters> = {}): Config {
     debugMode: false,
     model: 'test-model',
     chatRecording: true,
-    usageStatisticsEnabled: false,
     overrideExtensions: [],
     experimentalZedIntegration: true,
     sessionWriterLeaseEnabled: true,

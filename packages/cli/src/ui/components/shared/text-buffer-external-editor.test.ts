@@ -66,6 +66,7 @@ const expectedTmpFile = pathMod.join('/tmp/qwen-edit-mock', 'buffer.txt');
 describe('openInExternalEditor', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     (fs.mkdtempSync as Mock).mockReturnValue('/tmp/qwen-edit-mock');
     (fs.writeFileSync as Mock).mockImplementation(() => {});
     (fs.readFileSync as Mock).mockReturnValue('edited text');

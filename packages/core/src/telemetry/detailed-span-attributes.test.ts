@@ -8,17 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Attributes, Span, SpanContext } from '@opentelemetry/api';
 import type { Config } from '../config/config.js';
 import {
-  addAgentInputMessageAttributes,
-  addAgentOutputMessageAttributes,
   addModelOutputAttributes,
-  addSystemPromptAttributes,
   addToolArgumentsAttributes,
   addToolCallResultAttributes,
-  addToolInputAttributes,
-  addToolResultAttributes,
-  addToolSchemaAttributes,
   addUserPromptAttributes,
-  AgentOutputMessageCapture,
   clearDetailedSpanState,
   truncateContent,
 } from './detailed-span-attributes.js';
@@ -148,197 +141,6 @@ describe('detailed span attributes', () => {
     );
   });
 
-  it('keeps interaction new_context behavior unchanged', () => {
-    const target = span();
-    addUserPromptAttributes(config(), target, 'hello');
-    expect(target.attrs['new_context']).toBe('[USER PROMPT]\nhello');
-  });
-
-  it('writes one raw user message for an agent invocation', () => {
-    const target = span();
-    addAgentInputMessageAttributes(config(), target, 'raw @file prompt');
-    expect(JSON.parse(target.attrs['gen_ai.input.messages'] as string)).toEqual(
-      [
-        {
-          role: 'user',
-          parts: [{ type: 'text', content: 'raw @file prompt' }],
-        },
-      ],
-    );
-  });
-
-  it('writes one normalized final agent output message', () => {
-    const target = span();
-    addAgentOutputMessageAttributes(config(), target, '{"ok":true}', 'STOP');
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toEqual([
-      {
-        role: 'assistant',
-        parts: [{ type: 'text', content: '{"ok":true}' }],
-        finish_reason: 'stop',
-      },
-    ]);
-  });
-
-  it.each([
-    ['MAX_TOKENS', 'length'],
-    ['SAFETY', 'content_filter'],
-    ['RECITATION', 'content_filter'],
-    ['LANGUAGE', 'content_filter'],
-    ['BLOCKLIST', 'content_filter'],
-    ['PROHIBITED_CONTENT', 'content_filter'],
-    ['SPII', 'content_filter'],
-    ['IMAGE_SAFETY', 'content_filter'],
-    ['IMAGE_PROHIBITED_CONTENT', 'content_filter'],
-    ['IMAGE_RECITATION', 'content_filter'],
-    ['IMAGE_OTHER', 'content_filter'],
-    ['tool_calls', 'tool_call'],
-    ['function_call', 'tool_call'],
-    ['MALFORMED_FUNCTION_CALL', 'malformed_function_call'],
-  ])('normalizes agent finish reason %s to %s', (input, expected) => {
-    const target = span();
-    addAgentOutputMessageAttributes(config(), target, 'answer', input);
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toMatchObject([{ finish_reason: expected }]);
-  });
-
-  it('omits empty or incomplete agent messages', () => {
-    const target = span();
-    addAgentInputMessageAttributes(config(), target, ' \n\t ');
-    addAgentOutputMessageAttributes(config(), target, 'answer', '');
-    addAgentOutputMessageAttributes(
-      config(),
-      target,
-      'answer',
-      'FINISH_REASON_UNSPECIFIED',
-    );
-    addAgentOutputMessageAttributes(config(), target, ' \n\t ', 'STOP');
-    expect(target.attrs).toEqual({});
-  });
-
-  it('omits complete agent message JSON when it exceeds the limit', () => {
-    mockState.maxLength = 20;
-    const target = span();
-    addAgentInputMessageAttributes(config(), target, 'raw prompt');
-    addAgentOutputMessageAttributes(config(), target, 'answer', 'stop');
-    expect(target.attrs).toEqual({});
-  });
-
-  it('captures only a completed response without pending tools', () => {
-    const target = span();
-    const capture = new AgentOutputMessageCapture(config());
-    capture.beginResponse();
-    capture.appendText('final ');
-    capture.appendText('answer');
-    capture.observeFinishReason('STOP');
-    capture.commitResponse(false);
-    capture.writeToSpan(target);
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toEqual([
-      {
-        role: 'assistant',
-        parts: [{ type: 'text', content: 'final answer' }],
-        finish_reason: 'stop',
-      },
-    ]);
-  });
-
-  it('resets failed attempts and preserves continuation fragments', () => {
-    const target = span();
-    const capture = new AgentOutputMessageCapture(config());
-    capture.beginResponse();
-    capture.appendText('discarded');
-    capture.restartAttempt(false);
-    capture.appendText('kept ');
-    capture.restartAttempt(true);
-    capture.appendText('continuation');
-    capture.observeFinishReason('MAX_TOKENS');
-    capture.commitResponse(false);
-    capture.writeToSpan(target);
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toMatchObject([
-      {
-        parts: [{ content: 'kept continuation' }],
-        finish_reason: 'length',
-      },
-    ]);
-  });
-
-  it('invalidates stale, tool, and incomplete captures', () => {
-    const target = span();
-    const capture = new AgentOutputMessageCapture(config());
-    capture.beginResponse();
-    capture.appendText('old');
-    capture.observeFinishReason('STOP');
-    capture.commitResponse(false);
-    capture.beginResponse();
-    capture.appendText('new');
-    capture.observeFinishReason('STOP');
-    capture.commitResponse(true);
-    capture.writeToSpan(target);
-    expect(target.attrs).toEqual({});
-  });
-
-  it('bounds oversized output capture in memory', () => {
-    mockState.maxLength = 10;
-    const target = span();
-    const capture = new AgentOutputMessageCapture(config());
-    capture.beginResponse();
-    capture.appendText('01234567890');
-    capture.observeFinishReason('STOP');
-    capture.commitResponse(false);
-    capture.writeToSpan(target);
-    expect(target.attrs).toEqual({});
-  });
-
-  it('omits agent messages when sensitive telemetry is disabled or inactive', () => {
-    const target = span();
-    mockState.sensitiveEnabled = false;
-    addAgentInputMessageAttributes(config(), target, 'disabled input');
-    addAgentOutputMessageAttributes(
-      config(),
-      target,
-      'disabled output',
-      'STOP',
-    );
-    mockState.sensitiveEnabled = true;
-    mockState.sdkInitialized = false;
-    addAgentInputMessageAttributes(config(), target, 'inactive input');
-    addAgentOutputMessageAttributes(
-      config(),
-      target,
-      'inactive output',
-      'STOP',
-    );
-    expect(target.attrs).toEqual({});
-  });
-
-  it('does not let agent-message Span API failures affect the caller', () => {
-    const target = span();
-    target.setAttribute = () => {
-      throw new Error('cannot set');
-    };
-    expect(() =>
-      addAgentInputMessageAttributes(config(), target, 'input'),
-    ).not.toThrow();
-    expect(() =>
-      addAgentOutputMessageAttributes(config(), target, 'output', 'STOP'),
-    ).not.toThrow();
-  });
-
-  it('keeps interaction truncation metadata', () => {
-    mockState.maxLength = 20;
-    const target = span();
-    addUserPromptAttributes(config(), target, 'x'.repeat(100));
-    expect(String(target.attrs['new_context'])).toHaveLength(20);
-    expect(target.attrs['new_context_truncated']).toBe(true);
-    expect(target.attrs['new_context_original_length']).toBe(100);
-  });
-
   it('omits interaction content when disabled, uninitialized, or empty', () => {
     const target = span();
     mockState.sensitiveEnabled = false;
@@ -349,59 +151,6 @@ describe('detailed span attributes', () => {
     mockState.sdkInitialized = true;
     addUserPromptAttributes(config(), target, '');
     expect(target.attrs).toEqual({});
-  });
-
-  it('writes compatibility helpers only to standard GenAI keys', () => {
-    const target = span();
-    addSystemPromptAttributes(config(), target, 'system');
-    addToolSchemaAttributes(config(), target, [
-      { type: 'function', name: 'read' },
-    ]);
-    addModelOutputAttributes(config(), target, 'answer', 'stop');
-    addToolInputAttributes(config(), target, 'read', '{"path":"a"}');
-    addToolResultAttributes(config(), target, 'read', '{"output":"ok"}');
-
-    expect(
-      JSON.parse(target.attrs['gen_ai.system_instructions'] as string),
-    ).toEqual([{ type: 'text', content: 'system' }]);
-    expect(
-      JSON.parse(target.attrs['gen_ai.tool.definitions'] as string),
-    ).toEqual([{ type: 'function', name: 'read' }]);
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toEqual([
-      {
-        role: 'assistant',
-        parts: [{ type: 'text', content: 'answer' }],
-        finish_reason: 'stop',
-      },
-    ]);
-    expect(target.attrs['gen_ai.tool.call.arguments']).toBe('{"path":"a"}');
-    expect(target.attrs['gen_ai.tool.call.result']).toBe('{"output":"ok"}');
-    expect(Object.keys(target.attrs)).not.toEqual(
-      expect.arrayContaining([
-        'system_prompt',
-        'tools',
-        'response.model_output',
-        'tool_input',
-        'tool_result',
-      ]),
-    );
-  });
-
-  it('retains an explicit finish reason across later incomplete chunks', () => {
-    const target = span();
-    const capture = new AgentOutputMessageCapture(config());
-    capture.beginResponse();
-    capture.appendText('answer');
-    capture.observeFinishReason('STOP');
-    capture.observeFinishReason(undefined);
-    capture.observeFinishReason('FINISH_REASON_UNSPECIFIED');
-    capture.commitResponse(false);
-    capture.writeToSpan(target);
-    expect(
-      JSON.parse(target.attrs['gen_ai.output.messages'] as string),
-    ).toMatchObject([{ finish_reason: 'stop' }]);
   });
 
   it('does not synthesize output without a finish reason', () => {
@@ -416,14 +165,6 @@ describe('detailed span attributes', () => {
     addToolCallResultAttributes(config(), target, 'result');
     expect(target.attrs['gen_ai.tool.call.arguments']).toBeUndefined();
     expect(target.attrs['gen_ai.tool.call.result']).toBeUndefined();
-  });
-
-  it('preserves empty tool objects', () => {
-    const target = span();
-    addToolArgumentsAttributes(config(), target, {});
-    addToolCallResultAttributes(config(), target, {});
-    expect(target.attrs['gen_ai.tool.call.arguments']).toBe('{}');
-    expect(target.attrs['gen_ai.tool.call.result']).toBe('{}');
   });
 
   it('omits complete JSON attributes that exceed the configured limit', () => {

@@ -1,622 +1,509 @@
-# Memory 记忆管理系统
+# Memory Management System
 
-> 本文介绍 Qwen Code 中 **Managed Auto-Memory**（托管自动记忆）的记忆管理机制、触发时机和实现细节。
-
----
-
-## 目录
-
-1. [概述](#概述)
-2. [存储结构](#存储结构)
-3. [记忆类型](#记忆类型)
-4. [记忆条目格式](#记忆条目格式)
-5. [核心生命周期](#核心生命周期)
-6. [Extract — 提取](#extract--提取)
-7. [Dream — 整合](#dream--整合)
-8. [Recall — 召回](#recall--召回)
-9. [Forget — 遗忘](#forget--遗忘)
-10. [索引重建](#索引重建)
-11. [遥测埋点](#遥测埋点)
+> This document describes the memory management mechanism, trigger timing, and implementation details of **Managed Auto-Memory** in Qwen Code.
 
 ---
 
-## 概述
+## Table of Contents
 
-Managed Auto-Memory 是一套在 AI 会话过程中**自动**积累、整合和检索用户相关知识的持久化记忆系统。它通过四个核心操作维护记忆的生命周期：
-
-| 操作 | 英文    | 触发方式                   | 作用                                   |
-| ---- | ------- | -------------------------- | -------------------------------------- |
-| 提取 | Extract | 自动（每轮对话后）         | 从对话记录中提炼新知识写入记忆文件     |
-| 整合 | Dream   | 自动（周期性后台任务）     | 对记忆文件去重、合并，保持整洁         |
-| 召回 | Recall  | 自动（每轮对话前）         | 检索与当前请求相关的记忆注入到系统提示 |
-| 遗忘 | Forget  | 手动（用户命令 `/forget`） | 精确删除指定的记忆条目                 |
+1. [Overview](#overview)
+2. [Storage Structure](#storage-structure)
+3. [Memory Types](#memory-types)
+4. [Memory Entry Format](#memory-entry-format)
+5. [Core Lifecycle](#core-lifecycle)
+6. [Extract](#extract)
+7. [Dream](#dream)
+8. [Recall](#recall)
+9. [Forget](#forget)
+10. [Index Rebuild](#index-rebuild)
+11. [Telemetry](#telemetry)
 
 ---
 
-## 存储结构
+## Overview
 
-### 目录布局
+Managed Auto-Memory is a persistent memory system that **automatically** accumulates, consolidates, and retrieves user-relevant knowledge during AI sessions. It maintains the memory lifecycle through four core operations:
+
+| Operation | English | Trigger                         | Purpose                                                                                |
+| --------- | ------- | ------------------------------- | -------------------------------------------------------------------------------------- |
+| Extract   | Extract | Automatic (after each turn)     | Distills new knowledge from the conversation into memory files                         |
+| Dream     | Dream   | Automatic (periodic background) | Deduplicates and merges memory files to keep them tidy                                 |
+| Recall    | Recall  | Automatic (before each turn)    | Retrieves memory relevant to the current request and injects it into the system prompt |
+| Forget    | Forget  | Manual (user command `/forget`) | Precisely deletes specified memory entries                                             |
+
+---
+
+## Storage Structure
+
+### Directory Layout
 
 ```
-~/.qwen/                                      ← 全局基础目录（默认）
+~/.qwen/                                      ← global base directory (default)
 └── projects/
-    └── <sanitized-git-root>/                 ← 项目标识（基于 Git 根路径）
-        ├── meta.json                         ← 元数据（提取/整合时间戳、状态）
-        ├── extract-cursor.json               ← 提取游标（已处理的对话偏移量）
-        ├── consolidation.lock                ← Dream 进程互斥锁
-        └── memory/                           ← 记忆主目录
-            ├── MEMORY.md                     ← 索引文件（自动生成，汇总所有条目）
-            ├── user.md                       ← 用户偏好记忆（示例）
-            ├── feedback.md                   ← 反馈规范记忆（示例）
+    └── <sanitized-git-root>/                 ← project identifier (based on Git root path)
+        ├── meta.json                         ← metadata (extract/consolidation timestamps, status)
+        ├── extract-cursor.json               ← extract cursor (processed conversation offset)
+        ├── consolidation.lock                ← Dream process mutex lock
+        └── memory/                           ← main memory directory
+            ├── MEMORY.md                     ← index file (auto-generated, aggregates all entries)
+            ├── user.md                       ← user preference memory (example)
+            ├── feedback.md                   ← feedback convention memory (example)
             ├── project/
-            │   └── milestone.md              ← 项目记忆（支持子目录）
+            │   └── milestone.md              ← project memory (subdirectories supported)
             └── reference/
-                └── grafana.md                ← 外部资源记忆
+                └── grafana.md                ← external resource memory
 ```
 
-> **环境变量覆盖**：
+> **Environment variable overrides**:
 >
-> - `QWEN_CODE_MEMORY_BASE_DIR`：替换全局基础目录
-> - `QWEN_CODE_MEMORY_LOCAL=1`：改用项目内路径 `.qwen/memory/`
-> - `QWEN_CODE_MEMORY_PROJECT_SCOPE=workspace`：按精确 workspace 目录分区项目记忆。`qwen serve` 未显式设置或值为空白时会注入 `workspace`；standalone CLI 仍默认按 Git 根目录共享。非空取值会做 trim / 小写归一，无法识别的值会告警一次并回退到 `git-root`。
->   - 团队记忆（`getTeamAutoMemoryRoot`）仍按 Git 根目录分区：同一 checkout 内的嵌套 workspace 仍共享团队记忆——团队记忆本就应跨 workspace 共享，不随本开关改变。
->   - 切换 scope 不做迁移：切到 `workspace` 后，此前写在 git-root key 下的项目记忆会“失联”（切回去则看不到 workspace key 下新写的内容）。
->   - 目录 key 由 `sanitizeCwd` 生成（非字母数字字符替换为 `-`），仅在标点上不同的兄弟目录（如 `feature_1` 与 `feature-1`）会映射到同一记忆目录；`workspace` 分区下这类命名会共享记忆，命名时需避开。
->   - 待处理任务上限（`MAX_PENDING = 16`）是**每个 lane** 的，N 个 workspace 即允许 16·N 个并发记忆任务，目前没有守护进程级总量上限。
+> - `QWEN_CODE_MEMORY_BASE_DIR`: replaces the global base directory
+> - `QWEN_CODE_MEMORY_LOCAL=1`: switches to the in-project path `.qwen/memory/`
 
-### 关键文件说明
+### Key File Descriptions
 
-| 文件                  | 说明                                                                   |
-| --------------------- | ---------------------------------------------------------------------- |
-| `meta.json`           | 记录最后一次 Extract / Dream 的时间、会话 ID、涉及的记忆类型、执行状态 |
-| `extract-cursor.json` | 记录当前会话已处理到对话历史的哪个偏移量，避免重复提取                 |
-| `consolidation.lock`  | Dream 运行时的文件锁，内容为持有者 PID，超过 1 小时自动失效            |
-| `MEMORY.md`           | 所有主题文件的索引，每次 Extract/Dream 后重建，格式为 Markdown 列表    |
+| File                  | Description                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `meta.json`           | Records the time, session ID, memory types involved, and execution status of the last Extract / Dream          |
+| `extract-cursor.json` | Records the conversation-history offset processed so far in the current session, to avoid duplicate extraction |
+| `consolidation.lock`  | File lock held while Dream runs; its content is the holder's PID, and it expires automatically after 1 hour    |
+| `MEMORY.md`           | Index of all topic files; rebuilt after each Extract/Dream, formatted as a Markdown list                       |
 
 ---
 
-## 记忆类型
+## Memory Types
 
-系统支持四种内置记忆类型，每种对应不同的信息维度：
+The system supports four built-in memory types, each corresponding to a different information dimension:
 
-| 类型        | 存储内容                                              | 何时写入                                 | 何时读取                     |
-| ----------- | ----------------------------------------------------- | ---------------------------------------- | ---------------------------- |
-| `user`      | 用户的角色、技能背景、工作习惯                        | 了解到用户角色/偏好/知识背景时           | 回答需要根据用户背景定制时   |
-| `feedback`  | 用户对 AI 行为的指导：避免什么、继续什么              | 用户纠正 AI 或确认某种非显而易见的做法时 | 影响 AI 行为方式时           |
-| `project`   | 项目进展、目标、决策、截止日期、Bug 追踪              | 了解到谁在做什么、为什么、截止何时时     | 帮助 AI 理解工作背景和动机时 |
-| `reference` | 外部系统资源指针（Dashboard、工单系统、Slack 频道等） | 得知某种外部资源及其用途时               | 用户提及外部系统或相关信息时 |
+| Type        | Stored Content                                                                              | When to Write                                                       | When to Read                                                     |
+| ----------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `user`      | The user's role, skill background, and work habits                                          | When learning the user's role/preferences/knowledge background      | When an answer needs to be tailored to the user's background     |
+| `feedback`  | The user's guidance on AI behavior: what to avoid, what to keep doing                       | When the user corrects the AI or confirms some non-obvious practice | When it affects how the AI behaves                               |
+| `project`   | Project progress, goals, decisions, deadlines, bug tracking                                 | When learning who is doing what, why, and by when                   | When helping the AI understand work context and motivation       |
+| `reference` | Pointers to external system resources (dashboards, ticketing systems, Slack channels, etc.) | When learning about an external resource and its purpose            | When the user mentions an external system or related information |
 
-**不应该存入记忆的内容**：代码模式/约定、Git 历史、调试方案、临时任务状态、已在 QWEN.md/AGENTS.md 中记录的内容。
+**What should NOT be stored in memory**: code patterns/conventions, Git history, debugging solutions, transient task state, and anything already recorded in QWEN.md/AGENTS.md.
 
 ---
 
-## 记忆条目格式
+## Memory Entry Format
 
-每个主题文件使用 **YAML frontmatter + Markdown body** 格式：
+Each topic file uses the **YAML frontmatter + Markdown body** format:
 
 ```markdown
 ---
-name: 记忆名称
-description: 一句话描述（用于判断召回相关性，要具体）
+name: memory name
+description: one-sentence description (used to judge recall relevance; be specific)
 type: user|feedback|project|reference
 ---
 
-记忆主体内容（summary 行）
+memory body content (summary line)
 
-Why: 背后原因（让 AI 能理解边界情况而不是盲目遵守规则）
-How to apply: 适用场景和使用方式
+Why: the underlying reason (so the AI can understand edge cases instead of blindly following rules)
+How to apply: applicable scenarios and usage
 ```
 
-对于 `feedback` 和 `project` 类型，强烈建议填写 `Why` 和 `How to apply`，使记忆在边界情况下仍能正确应用。
+For the `feedback` and `project` types, it is strongly recommended to fill in `Why` and `How to apply`, so that the memory can still be applied correctly in edge cases.
 
 ---
 
-## 核心生命周期
+## Core Lifecycle
 
 ```mermaid
 flowchart TD
-    A([用户发送请求]) --> B
+    A([User sends request]) --> B
 
-    subgraph "召回 Recall"
-        B[扫描所有主题文件] --> C{文档数量和\n查询内容是否有效?}
-        C -- 否 --> D[返回空提示词\nstrategy: none]
-        C -- 是 --> E{是否配置了 Config?}
-        E -- 是 --> F[模型驱动选择\nside query]
-        F --> G{选出相关文档?}
-        G -- 是 --> H[strategy: model]
-        G -- 否 --> I[strategy: none]
-        E -- 否 --> J[启发式关键词评分]
-        F -- 失败 --> J
-        J --> K{有得分 > 0 的文档?}
-        K -- 是 --> L[strategy: heuristic]
-        K -- 否 --> I
-        H --> M[构建 Relevant Memory 提示词\n注入系统提示]
+    subgraph "Recall"
+        B[Scan all topic files] --> C{Document count and\nquery content valid?}
+        C -- No --> D[Return empty prompt\nstrategy: none]
+        C -- Yes --> E{Is Config configured?}
+        E -- Yes --> F[Model-driven selection\nside query]
+        F --> G{Relevant docs selected?}
+        G -- Yes --> H[strategy: model]
+        G -- No --> I[strategy: none]
+        E -- No --> J[Heuristic keyword scoring]
+        F -- Failed --> J
+        J --> K{Any doc with score > 0?}
+        K -- Yes --> L[strategy: heuristic]
+        K -- No --> I
+        H --> M[Build Relevant Memory prompt\ninject into system prompt]
         L --> M
-        I --> N[不注入记忆]
+        I --> N[Do not inject memory]
     end
 
-    M --> O([AI 处理请求])
+    M --> O([AI processes request])
     N --> O
     D --> O
 
-    O --> P([AI 返回响应])
+    O --> P([AI returns response])
 
-    subgraph "提取 Extract（后台）"
-        P --> Q{本轮 AI 是否\n直接写了记忆文件?}
-        Q -- 是 --> R[跳过\nmemory_tool]
-        Q -- 否 --> S{提取任务是否\n正在运行?}
-        S -- 是 --> T[放入队列或跳过\nalready_running / queued]
-        S -- 否 --> U[加载未处理的对话切片\n基于 extract cursor]
-        U --> V[调用提取 Agent\nrunAutoMemoryExtractionByAgent]
-        V --> W[去重规范化 patches]
-        W --> X{有 touched topics?}
-        X -- 是 --> Y[更新 meta.json\n重建 MEMORY.md 索引]
-        X -- 否 --> Z[仅更新 extract cursor]
+    subgraph "Extract (background)"
+        P --> Q{Did the AI write\nmemory files directly this turn?}
+        Q -- Yes --> R[Skip\nmemory_tool]
+        Q -- No --> S{Is an extract task\nalready running?}
+        S -- Yes --> T[Queue or skip\nalready_running / queued]
+        S -- No --> U[Load unprocessed conversation slice\nbased on extract cursor]
+        U --> V[Call extraction Agent\nrunAutoMemoryExtractionByAgent]
+        V --> W[Dedupe and normalize patches]
+        W --> X{Any touched topics?}
+        X -- Yes --> Y[Update meta.json\nrebuild MEMORY.md index]
+        X -- No --> Z[Only update extract cursor]
         Y --> Z
     end
 
-    subgraph "Dream 整合（后台，周期性）"
-        P --> AA{Dream 调度门控检查}
-        AA --> AB{是否同一会话?}
-        AB -- 是 --> AC[跳过\nsame_session]
-        AB -- 否 --> AD{距上次 Dream\n≥ 24 小时?}
-        AD -- 否 --> AE[跳过\nmin_hours]
-        AD -- 是 --> AF{距上次 Dream 后\n新会话数 ≥ 5?}
-        AF -- 否 --> AG[跳过\nmin_sessions]
-        AF -- 是 --> AH{consolidation.lock\n是否存在?}
-        AH -- 是 --> AI[跳过\nlocked]
-        AH -- 否 --> AJ[获取锁\n写入 PID]
-        AJ --> AK{是否配置了 Config?}
-        AK -- 是 --> AL[Agent 路径\nplanManagedAutoMemoryDreamByAgent]
-        AL --> AM{Agent 是否触碰了文件?}
-        AM -- 是 --> AN[记录触碰的 topics]
-        AM -- "否/失败" --> AO
-        AK -- 否 --> AO[机械去重路径\n解析+去重+按字母排序]
-        AO --> AP[写回更新后的主题文件]
-        AN --> AQ[重建 MEMORY.md 索引\n更新 meta.json]
+    subgraph "Dream consolidation (background, periodic)"
+        P --> AA{Dream scheduling gate check}
+        AA --> AB{Same session?}
+        AB -- Yes --> AC[Skip\nsame_session]
+        AB -- No --> AD{≥ 24 hours since\nlast Dream?}
+        AD -- No --> AE[Skip\nmin_hours]
+        AD -- Yes --> AF{≥ 5 new sessions\nsince last Dream?}
+        AF -- No --> AG[Skip\nmin_sessions]
+        AF -- Yes --> AH{Does consolidation.lock\nexist?}
+        AH -- Yes --> AI[Skip\nlocked]
+        AH -- No --> AJ[Acquire lock\nwrite PID]
+        AJ --> AK{Is Config configured?}
+        AK -- Yes --> AL[Agent path\nplanManagedAutoMemoryDreamByAgent]
+        AL --> AM{Did the Agent touch any files?}
+        AM -- Yes --> AN[Record touched topics]
+        AM -- "No/Failed" --> AO
+        AK -- No --> AO[Mechanical dedup path\nparse + dedupe + sort alphabetically]
+        AO --> AP[Write back updated topic files]
+        AN --> AQ[Rebuild MEMORY.md index\nupdate meta.json]
         AP --> AQ
-        AQ --> AR[释放锁]
+        AQ --> AR[Release lock]
     end
 ```
 
 ---
 
-## Extract — 提取
+## Extract
 
-### 触发时机
+### Trigger Timing
 
-每次 AI 完成一轮响应后，由 `scheduleAutoMemoryExtract` 自动触发（后台非阻塞）。
+Automatically triggered (non-blocking, in the background) by `scheduleAutoMemoryExtract` after the AI completes each response turn.
 
-### 调度逻辑（`extractScheduler.ts`）
+### Scheduling Logic (`extractScheduler.ts`)
 
 ```mermaid
 flowchart TD
-    A[scheduleAutoMemoryExtract 被调用] --> B{本轮历史记录中\n是否有写记忆文件的工具调用?}
-    B -- 是 --> C[登记 skipped 任务\n原因: memory_tool]
-    B -- 否 --> D{isExtractRunning?}
-    D -- 是 --> E{是否已有 queued 请求?}
-    E -- 是 --> F[更新 queued 请求的\nhistory 参数]
-    E -- 否 --> G[注册 pending 任务\n放入 queue]
-    D -- 否 --> H[注册 running 任务\n调用 runTask]
+    A[scheduleAutoMemoryExtract is called] --> B{Was there a tool call writing\nmemory files in this turn's history?}
+    B -- Yes --> C[Register skipped task\nreason: memory_tool]
+    B -- No --> D{isExtractRunning?}
+    D -- Yes --> E{Is there already a queued request?}
+    E -- Yes --> F[Update the queued request's\nhistory parameter]
+    E -- No --> G[Register pending task\nadd to queue]
+    D -- No --> H[Register running task\ncall runTask]
     H --> I[markExtractRunning\nsetCurrentTaskId]
     I --> J[runAutoMemoryExtract]
-    J --> K[任务完成]
-    K --> L[clearExtractRunning\n检查 queue → startQueuedIfNeeded]
-    F --> M[返回 skipped: queued]
+    J --> K[Task complete]
+    K --> L[clearExtractRunning\ncheck queue → startQueuedIfNeeded]
+    F --> M[Return skipped: queued]
     G --> M
-    C --> N[返回 skipped: memory_tool]
+    C --> N[Return skipped: memory_tool]
 ```
 
-**跳过原因说明**：
+**Skip reasons**:
 
-| 原因              | 含义                                            |
-| ----------------- | ----------------------------------------------- |
-| `memory_tool`     | 本轮主 Agent 已直接写了记忆文件，跳过以避免冲突 |
-| `already_running` | 提取正在进行且无法入队                          |
-| `queued`          | 已有提取在运行，本次请求已入队                  |
+| Reason            | Meaning                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| `memory_tool`     | The main Agent already wrote memory files directly this turn; skipped to avoid conflicts |
+| `already_running` | Extraction is in progress and cannot be queued                                           |
+| `queued`          | An extraction is already running, so this request was queued                             |
 
-### 核心提取流程（`extract.ts`）
+### Core Extraction Flow (`extract.ts`)
 
 ```mermaid
 flowchart TD
-    A[runAutoMemoryExtract] --> B[ensureAutoMemoryScaffold\n初始化目录和文件]
-    B --> C[readExtractCursor\n读取上次处理到的位置]
-    C --> D[history.slice startOffset\n只取未处理的消息切片]
-    D --> E{slice 有新的 user 消息?}
-    E -- 否 --> F[更新 cursor\n返回无 patches 结果]
-    E -- 是 --> G[runAutoMemoryExtractionByAgent\n调用 forked agent 提取]
-    G --> H{有 touched topics?}
-    H -- 是 --> I[bumpMetadata\n更新 meta.json]
-    I --> J[rebuildManagedAutoMemoryIndex\n重建 MEMORY.md]
-    J --> K[writeExtractCursor\n记录最新 offset = history.length]
-    H -- 否 --> K
-    K --> L[返回 AutoMemoryExtractResult]
+    A[runAutoMemoryExtract] --> B[ensureAutoMemoryScaffold\ninitialize directories and files]
+    B --> C[buildTranscriptMessages\nconvert Content[] into an offset-tagged message list]
+    C --> D[readExtractCursor\nread the last processed position]
+    D --> E[loadUnprocessedTranscriptSlice\nextract the unprocessed message segment]
+    E --> F{Is the slice empty?}
+    F -- Yes --> G[Return a result with no patches]
+    F -- No --> H[runAutoMemoryExtractionByAgent\ncall the forked agent to extract patches]
+    H --> I[dedupeExtractPatches\ndedupe + normalize]
+    I --> J{Any touched topics?}
+    J -- Yes --> K[bumpMetadata\nupdate meta.json]
+    K --> L[rebuildManagedAutoMemoryIndex\nrebuild MEMORY.md]
+    L --> M[writeExtractCursor\nrecord the latest offset]
+    J -- No --> M
+    M --> N[Return AutoMemoryExtractResult]
 ```
 
-> **注意：** `isUnderMemoryPressure` 门控位于 `MemoryManager.runExtract()` 中，不在本流程内。当 monitor 报告 hard/critical 压力时，`MemoryManager` 会跳过 extract 调用，不推进 cursor。
+**Extract Cursor**:
 
-**提取游标（Cursor）**：
+- Fields: `{ sessionId, processedOffset, updatedAt }`
+- After each extraction, `processedOffset` is updated to the current history length
+- On the next extraction, only messages with `offset >= processedOffset` are processed
+- Across sessions (when `sessionId` changes), it restarts from offset 0
 
-- 字段：`{ sessionId, processedOffset, updatedAt }`
-- 提取前先通过 `readExtractCursor` 读取当前进度，再用 `history.slice(processedOffset)` 仅处理未读部分
-- 每次提取后更新 `processedOffset` 为当前历史长度（`params.history.length`）
-- 跨会话时（`sessionId` 变化）从偏移量 0 重新开始
-- 注意：不再通过 `buildTranscriptMessages` / `loadUnprocessedTranscriptSlice` 构建转录文本——`hasNewUserMessages` 通过 `history.slice(startOffset).some(m => m.role === 'user' && partToString(m.parts).trim().length > 0)` 判断，仅在未读切片上做轻量字符串化，全量历史不再处理
+**Patch Filtering Rules**:
 
-**Patch 过滤规则**：
-
-- 摘要长度 < 12 字符 → 丢弃
-- 摘要以 `?` 结尾 → 丢弃（疑问句）
-- 包含临时性关键词（today/now/currently/temporary 等）→ 丢弃
-- 相同 `topic:summary` 组合 → 去重
+- Summary length < 12 characters → discard
+- Summary ends with `?` → discard (question)
+- Contains transient keywords (today/now/currently/temporary, etc.) → discard
+- Identical `topic:summary` combination → deduplicate
 
 ---
 
-## Dream — 整合
+## Dream
 
-### 触发时机
+### Trigger Timing
 
-每次 AI 完成一轮响应后，由 `scheduleManagedAutoMemoryDream` 自动触发（后台非阻塞）。但受多个门控条件保护，大多数情况下会被跳过。
+Automatically triggered (non-blocking, in the background) by `scheduleManagedAutoMemoryDream` after the AI completes each response turn. However, it is protected by several gating conditions and is skipped in most cases.
 
-### 调度门控（`dreamScheduler.ts`）
+### Scheduling Gates (`dreamScheduler.ts`)
 
 ```mermaid
 flowchart TD
-    A[scheduleManagedAutoMemoryDream 被调用] --> B{Dream 功能是否启用?}
-    B -- 否 --> C[跳过: disabled]
-    B -- 是 --> D[ensureAutoMemoryScaffold\n读取 lastDreamSessionId]
-    D --> E{当前 sessionId\n== lastDreamSessionId?}
-    E -- 是 --> F[跳过: same_session]
-    E -- 否 --> G{elapsedHours ≥ 24h\n或从未 dream?}
-    G -- 否 --> H[跳过: min_hours]
-    G -- 是 --> I{距上次 session scan\n< 10 分钟?}
-    I -- 是 --> J[跳过: min_sessions\n等待下次扫描窗口]
-    I -- 否 --> K[扫描 chats/*.jsonl mtime\n统计上次 Dream 后的新会话数]
-    K --> L{新会话数 ≥ 5?}
-    L -- 否 --> M[跳过: min_sessions]
-    L -- 是 --> N{lockExists?\nPID 检查 + 过期检查}
-    N -- 是 --> O[跳过: locked]
-    N -- 否 --> P{dedupeKey 是否已有\n同项目 Dream 任务?}
-    P -- 是 --> Q[跳过: running\n返回已有 taskId]
-    P -- 否 --> R[调度后台任务\nBgTaskScheduler]
-    R --> S[acquireDreamLock\n写入 PID 到 consolidation.lock]
+    A[scheduleManagedAutoMemoryDream is called] --> B{Is the Dream feature enabled?}
+    B -- No --> C[Skip: disabled]
+    B -- Yes --> D[ensureAutoMemoryScaffold\nread lastDreamSessionId]
+    D --> E{Current sessionId\n== lastDreamSessionId?}
+    E -- Yes --> F[Skip: same_session]
+    E -- No --> G{elapsedHours ≥ 24h\nor never dreamed?}
+    G -- No --> H[Skip: min_hours]
+    G -- Yes --> I{< 10 minutes since\nlast session scan?}
+    I -- Yes --> J[Skip: min_sessions\nwait for next scan window]
+    I -- No --> K[Scan chats/*.jsonl mtime\ncount new sessions since last Dream]
+    K --> L{New session count ≥ 5?}
+    L -- No --> M[Skip: min_sessions]
+    L -- Yes --> N{lockExists?\nPID check + staleness check}
+    N -- Yes --> O[Skip: locked]
+    N -- No --> P{Does dedupeKey already have\na Dream task for the same project?}
+    P -- Yes --> Q[Skip: running\nreturn existing taskId]
+    P -- No --> R[Schedule background task\nBgTaskScheduler]
+    R --> S[acquireDreamLock\nwrite PID to consolidation.lock]
     S --> T[runManagedAutoMemoryDream]
-    T --> U[更新 meta.json\n释放锁]
+    T --> U[Update meta.json\nrelease lock]
 ```
 
-**门控参数**：
+**Gating Parameters**:
 
-| 参数                       | 默认值   | 说明                          |
-| -------------------------- | -------- | ----------------------------- |
-| `minHoursBetweenDreams`    | 24 小时  | 两次 Dream 之间的最小时间间隔 |
-| `minSessionsBetweenDreams` | 5 个会话 | 触发 Dream 所需的最小新会话数 |
-| `SESSION_SCAN_INTERVAL_MS` | 10 分钟  | 会话文件扫描的节流间隔        |
-| `DREAM_LOCK_STALE_MS`      | 1 小时   | lock 文件被视为过期的时间阈值 |
+| Parameter                  | Default    | Description                                                  |
+| -------------------------- | ---------- | ------------------------------------------------------------ |
+| `minHoursBetweenDreams`    | 24 hours   | Minimum time interval between two Dreams                     |
+| `minSessionsBetweenDreams` | 5 sessions | Minimum number of new sessions required to trigger a Dream   |
+| `SESSION_SCAN_INTERVAL_MS` | 10 minutes | Throttling interval for scanning session files               |
+| `DREAM_LOCK_STALE_MS`      | 1 hour     | Time threshold after which the lock file is considered stale |
 
-**锁机制**：
+**Locking Mechanism**:
 
-- lock 文件位于 `<project-state-dir>/consolidation.lock`
-- 内容为持有进程的 PID
-- 检查时：若 PID 进程已不存在（`kill(pid, 0)` 失败）或 lock 超过 1 小时 → 视为过期，自动清除
+- The lock file is located at `<project-state-dir>/consolidation.lock`
+- Its content is the PID of the holding process
+- On check: if the PID's process no longer exists (`kill(pid, 0)` fails) or the lock is older than 1 hour → it is considered stale and cleared automatically
 
-### 整合执行流程（`dream.ts`）
+### Consolidation Execution Flow (`dream.ts`)
 
 ```mermaid
 flowchart TD
-    A[runManagedAutoMemoryDream] --> B{是否配置了 Config?}
-    B -- 是 --> C[Agent 路径\nplanManagedAutoMemoryDreamByAgent]
-    C --> D{Agent 是否修改了文件?}
-    D -- 是 --> E[从文件路径推断 touched topics]
-    E --> F[bumpMetadata\n重建 MEMORY.md 索引]
+    A[runManagedAutoMemoryDream] --> B{Is Config configured?}
+    B -- Yes --> C[Agent path\nplanManagedAutoMemoryDreamByAgent]
+    C --> D{Did the Agent modify any files?}
+    D -- Yes --> E[Infer touched topics from file paths]
+    E --> F[bumpMetadata\nrebuild MEMORY.md index]
     F --> G[updateDreamMetadataResult]
-    G --> H[记录遥测事件]
-    H --> I[返回结果]
-    B -- 否 --> J[机械去重路径]
-    C -- 抛出异常 --> J
-    D -- 否 --> J
+    G --> H[Record telemetry event]
+    H --> I[Return result]
+    B -- No --> J[Mechanical dedup path]
+    C -- Throws exception --> J
+    D -- No --> J
 
-    J --> K[scanAutoMemoryTopicDocuments\n读取所有主题文件]
-    K --> L[对每个文件执行 buildDreamedBody]
-    L --> M[解析 entries → 按 summary 去重\n按字母升序排序 → 重新渲染]
-    M --> N{body 有变化?}
-    N -- 是 --> O[写回文件]
-    O --> P[记录 touched topic]
-    N --> Q[检查跨文件重复\ndedupeKey = type:summary]
-    Q --> R{发现重复文件?}
-    R -- 是 --> S[合并 entries 到 canonical 文件\n删除重复文件]
+    J --> K[scanAutoMemoryTopicDocuments\nread all topic files]
+    K --> L[Run buildDreamedBody for each file]
+    L --> M[Parse entries → dedupe by summary\nsort alphabetically ascending → re-render]
+    M --> N{Did the body change?}
+    N -- Yes --> O[Write the file back]
+    O --> P[Record touched topic]
+    N --> Q[Check for cross-file duplicates\ndedupeKey = type:summary]
+    Q --> R{Duplicate files found?}
+    R -- Yes --> S[Merge entries into the canonical file\ndelete the duplicate file]
     S --> P
-    R -- 否 --> T{有 touched topics?}
+    R -- No --> T{Any touched topics?}
     P --> T
-    T -- 是 --> U[bumpMetadata\n重建 MEMORY.md 索引]
-    U --> V[updateDreamMetadataResult\n记录遥测 → 返回结果]
-    T -- 否 --> V
+    T -- Yes --> U[bumpMetadata\nrebuild MEMORY.md index]
+    U --> V[updateDreamMetadataResult\nrecord telemetry → return result]
+    T -- No --> V
 ```
 
-**机械去重逻辑**：
+**Mechanical Dedup Logic**:
 
-1. 对每个主题文件内部：按 `summary.toLowerCase()` 去重，合并 `why`/`howToApply` 字段
-2. 按 summary 字母顺序重新排序
-3. 跨文件：相同 `type:summary` 的条目合并到最先发现的文件，删除重复文件
+1. Within each topic file: deduplicate by `summary.toLowerCase()`, merging the `why`/`howToApply` fields
+2. Re-sort by summary in alphabetical order
+3. Across files: entries with the same `type:summary` are merged into the first file in which they were found, and the duplicate file is deleted
 
 ---
 
-## Recall — 召回
+## Recall
 
-### 触发时机
+### Trigger Timing
 
-每轮 AI 处理用户请求之前，由 `resolveRelevantAutoMemoryPromptForQuery` 自动触发，将相关记忆注入系统提示词。
+Before the AI processes each user request, `resolveRelevantAutoMemoryPromptForQuery` is triggered automatically to inject relevant memory into the system prompt.
 
-### 召回流程（`recall.ts`）
-
-```mermaid
-flowchart TD
-    A[resolveRelevantAutoMemoryPromptForQuery] --> B[scanAllAutoMemoryTopicDocuments +\nscanAllUserAutoMemoryTopicDocuments\n扫描项目级与用户级全部主题文件]
-    B --> C[filterExcludedAutoMemoryDocuments\n合并作用域并过滤排除列表中的文件]
-    C --> D{query 为空\n或 docs 为空\n或 limit <= 0?}
-    D -- 是 --> E[返回空 prompt\nstrategy: none]
-    D -- 否 --> F{是否配置了 Config?}
-    F -- 是 --> G[selectModelCandidateDocuments\n词法候选 + recent reserve\n最多 200 篇且交错排列]
-    G --> H[selectRelevantAutoMemoryDocumentsByModel\n构建最多 25 KB manifest\n发起 side query 请求模型选择]
-    H --> I{模型返回结果?}
-    I -- 有文档 --> J[strategy: model]
-    I -- 无文档 --> K[strategy: none\n仍然返回空]
-    H -- "失败/异常" --> L[复用已计算的启发式排序]
-    F -- 否 --> M[tokenize query\nNFKC + 非 CJK 字母整串 + CJK bigram\n最多 64 个 token]
-    M --> N[scoreDocument 打分\ntitle +4 / description +3 / body +1\n词法命中后类型加成最多 +2]
-    N --> O[过滤 score=0 的文档\n按分数降序、mtime 降序、输入顺序排列\n取 Top 5]
-    L --> O
-    O --> P{有得分文档?}
-    P -- 是 --> Q[strategy: heuristic]
-    P -- 否 --> K
-    J --> R[buildRelevantAutoMemoryPrompt\n构建 Relevant Memory 区块]
-    Q --> R
-    R --> S[返回注入主系统提示的 prompt 片段]
-```
-
-> **关于 200 上限：这是换了截断依据，不是抬高了天花板。** 旧路径按 scope 各自
-> 保留最近 200 篇，截断发生在看 query 之前；新路径先扫全量，再按词法相关性 +
-> recency reserve 选出最多 200 篇候选。因此效果分三档：总量 ≤200 时两者都不按
-> 数量丢弃（但新增了 25 KB manifest 上限，长 description 场景可能被截）；总量
-> 在 200–400 且单个 scope 不超 200 时，旧路径会把全部（最多 400 篇）送给
-> Selector，新路径最多 200 篇，且实测中 25 KB 的 manifest 预算会先于数量上限
-> 生效——150+150 篇的实测里旧路径送 300 行、新路径只送 94 行，**候选变少的幅度
-> 比数量上限暗示的更大**；只有单个 scope 超过 200 时，
-> 才是这次真正要解决的场景——旧的 recency 上限会让老而相关的文档永久不可见。
-> 详见 `docs/design/2026-08-09-bounded-memory-recall-candidates.md`。
-
-**评分规则（启发式）**：
-
-| 条件                                       | 加分                |
-| ------------------------------------------ | ------------------- |
-| query token 出现在 title                   | +4（每个 token）    |
-| query token 出现在 description             | +3（每个 token）    |
-| query token 出现在 body 前 1200 字符       | +1（每个 token）    |
-| 至少一次词法命中后，token 是类型特征关键词 | +1，整篇文档最多 +2 |
-
-> **Tokenize 规则**：NFKC 归一化并转小写后，Han/Hiragana/Katakana/Hangul 连续片段
-> 按 code point bigram 切分（单字不产生 token）；其余至少 3 个字母、组合符或数字的
-> 连续片段整串保留。后者基于 `\p{L}` 而非 `[a-z0-9]`，因此西里尔、希腊、阿拉伯和
-> 带重音拉丁文都能产生 token。CJK 是**逐字符**排除的，不能只依赖正则分支顺序——
-> `\p{L}` 也匹配 Han，否则 `abc漢字` 会被并成一个 token。Thai/Khmer/Lao 这类
-> 无分词符又不在 CJK 集合内的文字，会整段变成一个 token：比之前完全没有 token 强，
-> 但不是分词。
->
-> **同分排序**：按 mtime 降序，再按输入顺序（稳定排序），**不按 type**。
-
-**每种类型的特征关键词**：
-
-- `user`：user, preference, background, role, terse
-- `feedback`：feedback, rule, avoid, style, summary
-- `project`：project, goal, incident, deadline, release
-- `reference`：reference, dashboard, ticket, docs, link
-
-**Prompt 构建规则**：
-
-- 单次注入最多 5 篇文档（`MAX_RELEVANT_DOCS`）
-- 每篇文档 body 截断至 1200 字符（`MAX_DOC_BODY_CHARS`）
-- 超出截断时追加提示："NOTE: Relevant memory truncated for prompt budget."
-- 包含文档的新鲜度信息（基于文件 mtime）
-
-> **`MAX_RELEVANT_DOCS` 限制的是单次注入，不是单轮总量。** Fast 阶段投递 2 篇、
-> ToolResult 阶段又投递 5 篇全新文档时，本轮进入模型的是 **7 篇**——去重只消除
-> 重复，不压缩总和。这是放弃跨阶段预算核算的有意结果（见
-> `2026-08-08-native-memory-recall-reliability.md`）：两次 Prompt 各自有界，
-> 每篇 body 仍截断到 1200 字符，Fast 上限为 2，因此最坏情况有界且不大，只是不等于 5。
-
-### 投递时机（Delivery）
-
-"选中了 Memory" 不等于 "主模型看到了 Memory"。Recall 在 UserQuery 到达时异步启动，
-投递发生在两个时机：
+### Recall Flow (`recall.ts`)
 
 ```mermaid
 flowchart TD
-    A[UserQuery 到达\n启动 Recall Prefetch] --> B{等待结束\n以先到者为准:\nRecall 完成 / Fast 就绪 /\n取消 / 100 ms 上限}
-    B --> B1{Recall 是否完成?}
-    B1 -- 是 --> C{选中结果非空?}
-    C -- 是 --> C1[注入首轮 Prompt\nphase: refined]
-    C -- 否 --> C0[丢弃\nno_relevant_results]
-    B1 -- 否 --> D{是否有确定性\nFast 结果?}
-    D -- 是 --> E[注入首轮 Prompt\nphase: fast\n最多 2 篇 MAX_FAST_RECALL_DOCS]
-    D -- 否 --> F[首轮不注入]
-    E --> G[Recall 继续运行]
-    F --> G
-    G --> H{本轮是否有\nToolResult?}
-    H -- 是 --> I{Recall 是否已完成?}
-    I -- 是 --> J[排除 Fast 已投递文档\n按剩余文档重建 Prompt]
-    I -- 否 --> M
-    J --> J1{还有剩余文档?}
-    J1 -- 是 --> K[注入 ToolResult\nphase: refined]
-    J1 -- 否 --> L{Recall 选中了文档?}
-    L -- 是 --> L1[丢弃\nalready_delivered]
-    L -- 否 --> L2[丢弃\nno_relevant_results]
-    H -- 否 --> M{选中文档是否\n全部已被 Fast 投递?}
-    M -- 是 --> L1
-    M -- 否 --> M1[丢弃\nno_safe_delivery_point]
+    A[resolveRelevantAutoMemoryPromptForQuery] --> B[scanAutoMemoryTopicDocuments\nscan all topic files]
+    B --> C[filterExcludedAutoMemoryDocuments\nfilter out files written this turn]
+    C --> D{query empty\nor docs empty\nor limit <= 0?}
+    D -- Yes --> E[Return empty prompt\nstrategy: none]
+    D -- No --> F{Is Config configured?}
+    F -- Yes --> G[selectRelevantAutoMemoryDocumentsByModel\nissue a side query asking the model to select]
+    G --> H{Did the model return results?}
+    H -- Has docs --> I[strategy: model]
+    H -- No docs --> J[strategy: none\nstill return empty]
+    G -- "Failed/Exception" --> K[Fall back to heuristic selection]
+    F -- No --> K
+    K --> L[tokenize query\nextract tokens ≥ 3 characters]
+    L --> M[scoreDocument scoring\nkeyword match +2 / type keyword +1 / has content +1]
+    M --> N[Filter out docs with score=0\nsort by score descending, take Top 5]
+    N --> O{Any scored docs?}
+    O -- Yes --> P[strategy: heuristic]
+    O -- No --> J
+    I --> Q[buildRelevantAutoMemoryPrompt\nbuild the Relevant Memory block]
+    P --> Q
+    Q --> R[Return the prompt fragment injected into the main system prompt]
 ```
 
-**为什么需要 Fast 阶段**：当存在 Config 时 Recall 会等待 Model Selector，
-而它是一次网络 Side Query（中止上限 30 秒），因此 100 ms 预算通常会超时。
-若没有 Fast 阶段，**没有工具调用的轮次将完全拿不到 Memory**——而这正是
-用户级 Memory 最重要的场景。Fast 结果复用 `selectModelCandidateDocuments`
-为 Model Manifest 已经算好的候选，不产生额外扫描或 I/O。
+**Scoring Rules (Heuristic)**:
 
-**100 ms 是上限而不是固定开销**：Fast 结果在 Recall 扫完 Memory 树之后才发布，
-所以真正决定它能否赶上的是**扫描耗时**，不是打分耗时（后者是微秒级）。
-`recall-scan-latency.test.ts` 测量同一 Session 内复用文档缓存后的稳态扫描，
-不能证明首次冷缓存扫描在 100 ms 内完成。首次扫描需要读取和解析全部主题文件，
-大语料下可能超过上限；此时该轮最多等待 100 ms，但不会投递尚未就绪的 Fast 结果。
-后续召回复用文档缓存，Fast 就绪后会立即结束等待，不再继续等待通常更慢的
-Model Selector。该上限只约束等待成本，并不保证每个语料规模都能完成首次投递。
+| Condition                                             | Points         |
+| ----------------------------------------------------- | -------------- |
+| A query token appears in the document content         | +2 (per token) |
+| A query token is a characteristic keyword of the type | +1 (per token) |
+| The document body is non-empty                        | +1             |
 
-**Fast 阶段的边界**：Fast 结果就是确定性结果，因此它只能解决**时机**问题，
-解决不了**匹配**问题。与文档没有任何词面重叠的 Query 产生不了 Fast 结果，
-这类 Query 在无工具回合仍然拿不到 Memory——只有 Model Selector 能覆盖它们，
-而无工具回合等不到 Selector。语料中的 `semantic-no-lexical` 分片专门测量这一点。
+**Characteristic Keywords per Type**:
 
-**去重**：两个阶段来自同一次扫描，Model Selector 并未把 Fast 文档视为已排除，
-因此 ToolResult 投递前必须过滤掉 Fast 已投递的 `filePath` 并重建 Prompt。
+- `user`: user, preference, background, role, terse
+- `feedback`: feedback, rule, avoid, style, summary
+- `project`: project, goal, incident, deadline, release
+- `reference`: reference, dashboard, ticket, docs, link
 
-**丢弃口径**：同一条规则也适用于取消路径。若最终选中的文档已被 Fast 阶段
-全部投递，无论本轮是因为无工具调用、New Query、Reset、Abort 还是 Shutdown
-结束，都记为 `already_delivered` 而不是对应的取消原因——否则「Memory 从未
-到达模型」这一桶会被实际已送达的回合灌水。只有部分重叠时仍记取消原因，
-因为不在 Fast 集合里的那些文档确实没有投递点。
+**Prompt Construction Rules**:
+
+- At most 5 documents are injected (`MAX_RELEVANT_DOCS`)
+- Each document body is truncated to 1200 characters (`MAX_DOC_BODY_CHARS`)
+- When truncated, the note "NOTE: Relevant memory truncated for prompt budget." is appended
+- Document freshness information is included (based on file mtime)
 
 ---
 
-## Forget — 遗忘
+## Forget
 
-### 触发时机
+### Trigger Timing
 
-由用户手动执行 `/forget <query>` 命令触发。
+Triggered manually by the user via the `/forget <query>` command.
 
-### 遗忘流程（`forget.ts`）
+### Forget Flow (`forget.ts`)
 
 ```mermaid
 flowchart TD
     A[forgetManagedAutoMemoryEntries\nquery + config] --> B[ensureAutoMemoryScaffold]
-    B --> C[listIndexedForgetCandidates\n扫描所有文件的所有 entry]
-    C --> D[为每个 entry 生成稳定 ID\n单 entry 文件: relativePath\n多 entry 文件: relativePath:index]
-    D --> E{是否配置了 Config?}
-    E -- 是 --> F[selectByModel\n构建 selection prompt\n发起 side query temperature=0]
-    F --> G{模型选择成功?}
-    G -- 是 --> H[strategy: model]
-    G -- 失败 --> I[selectByHeuristic\n关键词匹配]
-    E -- 否 --> I
+    B --> C[listIndexedForgetCandidates\nscan every entry in every file]
+    C --> D[Generate a stable ID for each entry\nsingle-entry file: relativePath\nmulti-entry file: relativePath:index]
+    D --> E{Is Config configured?}
+    E -- Yes --> F[selectByModel\nbuild selection prompt\nissue side query temperature=0]
+    F --> G{Did the model select successfully?}
+    G -- Yes --> H[strategy: model]
+    G -- Failed --> I[selectByHeuristic\nkeyword match]
+    E -- No --> I
     I --> J[strategy: heuristic]
-    H --> K[遍历选中的 candidates]
+    H --> K[Iterate over the selected candidates]
     J --> K
     K --> L{entries.length == 1?}
-    L -- 是 --> M[删除整个文件\nfs.unlink]
-    L -- 否 --> N[解析文件中的所有 entries\n移除目标 entry\n重新渲染写回]
-    M --> O[记录 removedEntries]
+    L -- Yes --> M[Delete the entire file\nfs.unlink]
+    L -- No --> N[Parse all entries in the file\nremove the target entry\nre-render and write back]
+    M --> O[Record removedEntries]
     N --> O
-    O --> P{有 touched topics?}
-    P -- 是 --> Q[bumpMetadata\n重建 MEMORY.md 索引]
-    P --> R[返回 AutoMemoryForgetResult]
+    O --> P{Any touched topics?}
+    P -- Yes --> Q[bumpMetadata\nrebuild MEMORY.md index]
+    P --> R[Return AutoMemoryForgetResult]
     Q --> R
 ```
 
-**Entry ID 设计**：
+**Entry ID Design**:
 
-- 单条目文件（常见情况）：`relativePath`（如 `feedback/no-summary.md`）
-- 多条目文件：`relativePath:index`（如 `feedback/style.md:2`）
-- 使用稳定 ID 使模型可以精确定位条目而不影响同文件的其他条目
+- Single-entry file (common case): `relativePath` (e.g., `feedback/no-summary.md`)
+- Multi-entry file: `relativePath:index` (e.g., `feedback/style.md:2`)
+- Using stable IDs lets the model precisely target an entry without affecting other entries in the same file
 
 ---
 
-## 索引重建
+## Index Rebuild
 
-`MEMORY.md` 是所有主题文件的导航索引，每次 Extract 或 Dream 后调用 `rebuildManagedAutoMemoryIndex` 重建：
+`MEMORY.md` is the navigation index for all topic files. It is rebuilt by calling `rebuildManagedAutoMemoryIndex` after each Extract or Dream:
 
 ```
-- [用户偏好](user/preferences.md) — 用户是资深 Go 工程师，第一次接触 React
-- [反馈规范](feedback/style.md) — 保持回复简洁，不要尾部总结
-- [项目里程碑](project/milestone.md) — 移动端发布切分支前的合并冻结窗口
+- [User Preferences](user/preferences.md) — The user is a senior Go engineer encountering React for the first time
+- [Feedback Conventions](feedback/style.md) — Keep replies concise, no trailing summaries
+- [Project Milestone](project/milestone.md) — Merge freeze window before cutting the mobile release branch
 ```
 
-**索引限制**：
+**Index Limits**:
 
-- 每行预算 150 字符（`MAX_INDEX_LINE_CHARS`）：标题与描述先各自按字段上限（`MAX_INDEX_FIELD_CHARS`，120 字符）截断；再按整行预算让描述让位——能整段放下就整段保留，否则截到剩余空间，但会被截到不足 `MIN_INDEX_HOOK_CHARS`（24）字符时整条描述省略；`](path)` 链接目标必须完整可解析，链接本身就超过 150 字符时该行允许超长（不截链接）
-- 最多 200 行
-- 总大小不超过 25,000 字节
-
----
-
-## 遥测埋点
-
-系统内置三类遥测事件，用于监控记忆操作的性能和效果：
-
-### Extract 遥测
-
-| 字段             | 类型                        | 说明                    |
-| ---------------- | --------------------------- | ----------------------- |
-| `trigger`        | `'auto'`                    | 触发方式（当前仅自动）  |
-| `status`         | `'completed'` \| `'failed'` | 执行结果                |
-| `patches_count`  | number                      | 提取到的有效 patch 数量 |
-| `touched_topics` | string[]                    | 被写入的记忆类型列表    |
-| `duration_ms`    | number                      | 总耗时（毫秒）          |
-
-### Dream 遥测
-
-| 字段              | 类型                                  | 说明                   |
-| ----------------- | ------------------------------------- | ---------------------- |
-| `trigger`         | `'auto'`                              | 触发方式               |
-| `status`          | `'updated'` \| `'noop'` \| `'failed'` | 执行结果               |
-| `deduped_entries` | number                                | 机械路径去重的条目数量 |
-| `touched_topics`  | string[]                              | 被修改的记忆类型列表   |
-| `duration_ms`     | number                                | 总耗时（毫秒）         |
-
-### Recall 遥测
-
-| 字段            | 类型                                   | 说明             |
-| --------------- | -------------------------------------- | ---------------- |
-| `query_length`  | number                                 | 查询字符串长度   |
-| `docs_scanned`  | number                                 | 扫描的文档总数   |
-| `docs_selected` | number                                 | 最终注入的文档数 |
-| `strategy`      | `'none'` \| `'heuristic'` \| `'model'` | 选择策略         |
-| `duration_ms`   | number                                 | 总耗时（毫秒）   |
-
-### Recall Delivery 遥测
-
-记录选中的 Memory 是否真的送达主模型（Selection 事件无法回答这个问题）。
-
-| 字段             | 类型                                                                                                                                      | 说明                                                       |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `phase`          | `'fast'` \| `'refined'`                                                                                                                   | **投递阶段**                                               |
-| `delivery_point` | `'initial'` \| `'tool_result'` \| `'discarded'`                                                                                           | 投递位置                                                   |
-| `discard_reason` | `'no_safe_delivery_point'` \| `'new_query'` \| `'reset'` \| `'abort'` \| `'shutdown'` \| `'no_relevant_results'` \| `'already_delivered'` | 丢弃原因                                                   |
-| `strategy`       | `'none'` \| `'heuristic'` \| `'model'`                                                                                                    | **选择方式**                                               |
-| `docs_selected`  | number                                                                                                                                    | 结果文档数（投递事件为实际投递数；discarded 事件为选中数） |
-| `latency_ms`     | number                                                                                                                                    | 自发起的耗时                                               |
-
-> **`phase` 与 `strategy` 正交，互不替代。** `phase` 描述**何时**送达：`fast` 是预算
-> 超时后注入的确定性结果，`refined` 是 Model Selector 选出的结果。`strategy` 描述
-> **如何**选出。`fast` 投递必然是 `heuristic`；`refined` 投递常规为 `model`，
-> 在 Selector 失败走 Fallback 时为 `heuristic`。仅凭 `strategy` 判断阶段，
-> 会把"确定性结果先到"与"Selector 故障"混为一谈。
+- At most 150 characters per line (truncated with `…` if exceeded)
+- At most 200 lines
+- Total size must not exceed 25,000 bytes
 
 ---
 
-## 相关源文件索引
+## Telemetry
 
-| 文件                                                 | 职责                                                                          |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `packages/core/src/memory/types.ts`                  | 类型定义：`AutoMemoryType`、`AutoMemoryMetadata`、`AutoMemoryExtractCursor`   |
-| `packages/core/src/memory/paths.ts`                  | 路径计算：`getAutoMemoryRoot`、`isAutoMemPath`、各类文件路径 helpers          |
-| `packages/core/src/memory/store.ts`                  | 脚手架初始化：`ensureAutoMemoryScaffold`，索引/元数据读写                     |
-| `packages/core/src/memory/scan.ts`                   | 扫描主题文件：`scanAutoMemoryTopicDocuments`，解析 frontmatter                |
-| `packages/core/src/memory/entries.ts`                | 条目解析和渲染：`parseAutoMemoryEntries`、`renderAutoMemoryBody`              |
-| `packages/core/src/memory/extract.ts`                | 提取核心逻辑：`runAutoMemoryExtract`，游标管理，patch 去重                    |
-| `packages/core/src/memory/extractScheduler.ts`       | 提取调度器：`ManagedAutoMemoryExtractRuntime`，队列/运行状态机                |
-| `packages/core/src/memory/extractionAgentPlanner.ts` | 提取 Agent：`runAutoMemoryExtractionByAgent`                                  |
-| `packages/core/src/memory/dream.ts`                  | 整合核心逻辑：`runManagedAutoMemoryDream`，Agent 路径 + 机械去重              |
-| `packages/core/src/memory/dreamScheduler.ts`         | 整合调度器：`ManagedAutoMemoryDreamRuntime`，门控检查，锁管理                 |
-| `packages/core/src/memory/dreamAgentPlanner.ts`      | 整合 Agent：`planManagedAutoMemoryDreamByAgent`                               |
-| `packages/core/src/memory/recall.ts`                 | 召回逻辑：`resolveRelevantAutoMemoryPromptForQuery`，启发式+模型双路径        |
-| `packages/core/src/memory/forget.ts`                 | 遗忘逻辑：`forgetManagedAutoMemoryEntries`，候选生成+精确删除                 |
-| `packages/core/src/memory/indexer.ts`                | 索引重建：`rebuildManagedAutoMemoryIndex`，`buildManagedAutoMemoryIndex`      |
-| `packages/core/src/memory/prompt.ts`                 | 系统提示模板：记忆类型说明、格式示例、使用规范                                |
-| `packages/core/src/memory/governance.ts`             | 治理建议类型：`AutoMemoryGovernanceSuggestionType`                            |
-| `packages/core/src/memory/state.ts`                  | 提取运行状态：`isExtractRunning`、`markExtractRunning`、`clearExtractRunning` |
-| `packages/core/src/memory/memoryAge.ts`              | 新鲜度描述：`memoryAge`、`memoryFreshnessText`                                |
+The system has three built-in classes of telemetry events, used to monitor the performance and effectiveness of memory operations:
+
+### Extract Telemetry
+
+| Field            | Type                        | Description                          |
+| ---------------- | --------------------------- | ------------------------------------ |
+| `trigger`        | `'auto'`                    | Trigger method (currently auto only) |
+| `status`         | `'completed'` \| `'failed'` | Execution result                     |
+| `patches_count`  | number                      | Number of valid patches extracted    |
+| `touched_topics` | string[]                    | List of memory types written         |
+| `duration_ms`    | number                      | Total duration (milliseconds)        |
+
+### Dream Telemetry
+
+| Field             | Type                                  | Description                                           |
+| ----------------- | ------------------------------------- | ----------------------------------------------------- |
+| `trigger`         | `'auto'`                              | Trigger method                                        |
+| `status`          | `'updated'` \| `'noop'` \| `'failed'` | Execution result                                      |
+| `deduped_entries` | number                                | Number of entries deduplicated on the mechanical path |
+| `touched_topics`  | string[]                              | List of memory types modified                         |
+| `duration_ms`     | number                                | Total duration (milliseconds)                         |
+
+### Recall Telemetry
+
+| Field           | Type                                   | Description                          |
+| --------------- | -------------------------------------- | ------------------------------------ |
+| `query_length`  | number                                 | Length of the query string           |
+| `docs_scanned`  | number                                 | Total number of documents scanned    |
+| `docs_selected` | number                                 | Number of documents finally injected |
+| `strategy`      | `'none'` \| `'heuristic'` \| `'model'` | Selection strategy                   |
+| `duration_ms`   | number                                 | Total duration (milliseconds)        |
+
+---
+
+## Related Source File Index
+
+| File                                                 | Responsibility                                                                          |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `packages/core/src/memory/types.ts`                  | Type definitions: `AutoMemoryType`, `AutoMemoryMetadata`, `AutoMemoryExtractCursor`     |
+| `packages/core/src/memory/paths.ts`                  | Path computation: `getAutoMemoryRoot`, `isAutoMemPath`, various file-path helpers       |
+| `packages/core/src/memory/store.ts`                  | Scaffold initialization: `ensureAutoMemoryScaffold`, index/metadata read/write          |
+| `packages/core/src/memory/scan.ts`                   | Scan topic files: `scanAutoMemoryTopicDocuments`, parse frontmatter                     |
+| `packages/core/src/memory/entries.ts`                | Entry parsing and rendering: `parseAutoMemoryEntries`, `renderAutoMemoryBody`           |
+| `packages/core/src/memory/extract.ts`                | Core extraction logic: `runAutoMemoryExtract`, cursor management, patch dedup           |
+| `packages/core/src/memory/extractScheduler.ts`       | Extraction scheduler: `ManagedAutoMemoryExtractRuntime`, queue/run state machine        |
+| `packages/core/src/memory/extractionAgentPlanner.ts` | Extraction Agent: `runAutoMemoryExtractionByAgent`                                      |
+| `packages/core/src/memory/dream.ts`                  | Core consolidation logic: `runManagedAutoMemoryDream`, Agent path + mechanical dedup    |
+| `packages/core/src/memory/dreamScheduler.ts`         | Consolidation scheduler: `ManagedAutoMemoryDreamRuntime`, gate checks, lock management  |
+| `packages/core/src/memory/dreamAgentPlanner.ts`      | Consolidation Agent: `planManagedAutoMemoryDreamByAgent`                                |
+| `packages/core/src/memory/recall.ts`                 | Recall logic: `resolveRelevantAutoMemoryPromptForQuery`, heuristic + model dual paths   |
+| `packages/core/src/memory/forget.ts`                 | Forget logic: `forgetManagedAutoMemoryEntries`, candidate generation + precise deletion |
+| `packages/core/src/memory/indexer.ts`                | Index rebuild: `rebuildManagedAutoMemoryIndex`, `buildManagedAutoMemoryIndex`           |
+| `packages/core/src/memory/prompt.ts`                 | System prompt templates: memory type descriptions, format examples, usage conventions   |
+| `packages/core/src/memory/governance.ts`             | Governance suggestion types: `AutoMemoryGovernanceSuggestionType`                       |
+| `packages/core/src/memory/state.ts`                  | Extraction run state: `isExtractRunning`, `markExtractRunning`, `clearExtractRunning`   |
+| `packages/core/src/memory/memoryAge.ts`              | Freshness description: `memoryAge`, `memoryFreshnessText`                               |

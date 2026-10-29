@@ -28,28 +28,6 @@ describe('supportsOpenAIPrefixCaching', () => {
       supportsOpenAIPrefixCaching(config(AuthType.USE_OPENAI, baseUrl)),
     ).toBe(true);
   });
-
-  it('keeps non-OpenAI providers excluded', () => {
-    expect(supportsOpenAIPrefixCaching(config(AuthType.USE_GEMINI))).toBe(
-      false,
-    );
-  });
-
-  it('keeps Qwen OAuth on its existing DashScope path', () => {
-    expect(
-      supportsOpenAIPrefixCaching(
-        config(
-          AuthType.QWEN_OAUTH,
-          'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        ),
-      ),
-    ).toBe(true);
-    expect(
-      supportsOpenAIPrefixCaching(
-        config(AuthType.QWEN_OAUTH, 'https://proxy.example/v1'),
-      ),
-    ).toBe(true);
-  });
 });
 
 describe('official OpenAI prompt caching', () => {
@@ -63,11 +41,6 @@ describe('official OpenAI prompt caching', () => {
     expect(
       isOfficialOpenAIEndpoint(
         config(AuthType.USE_OPENAI, 'https://api.openai.com.evil.test/v1'),
-      ),
-    ).toBe(false);
-    expect(
-      isOfficialOpenAIEndpoint(
-        config(AuthType.QWEN_OAUTH, 'https://api.openai.com/v1'),
       ),
     ).toBe(false);
   });

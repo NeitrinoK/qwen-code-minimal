@@ -45,7 +45,7 @@ export async function runThrottledOnce(
 
   // First-ever housekeeping pass may run before ~/.qwen/ exists. mode 0o700
   // matches the rest of the codebase's convention for ~/.qwen/ subdirs
-  // (e.g., file-token-storage.ts, sharedTokenManager.ts) so a slow main-app
+  // (e.g., file-token-storage.ts) so a slow main-app
   // initialization doesn't get races us into creating a world-readable dir.
   //
   // Deliberately NOT recursive. On a bind mount whose source directory was

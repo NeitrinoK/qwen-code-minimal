@@ -36,8 +36,7 @@ import type {
   ModelWireApi,
 } from '@qwen-code/qwen-code-core';
 import {
-  ALIBABA_PROVIDERS,
-  THIRD_PARTY_PROVIDERS,
+  ALL_PROVIDERS,
   AuthEvent,
   AuthType,
   applyProviderInstallPlan,
@@ -48,6 +47,7 @@ import {
   findProviderByCredentials,
   findProviderById,
   getDefaultModelIds,
+  HUB_UI_GROUP,
   getErrorMessage,
   logAuth,
 } from '@qwen-code/qwen-code-core';
@@ -117,13 +117,11 @@ interface RadioItem {
   value: string;
 }
 
-const MAIN_ITEMS: RadioItem[] = [
+const ALL_MAIN_ITEMS: RadioItem[] = [
   {
     key: 'ALIBABA_MODELSTUDIO',
-    label: t('Alibaba ModelStudio'),
-    description: t(
-      'Official recommended setup: Coding Plan, Token Plan, or Standard API Key',
-    ),
+    label: t('Model Hub'),
+    description: t('Your configured model hub'),
     value: 'ALIBABA_MODELSTUDIO',
   },
   {
@@ -149,23 +147,11 @@ const PROTOCOL_ITEMS: RadioItem[] = [
     description: t('Standard OpenAI API format (most common)'),
     value: AuthType.USE_OPENAI,
   },
-  {
-    key: AuthType.USE_ANTHROPIC,
-    label: t('Anthropic-compatible'),
-    description: t('Anthropic Messages API format'),
-    value: AuthType.USE_ANTHROPIC,
-  },
-  {
-    key: AuthType.USE_GEMINI,
-    label: t('Gemini-compatible'),
-    description: t('Google Gemini API format'),
-    value: AuthType.USE_GEMINI,
-  },
 ];
 
 const VIEW_TITLES: Record<string, string> = {
   main: t('Connect a Provider'),
-  'alibaba-select': t('Alibaba ModelStudio · Access Method'),
+  'alibaba-select': t('Model Hub · Endpoint'),
   'thirdparty-select': t('Third-party Providers · Provider'),
 };
 
@@ -1367,9 +1353,28 @@ function AuthDialogFlow({
 
   // -- Sub-menu items ---------------------------------------------------------
 
-  const alibabaItems = useMemo(() => ALIBABA_PROVIDERS.map(providerToItem), []);
+  // The 'alibaba-select' view lists the configured hub's endpoints; the view
+  // key is kept so navigation state matches the ink dialog's shape.
+  const alibabaItems = useMemo(
+    () =>
+      ALL_PROVIDERS.filter((p) => p.uiGroup === HUB_UI_GROUP).map(
+        providerToItem,
+      ),
+    [],
+  );
+  // The Model Hub entry is offered only when a hub is configured.
+  const mainItems = useMemo(
+    () =>
+      alibabaItems.length > 0
+        ? ALL_MAIN_ITEMS
+        : ALL_MAIN_ITEMS.filter((i) => i.value !== 'ALIBABA_MODELSTUDIO'),
+    [alibabaItems],
+  );
   const thirdPartyItems = useMemo(
-    () => THIRD_PARTY_PROVIDERS.map(providerToItem),
+    () =>
+      ALL_PROVIDERS.filter((p) => p.uiGroup === 'third-party').map(
+        providerToItem,
+      ),
     [],
   );
 
@@ -1429,10 +1434,15 @@ function AuthDialogFlow({
   );
   // Land on the tab matching the active provider's uiGroup (ink parity).
   const defaultMainIndex = useMemo(() => {
-    if (matchedProvider?.uiGroup === 'third-party') return 1;
-    if (matchedProvider?.uiGroup === 'custom') return 2;
-    return 0;
-  }, [matchedProvider]);
+    const target =
+      matchedProvider?.uiGroup === 'third-party'
+        ? 'THIRD_PARTY_PROVIDERS'
+        : matchedProvider?.uiGroup === 'custom'
+          ? 'CUSTOM_PROVIDER'
+          : 'ALIBABA_MODELSTUDIO';
+    const index = mainItems.findIndex((i) => i.value === target);
+    return index >= 0 ? index : 0;
+  }, [matchedProvider, mainItems]);
 
   // -- Main menu select -------------------------------------------------------
 
@@ -1534,8 +1544,7 @@ function AuthDialogFlow({
   // region pays for them), and the zero-row refusal below covers only what
   // even the shed chrome cannot pay.
   const shedMainFooter =
-    wizardListWindow(regionHeight, fullMainChromeRows, MAIN_ITEMS.length, 2) <
-    1;
+    wizardListWindow(regionHeight, fullMainChromeRows, mainItems.length, 2) < 1;
   // Below even the shed chrome's first item the list's own margin row sheds
   // too: the frame must fit the region, and the alternative is a dead dialog
   // — a zero-row window refuses every list key while the must-connect gate
@@ -1545,7 +1554,7 @@ function AuthDialogFlow({
     wizardListWindow(
       regionHeight,
       shellChromeRows + errorRows,
-      MAIN_ITEMS.length,
+      mainItems.length,
       2,
     ) < 1;
   const mainChromeRows =
@@ -1559,12 +1568,12 @@ function AuthDialogFlow({
   const mainWindow = wizardListWindow(
     regionHeight,
     mainChromeRows,
-    MAIN_ITEMS.length,
+    mainItems.length,
     2,
   );
   const mainOffset = getSelectionScrollOffset(
     mainCursor,
-    MAIN_ITEMS.length,
+    mainItems.length,
     mainWindow,
   );
   const subMenuItems = activeSubMenu ?? [];
@@ -1588,10 +1597,10 @@ function AuthDialogFlow({
       if (mainWindow < 1) return;
       if (o.name === 'up' || o.name === 'down') {
         moveMain(
-          findNextEnabledIndex(MAIN_ITEMS, mainCursorRef.current, o.name),
+          findNextEnabledIndex(mainItems, mainCursorRef.current, o.name),
         );
       } else if (o.name === 'return') {
-        const item = MAIN_ITEMS[mainCursorRef.current];
+        const item = mainItems[mainCursorRef.current];
         if (item) handleMainSelect(item.value as MainOption);
       }
       return;
@@ -1667,7 +1676,7 @@ function AuthDialogFlow({
       {viewLevel === 'main' && (
         <>
           <RadioList
-            items={MAIN_ITEMS}
+            items={mainItems}
             cursor={mainCursor}
             offset={mainOffset}
             maxItems={mainWindow}

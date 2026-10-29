@@ -77,6 +77,13 @@ export interface ProviderConfig {
   /** Load the account's current model recommendations from `/models`. */
   supportsModelDiscovery?: boolean;
 
+  /**
+   * When true, `/model` fetches a fresh model list from this provider's
+   * OpenAI-compatible `GET {baseUrl}/models` endpoint. Only hub provider
+   * presets opt in. Defaults to false.
+   */
+  discoverModels?: boolean;
+
   /** Display name prefix for model entries, or a function of baseUrl. */
   modelNamePrefix: string | ((baseUrl: string) => string);
 
@@ -157,7 +164,7 @@ export interface ProviderSetupInputs {
   baseUrl: string;
   apiKey: string;
   modelIds: string[];
-  /** Pre-built model configs (e.g. OpenRouter fetches models from API). Overrides modelIds. */
+  /** Pre-built model configs (e.g. fetched from a provider API). Overrides modelIds. */
   prebuiltModels?: ProviderModelConfig[];
   advancedConfig?: {
     /** Replace all advanced form controls; omitted fields otherwise stay unchanged. */

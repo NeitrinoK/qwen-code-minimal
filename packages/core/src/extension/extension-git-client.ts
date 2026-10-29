@@ -120,6 +120,20 @@ export function createExtensionGitClient(
     ...(signal ? { abort: signal } : {}),
     ...(hasNetworkConfig ? { config: networkConfig } : {}),
     ...(restrictEnvironment || hasNetworkConfig ? { unsafe } : {}),
+    // simple-git 4 blocks every GIT_* variable it is not told about; these
+    // are exactly the ones the allowlisted environment below sets.
+    ...(restrictEnvironment
+      ? {
+          allowEnvironment: [
+            'GIT_CONFIG_NOSYSTEM',
+            'GIT_CONFIG_GLOBAL',
+            'GIT_TERMINAL_PROMPT',
+            ...(credentialConfigKey
+              ? ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']
+              : []),
+          ],
+        }
+      : {}),
   });
   if (!restrictEnvironment) return git;
 

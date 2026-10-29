@@ -35,7 +35,7 @@ export const bugCommand: SlashCommand = {
       .join('\n');
 
     let bugReportUrl =
-      'https://github.com/QwenLM/qwen-code/issues/new?template=bug_report.yml&title={title}&info={info}';
+      'https://github.com/NeitrinoK/qwen-code-minimal/issues/new?template=bug_report.yml&title={title}&info={info}';
 
     const bugCommandSettings = context.services.config?.getBugCommand();
     if (bugCommandSettings?.urlTemplate) {

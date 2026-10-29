@@ -122,6 +122,9 @@ function getLinuxClipboardTool(): 'wl-paste' | 'xclip' | null {
   }
 
   try {
+    // Not a command-injection sink: `toolName` is typed `'wl-paste' | 'xclip'`
+    // (set to constants above from the session type); no user/network input flows
+    // into the command string. Flagged by SAST as string-concat exec — false positive.
     execSync('command -v ' + toolName, { stdio: 'ignore' });
     linuxClipboardTool = toolName;
     return toolName;

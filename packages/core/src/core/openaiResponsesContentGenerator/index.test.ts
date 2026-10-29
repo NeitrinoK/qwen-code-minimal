@@ -24,20 +24,22 @@ vi.mock('./responses-pipeline.js', async (importOriginal) => {
     await importOriginal<typeof import('./responses-pipeline.js')>();
   return {
     ...actual,
-    ResponsesPipeline: vi.fn().mockImplementation(() => ({
-      execute: mockExecute,
-      executeStream: mockExecuteStream,
-      connectStream: mockConnectStream,
-    })),
+    ResponsesPipeline: vi.fn().mockImplementation(function () {
+      return {
+        execute: mockExecute,
+        executeStream: mockExecuteStream,
+        connectStream: mockConnectStream,
+      };
+    }),
   };
 });
 
 const mockEmbeddingsCreate = vi.fn();
 const mockOpenAIConstructor = vi.fn();
 vi.mock('openai', () => ({
-  default: mockOpenAIConstructor.mockImplementation(() => ({
-    embeddings: { create: mockEmbeddingsCreate },
-  })),
+  default: mockOpenAIConstructor.mockImplementation(function () {
+    return { embeddings: { create: mockEmbeddingsCreate } };
+  }),
 }));
 
 // embedContent's client is built with buildRuntimeFetchOptions' pinned

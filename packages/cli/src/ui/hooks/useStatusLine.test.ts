@@ -18,8 +18,17 @@ const debugLogMock = vi.hoisted(() => ({
   warn: vi.fn(),
 }));
 
-// --- Mock child_process (auto-mock, then override exec in beforeEach) ---
-vi.mock('child_process');
+// --- Mock child_process (override exec in beforeEach) ---
+const { mockExec } = vi.hoisted(() => ({ mockExec: vi.fn() }));
+vi.mock('child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
+  return {
+    ...actual,
+    default: { ...actual, exec: mockExec },
+    exec: mockExec,
+  };
+});
 
 // --- Mock context hooks ---
 

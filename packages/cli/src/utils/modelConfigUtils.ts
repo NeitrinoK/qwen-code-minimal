@@ -31,10 +31,6 @@ import { sanitizeProviderBaseUrl } from './acpModelUtils.js';
 const AUTH_ENV_MODEL_VARS: Record<AuthType, string[]> = {
   [AuthType.USE_OPENAI]: ['OPENAI_MODEL', 'QWEN_MODEL'],
   [AuthType.USE_OPENAI_RESPONSES]: ['OPENAI_MODEL'],
-  [AuthType.USE_GEMINI]: ['GEMINI_MODEL'],
-  [AuthType.USE_VERTEX_AI]: ['GOOGLE_MODEL'],
-  [AuthType.USE_ANTHROPIC]: ['ANTHROPIC_MODEL'],
-  [AuthType.QWEN_OAUTH]: [],
 };
 
 /**
@@ -120,15 +116,6 @@ function buildSkippedProviderWarnings(
       continue;
     }
     const protocol = resolveProviderProtocol(providerId, providerProtocol);
-    if (
-      protocol === AuthType.QWEN_OAUTH &&
-      providerId !== AuthType.QWEN_OAUTH
-    ) {
-      warnings.push(
-        `Warning: modelProviders provider "${providerId}" maps to "qwen-oauth" via providerProtocol, but qwen-oauth uses hard-coded models only; its ${models.length} model(s) are ignored.`,
-      );
-      continue;
-    }
     if (protocol !== undefined) {
       continue;
     }
@@ -219,36 +206,12 @@ export interface ResolvedCliGenerationConfig {
 export function getAuthTypeFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): AuthType | undefined {
-  if (env['QWEN_OAUTH']) {
-    return AuthType.QWEN_OAUTH;
-  }
-
   if (
     env['OPENAI_API_KEY'] &&
     (env['OPENAI_MODEL'] || env['QWEN_MODEL']) &&
     env['OPENAI_BASE_URL']
   ) {
     return AuthType.USE_OPENAI;
-  }
-
-  if (env['GEMINI_API_KEY'] && env['GEMINI_MODEL']) {
-    return AuthType.USE_GEMINI;
-  }
-
-  if (env['GOOGLE_API_KEY'] && env['GOOGLE_MODEL']) {
-    return AuthType.USE_VERTEX_AI;
-  }
-
-  if (env['GOOGLE_CLOUD_PROJECT'] && env['GOOGLE_MODEL']) {
-    return AuthType.USE_VERTEX_AI;
-  }
-
-  if (
-    env['ANTHROPIC_API_KEY'] &&
-    env['ANTHROPIC_MODEL'] &&
-    env['ANTHROPIC_BASE_URL']
-  ) {
-    return AuthType.USE_ANTHROPIC;
   }
 
   return undefined;
@@ -262,9 +225,6 @@ export function getAuthTypeFromEnv(
  *
  * Env var mapping by auth type (mirrors core's AUTH_ENV_MAPPINGS):
  * - USE_OPENAI: OPENAI_MODEL, QWEN_MODEL
- * - USE_GEMINI: GEMINI_MODEL
- * - USE_VERTEX_AI: GOOGLE_MODEL
- * - USE_ANTHROPIC: ANTHROPIC_MODEL
  *
  * When model is resolved from argv or settings, all model env vars are stripped
  * from the env passed to core's resolveModelConfig to prevent incorrect overrides.

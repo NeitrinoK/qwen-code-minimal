@@ -52,7 +52,7 @@ approve.**
 ### Building
 
 ```bash
-corepack pnpm install --frozen-lockfile  # Install all dependencies (the tree CI tests)
+npm ci             # Install all dependencies from package-lock.json
 npm run build      # Build all packages (TypeScript compilation + asset copying)
 npm run build:all  # Build everything including sandbox container
 npm run bundle     # Bundle dist/ into a single dist/cli.js via esbuild
@@ -66,10 +66,7 @@ npm run dev        # Run CLI from TypeScript source
 ```
 
 Runs the CLI via `tsx` with `DEV=true`. Changes to `packages/core` or
-`packages/cli` are reflected immediately without rebuilding. Browser Use reuses
-its built runtime, like other compiled workspace dependencies. After editing
-Browser Use, run `npm run build --workspace=@qwen-code/browser-use` to rebuild
-and stage its runtime for dev. Normal `npm install` prepares it automatically.
+`packages/cli` are reflected immediately without rebuilding.
 
 ### Unit Testing
 
@@ -77,13 +74,12 @@ Tests must be run from within the specific package directory, not the project
 root.
 
 **Fresh clone or new worktree:** `packages/cli` unit tests import workspace
-packages (`@qwen-code/acp-bridge`, `@qwen-code/web-templates`,
-`packages/channels/*`, ...) through their built `dist/` output, and
+packages (`@qwen-code/acp-bridge`) through their built `dist/` output, and
 `packages/core` tests import the package's own entry
 (`@qwen-code/qwen-code-core`), which also resolves into `dist/`. A plain
-`corepack pnpm install --frozen-lockfile` already builds them via the
-`prepare` script, but a worktree that shares the main checkout's
-`node_modules` (or a deep-cleaned copy) does not have them. If any
+`npm ci` already builds them via the `prepare` script, but a worktree that
+shares the main checkout's `node_modules` (or a deep-cleaned copy) does not
+have them. If any
 prerequisite is missing, a vitest `globalSetup` guard stops the run and names
 the fix; build once from the repository root:
 
@@ -91,16 +87,10 @@ the fix; build once from the repository root:
 npm run build
 ```
 
-**Installing dependencies:** CI, release and every workflow install with the
-pnpm version pinned in `packageManager` (`corepack pnpm install
---frozen-lockfile`); scripts still run through `npm run`. An additional Git
-worktree can use `node scripts/setup-worktree.js`, which runs the same install
-from a shared store (≈ 99 MiB on copy-on-write filesystems such as APFS, btrfs,
-and XFS with reflink; ≈ 1.2 GiB on ext4) and skips the `prepare` build, so run
-`npm run build` before package tests. When dependencies change, edit the
-manifest, run `corepack pnpm install` (or `corepack pnpm add`), and commit
-`pnpm-lock.yaml`; every CI install runs with `--frozen-lockfile`, so a
-lockfile that no longer matches the manifests fails the build.
+**Installing dependencies:** use npm. `npm ci` installs exactly what
+`package-lock.json` records; when dependencies change, edit the manifest, run
+`npm install` (or `npm install <pkg> --workspace=<pkg>`), and commit the
+updated `package-lock.json`.
 
 **Run individual test files** (always preferred):
 

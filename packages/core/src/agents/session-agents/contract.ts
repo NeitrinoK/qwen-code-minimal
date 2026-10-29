@@ -21,11 +21,6 @@
  *   via the `qwen/control/session/external_record` ext method;
  * - transcript-replay (acp-bridge): projects the records for reload, /resume
  *   and export, so the three restore paths share one projection.
- *
- * Cross-package copies: web-shell cannot import core, so the wire shapes the
- * browser reads (`QwenAgentMessageMeta`, `SessionAgentRunFrame`) are mirrored
- * in `packages/sdk-typescript/src/daemon/session-agents.ts`. Keep both in
- * sync.
  */
 
 /** Programs an agent can run with. Mirrors `AgentProgram` in workspace-agents/types.ts. */

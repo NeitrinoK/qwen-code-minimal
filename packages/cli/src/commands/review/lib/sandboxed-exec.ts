@@ -557,13 +557,13 @@ export function containerCommand(
   // the sweeps. The default image runs as root (`node:22-slim`, no `USER`), so
   // without this every one of those hits EACCES and the residue accumulates
   // across reviews: the cross-run-state class this pipeline has spent rounds
-  // closing. `utils/sandbox.ts` maps the same pair for the same hazard on the
+  // closing. `sandbox/sandbox.ts` maps the same pair for the same hazard on the
   // same image lineage, and honours the same opt-out.
   //
   // Known limit, stated rather than papered over: `--user` with a bare
   // uid:gid leaves that uid absent from the container's `/etc/passwd`, so a
   // tool that calls `getpwuid` (rather than reading `$HOME`) still sees an
-  // unknown user. `utils/sandbox.ts` avoids that by starting as root and
+  // unknown user. `sandbox/sandbox.ts` avoids that by starting as root and
   // `useradd`-ing the host's ids — machinery this does not need, because what
   // runs here is a shell command, not the CLI whose `os.userInfo()` requires
   // the entry. If a toolchain turns out to need it, that is the shape to copy.

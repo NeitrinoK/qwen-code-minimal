@@ -49,21 +49,23 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
       }
       return `API Error: ${String(error)}`;
     }),
-    JsonFormatter: vi.fn().mockImplementation(() => ({
-      formatError: vi.fn((error: Error, code?: string | number) =>
-        JSON.stringify(
-          {
-            error: {
-              type: error.constructor.name,
-              message: error.message,
-              ...(code && { code }),
+    JsonFormatter: vi.fn().mockImplementation(function () {
+      return {
+        formatError: vi.fn((error: Error, code?: string | number) =>
+          JSON.stringify(
+            {
+              error: {
+                type: error.constructor.name,
+                message: error.message,
+                ...(code && { code }),
+              },
             },
-          },
-          null,
-          2,
+            null,
+            2,
+          ),
         ),
-      ),
-    })),
+      };
+    }),
     FatalToolExecutionError: class extends Error {
       constructor(message: string) {
         super(message);

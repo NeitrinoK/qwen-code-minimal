@@ -9,8 +9,6 @@ repeatable.
   behavior.
 - `packages/core/**` Inspect shared behavior, settings, tools, provider
   integration, and feature semantics.
-- `packages/sdk-typescript/**` and `packages/sdk-java/**` Inspect SDK setup,
-  usage, and examples that may affect developer docs.
 - `packages/vscode-ide-companion/**`, `packages/zed-extension/**`, and related
   integration packages Inspect IDE and extension behavior that should be
   reflected in user docs.

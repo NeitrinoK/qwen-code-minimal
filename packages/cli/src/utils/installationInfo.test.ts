@@ -27,7 +27,7 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   };
 });
 
-vi.mock('fs', async (importOriginal) => {
+vi.mock('node:fs', async (importOriginal) => {
   const actualFs = await importOriginal<typeof fs>();
   return {
     ...actualFs,
@@ -39,8 +39,8 @@ vi.mock('fs', async (importOriginal) => {
   };
 });
 
-vi.mock('child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('child_process')>();
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
     execSync: vi.fn(),

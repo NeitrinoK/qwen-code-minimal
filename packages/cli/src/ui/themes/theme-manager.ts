@@ -17,6 +17,7 @@ import { ShadesOfPurple } from './shades-of-purple.js';
 import { XCode } from './xcode.js';
 import { QwenLight } from './qwen-light.js';
 import { QwenDark } from './qwen-dark.js';
+import { QwenMinimal } from './qwen-minimal.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -42,7 +43,7 @@ export interface ThemeDisplay {
   isCustom?: boolean;
 }
 
-export const DEFAULT_THEME: Theme = QwenDark;
+export const DEFAULT_THEME: Theme = QwenMinimal;
 export const AUTO_THEME_NAME = 'auto';
 
 function isPathWithinDirectory(parent: string, child: string): boolean {
@@ -62,6 +63,7 @@ class ThemeManager {
 
   constructor() {
     this.availableThemes = [
+      QwenMinimal,
       AyuDark,
       AyuLight,
       AtomOneDark,
@@ -173,7 +175,7 @@ class ThemeManager {
    */
   private resolveAutoTheme(): Theme {
     const detected = this.cachedAutoDetection ?? detectTerminalTheme();
-    return detected === 'light' ? QwenLight : QwenDark;
+    return detected === 'light' ? QwenLight : QwenMinimal;
   }
 
   /**
@@ -185,7 +187,7 @@ class ThemeManager {
   async resolveAutoThemeAsync(): Promise<void> {
     const detected = await detectTerminalThemeAsync();
     this.cachedAutoDetection = detected;
-    this.activeTheme = detected === 'light' ? QwenLight : QwenDark;
+    this.activeTheme = detected === 'light' ? QwenLight : QwenMinimal;
     debugLogger.info(`Auto-detected theme (async): ${this.activeTheme.name}`);
   }
 
@@ -276,11 +278,16 @@ class ThemeManager {
     );
 
     // Separate Qwen themes
-    const qwenThemes = builtInThemes.filter(
-      (theme) => theme.name === QwenLight.name || theme.name === QwenDark.name,
+    const qwenThemeNames = new Set([
+      QwenMinimal.name,
+      QwenDark.name,
+      QwenLight.name,
+    ]);
+    const qwenThemes = builtInThemes.filter((theme) =>
+      qwenThemeNames.has(theme.name),
     );
     const otherBuiltInThemes = builtInThemes.filter(
-      (theme) => theme.name !== QwenLight.name && theme.name !== QwenDark.name,
+      (theme) => !qwenThemeNames.has(theme.name),
     );
 
     // Sort other themes by type and then name

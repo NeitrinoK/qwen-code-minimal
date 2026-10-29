@@ -93,8 +93,6 @@ describe('tool lifecycle isolation', () => {
       model: 'test-model',
       chatRecording: true,
       sessionWriterLeaseEnabled: false,
-      usageStatisticsEnabled: false,
-      telemetry: { enabled: false },
     });
     const original = config.getChatRecordingService()!;
     try {

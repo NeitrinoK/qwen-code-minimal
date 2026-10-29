@@ -1,80 +1,80 @@
-# Qwen Code Agent Loop RT 优化技术方案
+# Qwen Code Agent Loop RT Optimization Technical Design
 
-## 1. 背景与问题定义
+## 1. Background and Problem Definition
 
-### 1.1 现状
+### 1.1 Current State
 
-Qwen Code 的 Agent Loop 为严格串行模型：
+Qwen Code's Agent Loop is a strictly serial model:
 
 ```
-User Prompt → [LLM 决策] → Tool Execution → [LLM 决策] → Tool Execution → ... → [LLM 回复] → Idle
-               ~3-4s          ~Xms-Ns          ~3-4s          ~Xms-Ns            ~3-4s
+User Prompt → [LLM decision] → Tool Execution → [LLM decision] → Tool Execution → ... → [LLM reply] → Idle
+               ~3-4s            ~Xms-Ns           ~3-4s            ~Xms-Ns               ~3-4s
 ```
 
-每一轮 LLM 调用（含网络 RTT + 模型推理）约 3-4s，是端到端 RT 的主要成本。
+Each LLM call (including network RTT + model inference) takes about 3-4s, which is the primary cost of end-to-end RT.
 
-### 1.2 实测数据
+### 1.2 Measured Data
 
-测试场景："我有哪些工作空间"（3 轮 agent loop，2 次工具调用，单次采样）
+Test scenario: "What workspaces do I have" (3-round agent loop, 2 tool calls, single sample)
 
-| 阶段                        | 耗时      | 占比 |
-| --------------------------- | --------- | ---- |
-| LLM Round 1（决策调 skill） | 3.8s      | 28%  |
-| Skill 执行                  | 1ms       | <1%  |
-| LLM Round 2（决策调 shell） | 3.0s      | 22%  |
-| Shell 执行                  | 2.5s      | 19%  |
-| LLM Round 3（文字总结）     | 3.8s      | 28%  |
-| 框架开销（状态同步、渲染）  | 0.3s      | 3%   |
-| **总计**                    | **13.4s** | 100% |
+| Stage                                      | Time      | Share |
+| ------------------------------------------ | --------- | ----- |
+| LLM Round 1 (decide to call skill)         | 3.8s      | 28%   |
+| Skill execution                            | 1ms       | <1%   |
+| LLM Round 2 (decide to call shell)         | 3.0s      | 22%   |
+| Shell execution                            | 2.5s      | 19%   |
+| LLM Round 3 (text summary)                 | 3.8s      | 28%   |
+| Framework overhead (state sync, rendering) | 0.3s      | 3%    |
+| **Total**                                  | **13.4s** | 100%  |
 
-**结论**：LLM 调用占 78%，工具执行 19%，框架 3%。优化的核心是**减少 LLM 调用次数**和**降低单次 LLM 调用延迟**。
+**Conclusion**: LLM calls account for 78%, tool execution 19%, framework 3%. The core of optimization is to **reduce the number of LLM calls** and **lower the latency of a single LLM call**.
 
-> 注：单次采样、单一场景。19% 工具执行是 shell 慢调用支配，read-heavy 场景下工具执行可降至 <5%。方案落地前需补 ≥3 类场景（写操作、跨工具推理、错误恢复）的基线。
+> Note: single sample, single scenario. The 19% tool execution is dominated by slow shell calls; in read-heavy scenarios tool execution can drop to <5%. Before this design lands, baselines for ≥3 scenario classes (write operations, cross-tool reasoning, error recovery) need to be collected.
 
-### 1.3 当前架构关键约束
+### 1.3 Key Constraints of the Current Architecture
 
-| 约束                | 代码位置                                                                                   | 说明                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| 工具结果无后置控制  | `tools.ts` `ToolResult` 接口 (L422)                                                        | 仅有 `llmContent`/`returnDisplay`/`error`，无法表达"跳过 LLM"                    |
-| 结果无条件回传 LLM  | `useGeminiStream.ts` `handleCompletedTools` (L2038) → `submitQuery(ToolResult, …)` (L2355) | 所有 gemini-initiated 工具结果都回传                                             |
-| Stream 完毕后才调度 | `useGeminiStream.ts` `processGeminiStreamEvents` (L1365)                                   | stream 循环结束后才 `scheduleToolCalls`，无增量调度                              |
-| 模型层选择无策略层  | `client.ts` `modelOverride ?? getModel()` (L1305, L1598)                                   | 基础设施已贯通至 `turn.run(model, …)` (L1707)，但调用方仅在 skill 显式指定时使用 |
+| Constraint                                | Code Location                                                                              | Description                                                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool result has no post-execution control | `tools.ts` `ToolResult` interface (L422)                                                   | Only has `llmContent`/`returnDisplay`/`error`, cannot express "skip LLM"                                                              |
+| Result unconditionally returned to LLM    | `useGeminiStream.ts` `handleCompletedTools` (L2038) → `submitQuery(ToolResult, …)` (L2355) | All gemini-initiated tool results are returned                                                                                        |
+| Scheduling only after stream completes    | `useGeminiStream.ts` `processGeminiStreamEvents` (L1365)                                   | `scheduleToolCalls` only runs after the stream loop ends; no incremental scheduling                                                   |
+| Model layer selection has no policy layer | `client.ts` `modelOverride ?? getModel()` (L1305, L1598)                                   | Infrastructure is already wired through to `turn.run(model, …)` (L1707), but callers only use it when a skill explicitly specifies it |
 
-### 1.4 已就绪的基础设施（本方案大量复用）
+### 1.4 Already-Available Infrastructure (Heavily Reused by This Design)
 
-| 能力                                           | 位置                                                   | 现状                                                                   |
-| ---------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `fastModel` 配置 + `/model --fast <id>`        | `config.ts:684`, `1987`, `2021`                        | 已就绪                                                                 |
-| `SendMessageOptions.modelOverride`             | `client.ts:142` → `1598` → `turn.run`                  | 端到端贯通至 `geminiChat.sendMessageStream(model, …)`                  |
-| 钩子层 `modelOverrideRef`（承载 skill 选模型） | `useGeminiStream.ts:376`, `2225`, `1841`               | 已贯通                                                                 |
-| fast-model **非流式** side query 先例          | `services/toolUseSummary.ts:108`（via `runSideQuery`） | 已上线，证明 fast 模型配置健全；但**非流式路径**                       |
-| fast-model **流式** 先例                       | `followup/speculation.ts:224`                          | 已上线，但**用的是 forked chat**（`createForkedChat`），与主 chat 隔离 |
+| Capability                                                    | Location                                              | Current State                                                                                    |
+| ------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `fastModel` config + `/model --fast <id>`                     | `config.ts:684`, `1987`, `2021`                       | Ready                                                                                            |
+| `SendMessageOptions.modelOverride`                            | `client.ts:142` → `1598` → `turn.run`                 | Wired end-to-end through to `geminiChat.sendMessageStream(model, …)`                             |
+| Hook-layer `modelOverrideRef` (carries skill model selection) | `useGeminiStream.ts:376`, `2225`, `1841`              | Wired through                                                                                    |
+| fast-model **non-streaming** side query precedent             | `services/toolUseSummary.ts:108` (via `runSideQuery`) | Already shipped, proves the fast model config is sound; but it is a **non-streaming path**       |
+| fast-model **streaming** precedent                            | `followup/speculation.ts:224`                         | Already shipped, but it **uses a forked chat** (`createForkedChat`), isolated from the main chat |
 
-**关键空白**：**没有任何生产代码**在主 chat 上以 fast model 跑 streaming。本方案 D2 是首个 case，需先做验证实验（详见 §3.2 前置条件）。
+**Key gap**: **No production code** runs the fast model with streaming on the main chat. This design's D2 is the first such case and requires a validation experiment first (see §3.2 prerequisites).
 
 ---
 
-## 2. 设计原则
+## 2. Design Principles
 
-1. **通用性**：方案不绑定特定 tool/skill
-2. **向后兼容**：现有工具无需修改即可继续工作
-3. **渐进式 + 显式信号**：策略默认 conservative，由工具作者通过显式字段 opt-in 优化
-4. **可回滚**：所有优化通过 feature flag 控制；用户级别可强制关闭
-5. **诚实的权衡**：明确标注质量风险、成本风险和适用边界
+1. **Generality**: the design is not bound to any specific tool/skill
+2. **Backward compatibility**: existing tools continue to work without modification
+3. **Progressive + explicit signals**: the policy defaults to conservative; tool authors opt in to optimizations via explicit fields
+4. **Rollbackable**: all optimizations are controlled by feature flags; can be force-disabled at the user level
+5. **Honest trade-offs**: quality risks, cost risks, and applicability boundaries are clearly labeled
 
 ---
 
-## 3. 优化方案
+## 3. Optimization Designs
 
-### 3.1 方向一：工具后置执行指令（ToolResult Post-Execution Directive）
+### 3.1 Direction One: Tool Post-Execution Directive (ToolResult Post-Execution Directive)
 
-#### 问题
+#### Problem
 
-当前 `ToolResult` 不包含任何关于"接下来该怎么做"的信息。无论工具结果是否自解释，都无条件触发一轮 LLM。
+The current `ToolResult` contains no information about "what to do next". Regardless of whether the tool result is self-explanatory, it unconditionally triggers a round of LLM.
 
-#### 设计
+#### Design
 
-扩展 `ToolResult` 接口（`packages/core/src/tools/tools.ts` L422）：
+Extend the `ToolResult` interface (`packages/core/src/tools/tools.ts` L422):
 
 ```typescript
 export interface ToolResult {
@@ -82,128 +82,132 @@ export interface ToolResult {
   returnDisplay: ToolResultDisplay;
   error?: { message: string; type?: ToolErrorType };
 
-  // 新增：后置执行指令
+  // New: post-execution directive
   postExecution?: {
     /**
-     * 工具结果不回传 LLM，直接作为最终回复展示给用户。
-     * 适用于结果完全自包含、不需要模型再解读的场景。
-     * 是 ToolResult 局部属性。
+     * The tool result is not returned to the LLM; it is shown directly to
+     * the user as the final reply. Applicable when the result is fully
+     * self-contained and does not need the model to interpret it again.
+     * This is a local property of ToolResult.
      */
     skipLlmRound?: boolean;
 
     /**
-     * 工具结果"自包含、可直接展示给用户"——即 `returnDisplay` 已经是
-     * 用户期望看到的最终形态，不需要模型加工。
-     * 是 ToolResult 局部属性，**不**预测"下一轮是否 summary"。
-     * 与方向三（展示解耦）联动：true → 进入 Summarizing 状态允许用户输入。
+     * The tool result is "self-contained and can be shown directly to the
+     * user"—i.e., `returnDisplay` is already the final form the user expects
+     * to see and does not need model processing.
+     * This is a local property of ToolResult; it does **not** predict
+     * "whether the next round is a summary".
+     * Works together with Direction Three (presentation decoupling):
+     * true → enter the Summarizing state and allow user input.
      */
     resultIsTerminal?: boolean;
   };
 }
 ```
 
-> **设计修正**：早期版本曾把单一 `selfExplanatory` 字段同时承担"工具产物属性"和"对话流预测信号"两份职责，但二者并不重合（例：用户 prompt 是"读 X 然后修 Y"，read_file 输出自包含，但下一轮显然不是 summary）。**预测信号属于对话流全局属性**，不应通过工具字段表达——D2 改为完全用对话流启发式（见 §3.2）。
+> **Design revision**: an early version had a single `selfExplanatory` field carry both responsibilities—"tool output property" and "conversation-flow prediction signal"—but the two do not overlap (example: the user prompt is "read X then fix Y", read_file's output is self-contained, but the next round is clearly not a summary). **The prediction signal is a global property of the conversation flow** and should not be expressed via a tool field—D2 switched to relying entirely on conversation-flow heuristics (see §3.2).
 
-#### 行为变更
+#### Behavior Change
 
-`handleCompletedTools` 中新增判断：
+A new check is added in `handleCompletedTools`:
 
 ```
-工具批次完成
-  → 检查 batch 中所有工具的 postExecution.skipLlmRound
-  → 全部为 true?
-    → YES: markToolsAsSubmitted, 不调 submitQuery, 直接 idle
-    → NO: 保持现有行为 (submitQuery)
+Tool batch completes
+  → Check postExecution.skipLlmRound for all tools in the batch
+  → All true?
+    → YES: markToolsAsSubmitted, do not call submitQuery, go idle directly
+    → NO: keep existing behavior (submitQuery)
 ```
 
-**重要约束**：`skipLlmRound` 仅在**当前 batch 的所有工具都声明 skip** 时才生效。混合 batch 仍然回传。
+**Important constraint**: `skipLlmRound` only takes effect when **all tools in the current batch declare skip**. A mixed batch is still returned.
 
-#### 历史不变量
+#### History Invariant
 
-跳过 LLM 后历史形如：`user → function_call → function_response → <无 assistant>`。
+After skipping the LLM, history looks like: `user → function_call → function_response → <no assistant>`.
 
-- 复核 `repairOrphanedToolUseTurnsInHistory`（session-load 时调用）是否容忍此形态
-- 复核 auto-compaction 在缺少 assistant 文本时的行为
-- PR #4176 刚关闭过 tool_use↔tool_result 不变量，落地前需补单测覆盖"skip 后下一轮 user message"的 alternation
-- Qwen / OpenAI 风格 API 容忍；Anthropic 严格 alternation —— 后续若支持 Anthropic 直连需要兜底（向 history 注入空 assistant text）
+- Review whether `repairOrphanedToolUseTurnsInHistory` (called at session-load) tolerates this shape
+- Review the behavior of auto-compaction when assistant text is missing
+- PR #4176 just closed the tool_use↔tool_result invariant; before landing, add unit-test coverage for the alternation of "the next user message after a skip"
+- Qwen / OpenAI-style APIs tolerate this; Anthropic enforces strict alternation—if direct Anthropic connectivity is later supported, a fallback is needed (inject empty assistant text into history)
 
-> **统一修复点**：此处和 §3.3（D3 中途打断 Summarizing）破坏的是**同一个历史不变量**。修复方案二选一（注入空 assistant / 接受 Qwen 容忍），两个方向必须使用相同选择。
+> **Unified fix point**: this and §3.3 (D3 interrupting Summarizing mid-stream) break the **same history invariant**. Pick one of the two fix approaches (inject empty assistant / accept Qwen tolerance); both directions must use the same choice.
 
-#### 信号生态（Phase 2 工作）
+#### Signal Ecosystem (Phase 2 work)
 
-| 工具                                  | `skipLlmRound`       | `resultIsTerminal` | 备注                                                            |
-| ------------------------------------- | -------------------- | ------------------ | --------------------------------------------------------------- |
-| `read_file`                           | 配合 query-only 场景 | true               | 文件内容即答案                                                  |
-| `cat`（via shell）                    | 视场景               | true               | 同 read_file                                                    |
-| `grep` / `glob` / `ls`                | false                | **false（默认）**  | 结果常需模型挑选/排序/总结；skill 层在已知"纯查询"场景显式 true |
-| `git status` / `git log`（via shell） | false                | true               | 输出已格式化                                                    |
-| Skill 工具                            | 各 skill 自决        | 各 skill 自决      | 查询类 skill 倾向 true                                          |
-| MCP 工具                              | 默认 false           | 默认 false         | 通过 allowlist 显式 opt-in                                      |
+| Tool                                 | `skipLlmRound`           | `resultIsTerminal`  | Notes                                                                                                                        |
+| ------------------------------------ | ------------------------ | ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `read_file`                          | for query-only scenarios | true                | File content is the answer                                                                                                   |
+| `cat` (via shell)                    | scenario-dependent       | true                | Same as read_file                                                                                                            |
+| `grep` / `glob` / `ls`               | false                    | **false (default)** | Results often need the model to select/sort/summarize; the skill layer explicitly sets true for known "pure query" scenarios |
+| `git status` / `git log` (via shell) | false                    | true                | Output is already formatted                                                                                                  |
+| Skill tools                          | each skill decides       | each skill decides  | Query-type skills tend toward true                                                                                           |
+| MCP tools                            | false by default         | false by default    | Explicitly opt in via allowlist                                                                                              |
 
-第三方/MCP 工具不可信任，默认不打标；通过 `config.toolPostExecAllowlist` 显式启用。
+Third-party/MCP tools are untrusted and are not tagged by default; enable them explicitly via `config.toolPostExecAllowlist`.
 
-> `grep/glob/ls` 默认 false 是从严选择：避免 D2/D3 在需要模型总结排序的场景误判。
+> `grep/glob/ls` defaulting to false is a strict choice: it avoids D2/D3 misjudging scenarios that need model summarization/sorting.
 
-#### 适用与不适用
+#### Applicable and Not Applicable
 
-- **适用**：终态查询（read/cat/print 类型）、自包含结果（skill 已格式化输出）
-- **不适用**：多步任务中间步骤、写操作确认、需解读的复杂日志
+- **Applicable**: terminal queries (read/cat/print types), self-contained results (skills with already-formatted output)
+- **Not applicable**: intermediate steps in multi-step tasks, write-operation confirmations, complex logs that need interpretation
 
-#### 风险与缓解
+#### Risks and Mitigations
 
-| 风险                                       | 严重度 | 缓解                                       |
-| ------------------------------------------ | ------ | ------------------------------------------ |
-| 工具错误设置 skipLlmRound 导致多步任务中断 | 中     | batch 级语义 + llmContent 仍在历史中可恢复 |
-| 第三方工具滥用                             | 中     | MCP 默认禁用，allowlist 显式开启           |
-| 历史不变量破坏                             | 中     | 落地前补单测；session-load 重放覆盖        |
-| 用户预期不一致（期望总结但没有）           | 低     | setting `alwaysSummarize: true` 可覆盖     |
+| Risk                                                             | Severity | Mitigation                                                         |
+| ---------------------------------------------------------------- | -------- | ------------------------------------------------------------------ |
+| A tool sets skipLlmRound incorrectly, breaking a multi-step task | Medium   | Batch-level semantics + llmContent still in history is recoverable |
+| Third-party tool abuse                                           | Medium   | MCP disabled by default, explicitly enabled via allowlist          |
+| History invariant broken                                         | Medium   | Add unit tests before landing; session-load replay coverage        |
+| User-expectation mismatch (expects a summary but gets none)      | Low      | The setting `alwaysSummarize: true` can override                   |
 
-#### 收益
+#### Benefit
 
-终态查询场景节省 3-4s（跳过最后一轮 LLM）。
+Saves 3-4s in terminal-query scenarios (skips the final LLM round).
 
 ---
 
-### 3.2 方向二：summary 轮 fast-model 路由策略
+### 3.2 Direction Two: fast-model Routing Policy for the summary Round
 
-#### 定位
+#### Positioning
 
-**本方向不引入新管道，但需要扩展 GeminiChat 接口以支持运行时模型切换**。
+**This direction introduces no new pipeline, but it does require extending the GeminiChat interface to support runtime model switching**.
 
-§1.4 的基础设施提供了 fast 模型配置和 modelOverride 端到端贯通，但**主 chat 上跑 fastModel + streaming 没有先例**，需要：
+The infrastructure in §1.4 provides fast-model config and end-to-end modelOverride wiring, but there is **no precedent for running fastModel + streaming on the main chat**, which requires:
 
-- 决策函数：何时把 `config.getFastModel()` 作为 override 传下去
-- 安全回退：`GeminiChat.retryStreamWithModel` 新接口（处理 chat 内部状态）
-- 实验验证：主 chat 切换 fast/primary 不破坏 compaction / history-recording
+- Decision function: when to pass `config.getFastModel()` down as an override
+- Safe fallback: the new `GeminiChat.retryStreamWithModel` interface (handles chat-internal state)
+- Experimental validation: switching fast/primary on the main chat does not break compaction / history-recording
 
-#### 应用范围
+#### Scope of Application
 
-D2 仅作用于：
+D2 applies only to:
 
-- **useGeminiStream**（TUI 主路径）—— `sendMessageStream` 调用点 L1841
-- **ACP Session**（IDE 集成路径）—— `acp-integration/session/Session.ts:1182`，Phase 3 同步改造
+- **useGeminiStream** (TUI main path)—the `sendMessageStream` call site at L1841
+- **ACP Session** (IDE integration path)—`acp-integration/session/Session.ts:1182`, modified in sync during Phase 3
 
-D2 **不作用于**以下路径，避免在非交互或独立上下文里引入额外失败模式：
+D2 **does not apply** to the following paths, to avoid introducing extra failure modes in non-interactive or independent contexts:
 
-- **Subagent 运行时**（`agents/runtime/agent-core.ts:614`）：子 agent 已带独立模型配置
-- **Cron 触发 turn**（`SendMessageType.Cron`, client.ts:127）：非交互，无 RT 紧迫性
-- **Notification turn**（`SendMessageType.Notification`, client.ts:129）：同上
+- **Subagent runtime** (`agents/runtime/agent-core.ts:614`): subagents already carry their own model config
+- **Cron-triggered turn** (`SendMessageType.Cron`, client.ts:127): non-interactive, no RT urgency
+- **Notification turn** (`SendMessageType.Notification`, client.ts:129): same as above
 
-#### 核心难点
+#### Core Difficulty
 
-`submitQuery` 调用时**我们并不知道**模型看完结果后是发起新工具还是直接出文字。如果用 fast model 调而模型实际还要调工具——后果是**静默的**：fast 可能调错工具或参数错，错误不会有明显信号。
+When `submitQuery` is called, **we do not know** whether the model, after reading the result, will issue a new tool call or produce text directly. If we call with the fast model but the model actually still needs to call a tool—the consequence is **silent**: fast may call the wrong tool or with wrong parameters, and the error has no obvious signal.
 
-**任何工具级别的字段都无法可靠预测**"下一轮是否 summary"，因为它取决于对话流（user prompt + 累计上下文），不是工具产物的局部属性。例：
+**No tool-level field can reliably predict** "whether the next round is a summary", because it depends on the conversation flow (user prompt + accumulated context), not on a local property of the tool output. Example:
 
 ```
-用户："读 utils.ts 然后把里面的 console.log 都改成 logger.info"
-  → Tool 1: read_file → 结果自包含
-  → 但下一轮显然不是 summary
+User: "Read utils.ts then change all the console.log inside to logger.info"
+  → Tool 1: read_file → result is self-contained
+  → But the next round is clearly not a summary
 ```
 
-因此 D2 完全用**对话流启发式**预测，不依赖工具字段。
+Therefore D2 predicts entirely using **conversation-flow heuristics** and does not rely on tool fields.
 
-#### 决策函数：对话流启发式 + 否决
+#### Decision Function: Conversation-Flow Heuristics + Vetoes
 
 ```typescript
 import { Kind, MUTATOR_KINDS } from '../tools/tools.js';
@@ -213,74 +217,74 @@ function selectContinuationTier(
   userPrompt: string,
   batch: ToolCall[],
 ): 'fast' | 'primary' {
-  // ===== 用户级别强制开关（最高优先级） =====
+  // ===== User-level force switch (highest priority) =====
   const userPref = config.getSummaryTierStrategy();
   if (userPref === 'always_primary') return 'primary';
-  if (userPref === 'always_fast') return 'fast'; // 仍受运行时保险约束
+  if (userPref === 'always_fast') return 'fast'; // still subject to the runtime safeguard
 
-  // ===== 用户意图否决 =====
-  // 1. user prompt 含动作动词 → 下一轮大概率还要调工具
+  // ===== User-intent vetoes =====
+  // 1. user prompt contains an action verb → the next round likely still needs a tool call
   if (requestImpliesFurtherAction(userPrompt)) return 'primary';
 
-  // 2. 本轮已有 mutator 工具 → 大概率有验证/读后续
+  // 2. this round already has a mutator tool → likely a verify/read follow-up
   if (batch.some((c) => MUTATOR_KINDS.includes(c.tool.kind))) return 'primary';
 
-  // 3. 本轮或历史有未解决 error → 模型需要 primary 诊断
+  // 3. this round or history has an unresolved error → the model needs primary to diagnose
   if (hasUnresolvedError(turn.toolResults, batch)) return 'primary';
 
-  // ===== 输出复杂度否决 =====
-  // 4. user prompt 要求深度分析（解释/对比/为什么类）
+  // ===== Output-complexity vetoes =====
+  // 4. user prompt requires deep analysis (explain/compare/why type)
   if (needsDeepReasoning(userPrompt)) return 'primary';
 
-  // 5. 工具调用 ≥3 个不同工具 → 跨结果叙述靠 primary
+  // 5. ≥3 distinct tools called → cross-result narration relies on primary
   if (needsCrossResultReasoning(turn)) return 'primary';
 
-  // 6. 工具输出过长 → 长内容总结靠 primary
+  // 6. tool output too long → summarizing long content relies on primary
   if (estimateTotalToolOutputTokens(turn) > 4000) return 'primary';
 
-  // ===== 模型可行性否决 =====
-  // 7. fast 模型 context window 不够 → 切到 fast 会触发 compression
-  //    （compression 自身要 LLM 调用，反而拖慢且增加成本）
+  // ===== Model-feasibility vetoes =====
+  // 7. fast model's context window is insufficient → switching to fast would trigger compression
+  //    (compression itself requires an LLM call, which instead slows things down and adds cost)
   if (wouldTriggerCompression(turn.history, config.getFastModel()))
     return 'primary';
 
-  // ===== 多语言兜底 =====
+  // ===== Multilingual fallback =====
   if (!isPromptLanguageSupported(userPrompt)) return 'primary';
 
-  // ===== Session 状态兜底 =====
+  // ===== Session-state fallback =====
   if (turn.justCompacted || turn.justCleared) return 'primary';
 
   return 'fast';
 }
 ```
 
-八个否决项含义：
+Meaning of the eight veto items:
 
-- **`requestImpliesFurtherAction`**：动作动词（`改|删|加|替换|修复|实现|新建|create|fix|change|add|remove|implement|write|update`）→ 多步任务
-- **`MUTATOR_KINDS` 命中**：本轮已经写过 → 大概率紧跟一次读/校验。**复用 `tools.ts:806` 已有的 `MUTATOR_KINDS = [Edit, Delete, Move, Execute]`**（每个 Tool 实例的 `kind: Kind` 属性是权威分类，不要重新发明 `isWriteTool`）
-- **`hasUnresolvedError(turnResults, currentBatch)`**：判定二段——
-  - **当前批次任何 error → 总是未解决**（不假设并行批次能自我纠错）
-  - **历史按 `(toolName, args fingerprint)` 去重，最后一次仍 error 视为未解决**（仅按 toolName 在同名不同参数下会判错）
-  - shell 等需正确填 `ToolResult.error`（前置数据质量依赖）
-- **`needsDeepReasoning`**：含"分析/解释/为什么/对比/诊断"类关键词
-- **`needsCrossResultReasoning`**：distinct 工具调用 ≥3（同工具同参数视为同一次）
-- **输出 tokens > 4000**：经验阈值，**待 fast 模型基线实测后调整**
-- **`wouldTriggerCompression`**：fast 模型 context window 通常小于 primary，相同 history 在 fast 上会更早触发 `tryCompress`（geminiChat.ts:1418）—— compression 自身需要一次 LLM 调用，可能**反向恶化 RT 和成本**。预算估算：`estimateHistoryTokens(history) > fastModelContextWindow × COMPACTION_THRESHOLD` 即视为会触发
-- **未支持语言**：仅检测中英文关键词，其他语言（日韩等）默认 primary
-- **session 状态突变**：刚 `/compact` 或 `/clear` 后第一次 continuation → primary 重建 mental model
+- **`requestImpliesFurtherAction`**: action verbs (`改|删|加|替换|修复|实现|新建|create|fix|change|add|remove|implement|write|update`) → multi-step task
+- **`MUTATOR_KINDS` hit**: this round already wrote → likely a read/verify follows. **Reuse the existing `MUTATOR_KINDS = [Edit, Delete, Move, Execute]` at `tools.ts:806`** (the `kind: Kind` property of each Tool instance is the authoritative classification; do not reinvent `isWriteTool`)
+- **`hasUnresolvedError(turnResults, currentBatch)`**: a two-part judgment—
+  - **Any error in the current batch → always unresolved** (do not assume parallel batches self-correct)
+  - **History deduplicated by `(toolName, args fingerprint)`; if the last occurrence is still an error, treat it as unresolved** (deduplicating by toolName alone would misjudge same-name calls with different parameters)
+  - shell etc. must correctly fill `ToolResult.error` (an upstream data-quality dependency)
+- **`needsDeepReasoning`**: contains keywords like "analyze/explain/why/compare/diagnose"
+- **`needsCrossResultReasoning`**: ≥3 distinct tool calls (same tool + same args counts as one)
+- **output tokens > 4000**: an empirical threshold, **to be adjusted after measuring the fast-model baseline**
+- **`wouldTriggerCompression`**: the fast model's context window is usually smaller than primary's; the same history will trigger `tryCompress` (geminiChat.ts:1418) earlier on fast—compression itself requires an LLM call and may **worsen RT and cost in reverse**. Budget estimate: `estimateHistoryTokens(history) > fastModelContextWindow × COMPACTION_THRESHOLD` is treated as "will trigger"
+- **unsupported language**: only Chinese and English keywords are detected; other languages (Japanese, Korean, etc.) default to primary
+- **session-state change**: the first continuation right after `/compact` or `/clear` → primary to rebuild the mental model
 
-否决方向**偏向 primary**（宁可多 2s 不要降质）。
+The veto direction **biases toward primary** (better to spend an extra 2s than to degrade quality).
 
-#### 关键实现：`GeminiChat.retryStreamWithModel`
+#### Key Implementation: `GeminiChat.retryStreamWithModel`
 
-**问题**：直接 abort + 调 `client.sendMessageStream` 会破坏 chat 状态：
+**Problem**: directly aborting + calling `client.sendMessageStream` breaks chat state:
 
-1. `geminiChat.ts:1428` 在 stream 启动时就 push `userContent` 到 history；重起会**再 push 一次**导致 history 出现重复 `function_response`
-2. `sendPromise` 锁（`geminiChat.ts:1392, 1398`）—— abort 后需要确保 `streamDoneResolver` 被调用
-3. `pendingPartialState` 等 PR #4176 引入的不变量 marker 需要正确清理
-4. Telemetry span 的 model 属性需要更新
+1. `geminiChat.ts:1428` pushes `userContent` into history when the stream starts; restarting will **push it again**, causing a duplicate `function_response` in history
+2. The `sendPromise` lock (`geminiChat.ts:1392, 1398`)—after abort, ensure `streamDoneResolver` is called
+3. Invariant markers introduced by PR #4176 such as `pendingPartialState` need to be cleaned up correctly
+4. The Telemetry span's model attribute needs to be updated
 
-**新增接口**（`packages/core/src/core/geminiChat.ts`）：
+**New interface** (`packages/core/src/core/geminiChat.ts`):
 
 ```typescript
 /**
@@ -294,29 +298,29 @@ async retryStreamWithModel(
 ): Promise<AsyncGenerator<StreamEvent>>;
 ```
 
-调用契约：
+Calling contract:
 
-- 仅在原 send 已经 abort 后调用（不并发）
-- prompt_id 复用（同一用户意图）
-- 历史中已经 push 的 userContent 不再 push
+- Only called after the original send has already been aborted (no concurrency)
+- prompt_id is reused (same user intent)
+- userContent already pushed into history is not pushed again
 
-实现工作量约 1.5d 加单测。
+Implementation effort about 1.5d plus unit tests.
 
-#### 运行时保险
+#### Runtime Safeguard
 
-`selectContinuationTier` 返回 `'fast'` 但 stream 中出现 `ServerGeminiEventType.ToolCallRequest` 事件 → **立即 abort 当前流，调 `retryStreamWithModel(primaryModel)`**。
+If `selectContinuationTier` returns `'fast'` but a `ServerGeminiEventType.ToolCallRequest` event appears in the stream → **immediately abort the current stream and call `retryStreamWithModel(primaryModel)`**.
 
-这覆盖"预测为 summary 实际仍需工具"的唯一静默放错场景。代价：一次 fast 调用浪费的 tokens（成本归因见 §5.3）。
+This covers the only silent misrouting scenario of "predicted summary but a tool is actually still needed". Cost: the tokens wasted on one fast call (cost attribution in §5.3).
 
-#### 与 skill `modelOverride` 解耦
+#### Decoupling from skill `modelOverride`
 
-`useGeminiStream.modelOverrideRef`（L376, L2225）当前承载 **skill 显式选择的模型**，属"业务语义"。本方向的 fast 路由属"优化语义"，两者**必须分离**：
+`useGeminiStream.modelOverrideRef` (L376, L2225) currently carries the **model explicitly chosen by a skill**, which is "business semantics". This direction's fast routing is "optimization semantics"; the two **must be separated**:
 
 ```typescript
-// 新增独立 ref
+// New independent ref
 const summaryTierRef = useRef<'fast' | 'primary' | undefined>(undefined);
 
-// 调用点合并（不复用 modelOverrideRef）
+// Merged at the call site (does not reuse modelOverrideRef)
 const stream = geminiClient.sendMessageStream(
   finalQueryToSend,
   abortSignal,
@@ -325,217 +329,217 @@ const stream = geminiClient.sendMessageStream(
     type: submitType,
     notificationDisplayText: metadata?.notificationDisplayText,
     modelOverride:
-      modelOverrideRef.current ?? // skill 显式选择优先
+      modelOverrideRef.current ?? // skill explicit selection takes priority
       (summaryTierRef.current === 'fast' ? config.getFastModel() : undefined),
   },
 );
 ```
 
-生命周期：
+Lifecycle:
 
-| 时机                                       | `modelOverrideRef`（skill） | `summaryTierRef`（fast 路由）            |
-| ------------------------------------------ | --------------------------- | ---------------------------------------- |
-| 新 user turn (`!Retry && !ToolResult`)     | 清空                        | 清空                                     |
-| skill 工具返回 `modelOverride` 字段        | 写入                        | 不变                                     |
-| tool batch 完成 → `selectContinuationTier` | 不变                        | 写入                                     |
-| Runtime fallback（看到 ToolCallRequest）   | 不变                        | 升级为 `'primary'`                       |
-| Retry（用户手动 Ctrl+Y）                   | 保留                        | 升级为 `'primary'`（fast 失败不再 fast） |
+| Timing                                          | `modelOverrideRef` (skill) | `summaryTierRef` (fast routing)                       |
+| ----------------------------------------------- | -------------------------- | ----------------------------------------------------- |
+| New user turn (`!Retry && !ToolResult`)         | clear                      | clear                                                 |
+| skill tool returns a `modelOverride` field      | write                      | unchanged                                             |
+| tool batch completes → `selectContinuationTier` | unchanged                  | write                                                 |
+| Runtime fallback (saw a ToolCallRequest)        | unchanged                  | upgrade to `'primary'`                                |
+| Retry (user manually presses Ctrl+Y)            | retained                   | upgrade to `'primary'` (no fast after a fast failure) |
 
-skill 显式选择**永远赢**——用户的显式意图优先于优化策略。
+A skill's explicit selection **always wins**—the user's explicit intent takes priority over the optimization policy.
 
-#### Telemetry 修正
+#### Telemetry Fix
 
-`client.ts:1303` 的 interaction span 在 turn 启动时记录 `model` 属性。fallback 触发时 model 实际变了，span 数据失真。需要：
+The interaction span at `client.ts:1303` records the `model` attribute when the turn starts. When a fallback triggers, the model actually changes and the span data becomes distorted. We need:
 
 ```typescript
-// fallback 触发时
+// when a fallback triggers
 span.setAttribute('llm.model.requested', fastModel);
 span.setAttribute('llm.model.actual', primaryModel);
 span.setAttribute('llm.fallback.reason', 'tool_call_seen');
 ```
 
-并在 `addUserPromptAttributes` 中区分 `requested` / `actual` 模型，避免计费/审计混淆。
+And distinguish `requested` / `actual` models in `addUserPromptAttributes` to avoid billing/audit confusion.
 
-#### 用户级别强制开关
+#### User-Level Force Switch
 
-新增 setting（`packages/cli/src/config/settingsSchema.ts`）：
+New setting (`packages/cli/src/config/settingsSchema.ts`):
 
 ```typescript
 summaryTierStrategy: 'auto' | 'always_primary' | 'always_fast';
 // default: 'auto'
 ```
 
-- `'auto'`：使用 `selectContinuationTier`（推荐）
-- `'always_primary'`：完全禁用 D2 优化（生产敏感场景）
-- `'always_fast'`：跳过 vetoes，**仍受运行时保险约束**（高级用户）
+- `'auto'`: use `selectContinuationTier` (recommended)
+- `'always_primary'`: fully disable the D2 optimization (production-sensitive scenarios)
+- `'always_fast'`: skip vetoes, **still subject to the runtime safeguard** (advanced users)
 
-理由：D2 是质量换速度，部分用户/场景需要明确退出权。
+Rationale: D2 trades quality for speed; some users/scenarios need an explicit opt-out.
 
-#### 前置条件
+#### Prerequisites
 
-- `config.getFastModel()` 已配置
-- **主 chat fastModel-streaming 验证实验**（编码前 1d）：
-  - mock 一个 `resultIsTerminal=true` 工具，在主 chat 反复触发 summary 轮
-  - 观察 `tryCompress` 是否被错误触发（fast 模型 context window 小可能提前触发）
-  - 观察 chatRecordingService 输出是否有 model mismatch
-  - 观察单次 fast 调用后下一次 primary 调用是否能正常读 history
-- **Fast 候选模型基线测量**（1d）：
-  - 跑 100 条 summary 轮 prompt（输入含 `function_response`），测 P50/P95 端到端延迟与 time-to-first-token
-  - 测 `tryCompress` 触发率 `P_compact`，验证净 RT 收益 = `(1 - P_compact) × ΔRT − P_compact × compression_RT > 0`
-  - 仅当 fast P50 ≤ primary P50 × 0.5 且 P95 ≤ primary P95 × 0.6 时启用
-- Fast model 与 primary model 同家族（避免 function_response 编码差异）；跨家族需 `getFastModel()` 层校验拒绝
-- **`thinkingConfig` 兼容性**：
-  - Fast 模型必须与 primary 在 `thinkingConfig.includeThoughts` 支持上一致；或
-  - Fast 路径强制 `includeThoughts: false`（与 `sideQuery.ts:118-122` 对齐）
-  - 验证：history 含 thought parts 时 fast 模型能正确处理（不报错、不把 thought 当用户输入）
+- `config.getFastModel()` is configured
+- **Main-chat fastModel-streaming validation experiment** (1d before coding):
+  - Mock a `resultIsTerminal=true` tool and repeatedly trigger summary rounds on the main chat
+  - Observe whether `tryCompress` is erroneously triggered (the fast model's small context window may trigger it early)
+  - Observe whether chatRecordingService output has a model mismatch
+  - Observe whether the next primary call after a single fast call can read history normally
+- **Fast candidate-model baseline measurement** (1d):
+  - Run 100 summary-round prompts (input containing `function_response`), measuring P50/P95 end-to-end latency and time-to-first-token
+  - Measure the `tryCompress` trigger rate `P_compact`, verifying net RT benefit = `(1 - P_compact) × ΔRT − P_compact × compression_RT > 0`
+  - Enable only when fast P50 ≤ primary P50 × 0.5 and P95 ≤ primary P95 × 0.6
+- The fast model and primary model are in the same family (to avoid function_response encoding differences); cross-family requires rejection at the `getFastModel()` layer
+- **`thinkingConfig` compatibility**:
+  - The fast model must be consistent with primary on `thinkingConfig.includeThoughts` support; or
+  - The fast path forces `includeThoughts: false` (aligned with `sideQuery.ts:118-122`)
+  - Validate: when history contains thought parts, the fast model handles them correctly (no errors, does not treat a thought as user input)
 
-#### 风险与缓解
+#### Risks and Mitigations
 
-| 风险                                                                      | 严重度 | 缓解                                                                                                                                 |
-| ------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Fast 模型 tool-calling 静默放错                                           | 高     | 对话流启发式 + 运行时 ToolCallRequest abort 保险                                                                                     |
-| Fast 在含 error 的输入上幻觉成"对用户可见的错误回答"                      | **高** | `hasUnresolvedError` 否决；监控用户追问率（注：`emitToolUseSummaries` 的同类风险只影响 60 token 标签，本风险影响最终回答，量级更高） |
-| Fast 路径触发 `tryCompress` → 多一次 LLM 调用，**反向恶化 RT 和成本**     | **高** | `wouldTriggerCompression` 预判 gate（见决策函数 #7）；前置基线测量 P_compact 阈值                                                    |
-| Compression 自身用谁的模型                                                | 中     | 触发 compression 即放弃 fast 路由（gate #7 兜底）；避免回答出问题                                                                    |
-| 主 chat 切模型让 chat 内部状态/recording 异常                             | 中     | 前置验证实验覆盖；session resume 重放测试                                                                                            |
-| D2 与 `emitToolUseSummaries` 同时触发 concurrent fast 调用，超 rate-limit | 中     | 二选一：D2 启用时禁用 `emitToolUseSummaries`（标题不影响功能），或共享 rate-limit token bucket                                       |
-| `thinkingConfig` 在 fast / primary 间不一致导致 history 解析异常          | 中     | 同家族 + fast 路径强制 `includeThoughts: false`（见前置条件）                                                                        |
-| Fallback 路径反而更贵（fast tokens 浪费 + primary 全程）                  | 中     | `fast_tokens_consumed` 决策日志监控；fallback 率 >20% 自动关 flag                                                                    |
-| Telemetry span model 失真                                                 | 中     | `requested` / `actual` 拆分（见 Telemetry 修正）                                                                                     |
-| 上下文格式不兼容（跨家族）                                                | 中     | `getFastModel()` 拒绝跨家族选择                                                                                                      |
-| 与 skill modelOverride 语义冲突                                           | 中     | 独立 ref + skill 优先                                                                                                                |
-| `/model` 运行时切换主模型后 `summaryTierRef` 决策失效                     | 低     | `/model` 命令处理时同步清空 `summaryTierRef`                                                                                         |
-| fast tokens/s 反而更慢                                                    | 低     | 实测时同时测 TTFT，不只总 RT                                                                                                         |
+| Risk                                                                                             | Severity | Mitigation                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Fast model silently misroutes a tool call                                                        | High     | Conversation-flow heuristics + runtime ToolCallRequest abort safeguard                                                                                                                                                   |
+| Fast hallucinates a "user-visible wrong answer" on input containing an error                     | **High** | The `hasUnresolvedError` veto; monitor the user follow-up rate (note: the same risk in `emitToolUseSummaries` only affects a 60-token label, whereas this risk affects the final answer and is much larger in magnitude) |
+| The fast path triggers `tryCompress` → an extra LLM call, **worsening RT and cost in reverse**   | **High** | The `wouldTriggerCompression` predictive gate (see decision function #7); the upstream baseline-measured P_compact threshold                                                                                             |
+| Whose model compression itself uses                                                              | Medium   | Triggering compression means giving up fast routing (gate #7 backstop); avoids answer problems                                                                                                                           |
+| Switching models on the main chat causes chat-internal-state/recording anomalies                 | Medium   | Covered by the upstream validation experiment; session-resume replay tests                                                                                                                                               |
+| D2 and `emitToolUseSummaries` trigger concurrent fast calls simultaneously, exceeding rate-limit | Medium   | Pick one: disable `emitToolUseSummaries` when D2 is enabled (the title does not affect functionality), or share a rate-limit token bucket                                                                                |
+| `thinkingConfig` inconsistency between fast / primary causes history-parsing anomalies           | Medium   | Same family + force `includeThoughts: false` on the fast path (see prerequisites)                                                                                                                                        |
+| The fallback path is more expensive instead (wasted fast tokens + full primary)                  | Medium   | `fast_tokens_consumed` decision-log monitoring; auto-disable the flag when the fallback rate >20%                                                                                                                        |
+| Telemetry span model distortion                                                                  | Medium   | `requested` / `actual` split (see Telemetry Fix)                                                                                                                                                                         |
+| Context format incompatibility (cross-family)                                                    | Medium   | `getFastModel()` rejects cross-family selection                                                                                                                                                                          |
+| Semantic conflict with skill modelOverride                                                       | Medium   | Independent ref + skill priority                                                                                                                                                                                         |
+| `summaryTierRef` decision becomes stale after switching the main model at runtime via `/model`   | Low      | Clear `summaryTierRef` synchronously when handling the `/model` command                                                                                                                                                  |
+| fast tokens/s is slower instead                                                                  | Low      | Measure TTFT as well during testing, not just total RT                                                                                                                                                                   |
 
-#### 收益（待实测）
+#### Benefit (Pending Measurement)
 
-- **RT**：summary 轮节省 2-3s（实测前不写入 PR 标题）
-- **成本**：fast 模型单价通常显著低于 primary，高频 summary 场景下 token 成本可能下降 30-50%；但 fallback 路径浪费会抵消部分收益，需用 `fast_tokens_consumed` 实测确认净收益
+- **RT**: the summary round saves 2-3s (do not write into the PR title before measuring)
+- **Cost**: the fast model's unit price is usually significantly lower than primary's; in high-frequency summary scenarios token cost may drop 30-50%; but waste on the fallback path offsets part of the benefit, and net benefit needs to be confirmed via measured `fast_tokens_consumed`
 
 ---
 
-### 3.3 方向三：结果展示与交互解耦（Presentation Decoupling）
+### 3.3 Direction Three: Decoupling Result Presentation from Interaction (Presentation Decoupling)
 
-#### 问题
+#### Problem
 
-用户从工具完成到可以再次输入，必须等 LLM 总结轮完成：
+From tool completion to being able to type again, the user must wait for the LLM summary round to complete:
 
 ```
-工具完成 → [渲染结果] → [submitQuery] → [等 LLM 流式回复 3-4s] → Idle → 可输入
-                                         ~~~~~~~~~~~~~~~~~~~~~~~~
-                                         用户已看到结果但无法操作
+Tool completes → [render result] → [submitQuery] → [wait for LLM streaming reply 3-4s] → Idle → can type
+                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                                                    user already saw the result but cannot act
 ```
 
-#### 设计
+#### Design
 
-新增 `StreamingState.Summarizing` 状态：
+Add a new `StreamingState.Summarizing` state:
 
 ```typescript
 export enum StreamingState {
   Idle = 'idle',
   Responding = 'responding',
   WaitingForConfirmation = 'waiting_for_confirmation',
-  Summarizing = 'summarizing', // 新增
+  Summarizing = 'summarizing', // new
 }
 ```
 
-#### 状态机变更
+#### State-Machine Change
 
 ```
-工具完成且结果已展示
-  → 若 batch 全员 postExecution.resultIsTerminal === true:
-    → 进入 Summarizing（用户可输入）
-    → submitQuery 异步执行
-    → LLM 总结追加到 history（或被用户新消息取消）
-  → 否则:
-    → 保持 Responding（用户不可输入）
+Tool completes and result already displayed
+  → If the batch all has postExecution.resultIsTerminal === true:
+    → enter Summarizing (user can type)
+    → submitQuery runs asynchronously
+    → the LLM summary is appended to history (or cancelled by a new user message)
+  → Otherwise:
+    → stay in Responding (user cannot type)
 ```
 
-#### 用户新消息处理
+#### Handling New User Messages
 
-- `Summarizing` 状态下用户提交新消息 → abort 当前总结 → 处理新消息
-- 已生成的**部分总结文本丢弃**（不入 history），避免半句 assistant 污染上下文
-- `function_response` 仍保留在 history（模型知道工具执行了）
-- followup suggestion 等 Summarizing 完成或被取消后再触发
+- When the user submits a new message while in the `Summarizing` state → abort the current summary → handle the new message
+- The **partial summary text already generated is discarded** (not added to history), to avoid polluting context with a half-sentence assistant
+- The `function_response` is still kept in history (the model knows the tool was executed)
+- followup suggestions and the like are triggered only after Summarizing completes or is cancelled
 
-#### Abort 时 partial text 清理清单
+#### Partial-Text Cleanup Checklist on Abort
 
-partial text 分布在多处，需**同时**清理，缺一会导致状态不一致：
+Partial text is spread across multiple places and must be cleaned up **simultaneously**; missing one causes state inconsistency:
 
-| 位置                                                           | 清理动作                                                                                  |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `pendingHistoryItemRef.current`（useGeminiStream React state） | 置 `null`，不调 `addItem`                                                                 |
-| `GeminiChat.history` 内部累积                                  | abort 前若已 push 部分 assistant content，需通过新的 `discardPendingAssistant()` 接口回滚 |
-| `ChatRecordingService` buffered turn                           | 标记为 cancelled，不写入 JSONL                                                            |
-| `dualOutput.emitText`（如启用）                                | 发送 abort sentinel，sidecar 自行丢弃                                                     |
-| `loopDetectorRef` 累积 token                                   | 重置当前 turn 计数                                                                        |
+| Location                                                      | Cleanup Action                                                                                                               |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `pendingHistoryItemRef.current` (useGeminiStream React state) | set to `null`, do not call `addItem`                                                                                         |
+| Internal accumulation in `GeminiChat.history`                 | if partial assistant content was already pushed before abort, roll it back via the new `discardPendingAssistant()` interface |
+| `ChatRecordingService` buffered turn                          | mark as cancelled, do not write to JSONL                                                                                     |
+| `dualOutput.emitText` (if enabled)                            | send an abort sentinel; the sidecar discards on its own                                                                      |
+| `loopDetectorRef` accumulated tokens                          | reset the current turn's count                                                                                               |
 
-执行顺序：abort signal 触发 → 收齐上述五处清理 → 才允许新 user message 进入 `submitQuery`。竞态测试覆盖：abort 触发瞬间正好收到最后一个 chunk。
+Execution order: abort signal fires → collect all five cleanups above → only then allow a new user message into `submitQuery`. Race-test coverage: abort fires exactly as the last chunk arrives.
 
-#### 适用条件
+#### Applicability Condition
 
-batch 全员 `postExecution.resultIsTerminal === true`。
+The batch all has `postExecution.resultIsTerminal === true`.
 
-#### 历史不变量（与 §3.1 同源）
+#### History Invariant (Same Source as §3.1)
 
-中途打断 Summarizing 会产生：
+Interrupting Summarizing mid-stream produces:
 
 ```
 [user_1, function_call, function_response, user_2]
-                                          ↑ 无 assistant turn
+                                          ↑ no assistant turn
 ```
 
-**这与 §3.1 跳过 LLM 轮破坏的是同一个不变量**，必须使用与 D1 相同的修复策略（注入空 assistant / 接受 Qwen 容忍）。
+**This is the same invariant that §3.1's skipped-LLM-round breaks**, and must use the same fix strategy as D1 (inject empty assistant / accept Qwen tolerance).
 
-- 复用 D1 的不变量单测覆盖
-- session-load 重放（含 `repairOrphanedToolUseTurnsInHistory`）必须覆盖此形态
-- Anthropic alternation：直连时与 D1 同时补兜底
+- Reuse D1's invariant unit-test coverage
+- session-load replay (including `repairOrphanedToolUseTurnsInHistory`) must cover this shape
+- Anthropic alternation: provide a fallback at the same time as D1 when connecting directly
 
-#### 风险与缓解
+#### Risks and Mitigations
 
-| 风险                                | 严重度 | 缓解                                                           |
-| ----------------------------------- | ------ | -------------------------------------------------------------- |
-| Abort 时半句 assistant 进 history   | **中** | 显式丢弃 partial text；仅保留 function_response；单测覆盖 race |
-| 历史不变量破坏（无 assistant 接续） | **中** | 与 D1 同源问题，统一修复（见 §3.1 历史不变量）                 |
-| UI 状态复杂度增加                   | 中     | Summarizing = Idle + 背景任务；输入路径复用 Idle               |
-| 用户感知收益依赖行为模式            | 低     | 用户若 3s 内不输入，summary 已完成 → 无感知收益；但**不退化**  |
+| Risk                                              | Severity   | Mitigation                                                                                                           |
+| ------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| A half-sentence assistant enters history on abort | **Medium** | Explicitly discard partial text; keep only function_response; unit-test cover the race                               |
+| History invariant broken (no assistant follow-up) | **Medium** | Same-source problem as D1, unified fix (see §3.1 History Invariant)                                                  |
+| Increased UI-state complexity                     | Medium     | Summarizing = Idle + background task; the input path reuses Idle                                                     |
+| Perceived benefit depends on behavior pattern     | Low        | If the user does not type within 3s, the summary has already completed → no perceived benefit; but **no regression** |
 
-#### 收益
+#### Benefit
 
-- **理论上限**：3-4s 感知 RT（用户工具完成即输入）
-- **实际中位数**：取决于用户输入间隔——读结果 2-5s 后才输入的用户不会感受到差异，但**绝不会更慢**
+- **Theoretical upper bound**: 3-4s perceived RT (the user can type the moment the tool completes)
+- **Actual median**: depends on the user's typing interval—a user who only types 2-5s after reading the result will not feel a difference, but it is **never slower**
 
 ---
 
-### 3.4 方向四：流式提前调度（Stream-Ahead Scheduling）
+### 3.4 Direction Four: Stream-Ahead Scheduling (Stream-Ahead Scheduling)
 
-#### 问题
+#### Problem
 
-`processGeminiStreamEvents` 在 stream 完全结束后才批量调度工具。`ToolCallRequest` 事件可能在 stream 中期就已 yield。
+`processGeminiStreamEvents` batches and schedules tools only after the stream fully ends. The `ToolCallRequest` event may already be yielded mid-stream.
 
-#### 设计
+#### Design
 
-在 stream 事件处理中对 `ToolCallRequest` 立即开始**前置验证**（不执行）：
+In stream-event processing, immediately begin **pre-validation** (not execution) for `ToolCallRequest`:
 
 ```typescript
 case ServerGeminiEventType.ToolCallRequest:
   toolCallRequests.push(event.value);
-  scheduler.prevalidate(event.value, signal);  // 新增
+  scheduler.prevalidate(event.value, signal);  // new
   break;
 ```
 
-`CoreToolScheduler.prevalidate(request)`：
+`CoreToolScheduler.prevalidate(request)`:
 
-1. 查找工具注册
-2. 构建 invocation
-3. 执行 `shouldConfirmExecute`（缓存结果）
-4. `schedule()` 时直接使用缓存结果
+1. Look up the tool registration
+2. Build the invocation
+3. Execute `shouldConfirmExecute` (cache the result)
+4. Use the cached result directly at `schedule()` time
 
-#### 纯度契约与 Allowlist
+#### Purity Contract and Allowlist
 
-`prevalidate` 要求 `shouldConfirmExecute` 是 side-effect-free **且**结果在 prevalidate→schedule 间隙不会被外部修改使之失效。
+`prevalidate` requires `shouldConfirmExecute` to be side-effect-free **and** the result to not be invalidated by external modification in the prevalidate→schedule gap.
 
-**直接复用 `tools.ts:818` 的 `CONCURRENCY_SAFE_KINDS`**：
+**Directly reuse `CONCURRENCY_SAFE_KINDS` at `tools.ts:818`**:
 
 ```typescript
 export const CONCURRENCY_SAFE_KINDS: ReadonlySet<Kind> = new Set([
@@ -545,169 +549,169 @@ export const CONCURRENCY_SAFE_KINDS: ReadonlySet<Kind> = new Set([
 ]);
 ```
 
-这是项目已有的"无副作用 + 可并发"分类，正好匹配 prevalidate 需求。
+This is the project's existing "no side effects + concurrency-safe" classification, which exactly matches the prevalidate requirement.
 
-| 工具 Kind                     | 是否在 allowlist        | 理由                                                    |
-| ----------------------------- | ----------------------- | ------------------------------------------------------- |
-| `Read`（read_file 等）        | ✅                      | 纯读                                                    |
-| `Search`（grep / glob）       | ✅                      | 纯读                                                    |
-| `Fetch`（web_fetch 等）       | ✅                      | 远程读，无写副作用                                      |
-| `Edit`                        | **❌**（见下文 TOCTOU） | shouldConfirmExecute 纯只读，但 diff 在调度间隙可能失效 |
-| `Delete` / `Move` / `Execute` | ❌                      | MUTATOR_KINDS                                           |
-| `Think`                       | ❌                      | 含 save_memory / todo_write 等隐式写                    |
-| MCP 工具                      | ❌                      | 不可信                                                  |
+| Tool Kind                     | In allowlist              | Rationale                                                                                       |
+| ----------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `Read` (read_file etc.)       | ✅                        | Pure read                                                                                       |
+| `Search` (grep / glob)        | ✅                        | Pure read                                                                                       |
+| `Fetch` (web_fetch etc.)      | ✅                        | Remote read, no write side effects                                                              |
+| `Edit`                        | **❌** (see TOCTOU below) | shouldConfirmExecute is purely read-only, but the diff can become invalid in the scheduling gap |
+| `Delete` / `Move` / `Execute` | ❌                        | MUTATOR_KINDS                                                                                   |
+| `Think`                       | ❌                        | Contains implicit writes like save_memory / todo_write                                          |
+| MCP tools                     | ❌                        | Untrusted                                                                                       |
 
-**TOCTOU：为什么 Edit 不进 allowlist**
+**TOCTOU: why Edit is not in the allowlist**
 
-理论上 Edit 的 `shouldConfirmExecute` 是纯只读（读文件、算 diff）。但 prevalidate 与 schedule 之间存在时间窗：
+In theory, Edit's `shouldConfirmExecute` is purely read-only (read the file, compute the diff). But there is a time window between prevalidate and schedule:
 
 ```
-T=0      stream 收到 Edit(file=a.ts, ...) → prevalidate
-T=10ms   shouldConfirmExecute 读 a.ts，缓存 diff_v0
-T=300ms  stream 结束，scheduler.schedule()
-T=305ms  期间其他工具/IDE/外部进程修改 a.ts
-T=310ms  scheduler 用 diff_v0 展示给用户
-T=320ms  用户基于 v0 确认
-T=330ms  Edit 应用旧 params 到 v1 文件 → 内容损坏 / merge 失败
+T=0      stream receives Edit(file=a.ts, ...) → prevalidate
+T=10ms   shouldConfirmExecute reads a.ts, caches diff_v0
+T=300ms  stream ends, scheduler.schedule()
+T=305ms  meanwhile another tool/IDE/external process modifies a.ts
+T=310ms  scheduler shows diff_v0 to the user
+T=320ms  user confirms based on v0
+T=330ms  Edit applies old params to the v1 file → content corruption / merge failure
 ```
 
-这是 TOCTOU。修复方向：
+This is TOCTOU. Fix directions:
 
-- **A（推荐）**：Edit 不进 allowlist，prevalidate 仅覆盖 `CONCURRENCY_SAFE_KINDS` 三类。代价：收益从"50-200ms（Edit 主导）"降到"50-100ms（仅读类）"
-- **B（可选加强）**：Edit 进入 allowlist 但缓存附 `(mtime, size, content_hash)`；schedule() 时校验未变才用缓存，否则重算
+- **A (recommended)**: Edit is not in the allowlist; prevalidate only covers the three `CONCURRENCY_SAFE_KINDS` classes. Cost: the benefit drops from "50-200ms (Edit-dominated)" to "50-100ms (read types only)"
+- **B (optional strengthening)**: Edit enters the allowlist but the cache attaches `(mtime, size, content_hash)`; at schedule() time, verify it is unchanged before using the cache, otherwise recompute
 
-文档暂选 A。
+The doc tentatively chooses A.
 
-#### 与现有并行调度的交互
+#### Interaction with Existing Parallel Scheduling
 
-`coreToolScheduler.attemptExecutionOfScheduledCalls`（L2436+）使用 `partitionToolCalls` 把工具分成"并发安全 batch"和"串行 batch"，并发 batch 通过 `runConcurrently`（L2473）执行。
+`coreToolScheduler.attemptExecutionOfScheduledCalls` (L2436+) uses `partitionToolCalls` to split tools into a "concurrency-safe batch" and a "serial batch", and the concurrent batch executes via `runConcurrently` (L2473).
 
-prevalidate 必须与这个分批模型对齐：
+prevalidate must align with this batching model:
 
-- 缓存按 `callId` 索引（不是 `(toolName, args)`，避免并发同名调用冲突）
-- prevalidate 失败的 call → 不影响其他 call，schedule 时该 call 走原始 `shouldConfirmExecute` 路径
-- stream 取消时按 `signal` 级联 abort 所有 in-flight prevalidate
+- Cache is indexed by `callId` (not `(toolName, args)`, to avoid conflicts between concurrent same-name calls)
+- A call whose prevalidate fails → does not affect other calls; at schedule time that call takes the original `shouldConfirmExecute` path
+- On stream cancellation, cascade-abort all in-flight prevalidates by `signal`
 
-#### 风险
+#### Risks
 
-| 风险                                       | 严重度 | 缓解                                                                   |
-| ------------------------------------------ | ------ | ---------------------------------------------------------------------- |
-| 缓存 diff 与确认时实际文件不一致（TOCTOU） | 高     | 方案 A：Edit 不进 allowlist；方案 B：缓存附 `(mtime, size, hash)` 校验 |
-| prevalidate 失败影响调度                   | 低     | 失败/超时退回原 `shouldConfirmExecute` 路径，缓存缺失 ≡ 未启用         |
-| 并发 prevalidate 共享 fd / 资源争抢        | 低     | `QWEN_CODE_MAX_TOOL_CONCURRENCY` 已限并发上限（默认 10）               |
+| Risk                                                                        | Severity | Mitigation                                                                                            |
+| --------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------- |
+| Cached diff inconsistent with the actual file at confirmation time (TOCTOU) | High     | Approach A: Edit not in allowlist; approach B: cache attaches `(mtime, size, hash)` for verification  |
+| prevalidate failure affecting scheduling                                    | Low      | On failure/timeout, fall back to the original `shouldConfirmExecute` path; a cache miss ≡ not enabled |
+| Concurrent prevalidate sharing fds / resource contention                    | Low      | `QWEN_CODE_MAX_TOOL_CONCURRENCY` already caps concurrency (default 10)                                |
 
-#### 收益
+#### Benefit
 
-50-100ms/轮（仅 `CONCURRENCY_SAFE_KINDS` 范围）。若选方案 B 含 Edit，理论收益 100-200ms。
+50-100ms/round (within `CONCURRENCY_SAFE_KINDS` only). If approach B including Edit is chosen, theoretical benefit 100-200ms.
 
 ---
 
-## 4. 综合评估与路线图
+## 4. Overall Assessment and Roadmap
 
-### 4.1 综合评估
+### 4.1 Overall Assessment
 
-| 方向                 | RT 收益                       | 实施复杂度               | 质量风险 | 依赖                                        | 优先级 |
-| -------------------- | ----------------------------- | ------------------------ | -------- | ------------------------------------------- | ------ |
-| D1 工具后置指令      | 3-4s/终态轮                   | 低（2-3d）               | 低       | 无                                          | **P0** |
-| D2 summary fast 路由 | 2-3s/summary 轮（待实测）     | **中-高（9d）**          | 中-高    | D2 自带启发式 + 主 chat 验证实验 + ACP 同步 | **P1** |
-| D3 展示解耦          | 3-4s 感知改善（依赖用户行为） | 中（3-5d，含不变量修复） | 中       | D1 历史不变量修复                           | **P1** |
-| D4 流式提前调度      | 50-200ms/轮                   | 高（5-7d）               | 极低     | 无                                          | P2     |
+| Direction                        | RT Benefit                                            | Implementation Complexity          | Quality Risk | Dependencies                                                     | Priority |
+| -------------------------------- | ----------------------------------------------------- | ---------------------------------- | ------------ | ---------------------------------------------------------------- | -------- |
+| D1 Tool post-execution directive | 3-4s/terminal round                                   | Low (2-3d)                         | Low          | None                                                             | **P0**   |
+| D2 summary fast routing          | 2-3s/summary round (pending measurement)              | **Medium-high (9d)**               | Medium-high  | D2's own heuristics + main-chat validation experiment + ACP sync | **P1**   |
+| D3 Presentation decoupling       | 3-4s perceived improvement (depends on user behavior) | Medium (3-5d, incl. invariant fix) | Medium       | D1 history-invariant fix                                         | **P1**   |
+| D4 Stream-ahead scheduling       | 50-200ms/round                                        | High (5-7d)                        | Very low     | None                                                             | P2       |
 
-#### D2 工作量细分
+#### D2 Effort Breakdown
 
-| 子任务                                                                                     | 估时   |
-| ------------------------------------------------------------------------------------------ | ------ |
-| 主 chat fastModel-streaming 验证实验（含 P_compact 测量）                                  | 1d     |
-| Fast 候选模型基线测量（含 TTFT、P95、`thinkingConfig` 兼容性）                             | 1d     |
-| `selectContinuationTier` + `summaryTierRef` 接入（useGeminiStream）                        | 0.5d   |
-| 启发式实现（含 `MUTATOR_KINDS` 复用 / `wouldTriggerCompression` 估算 / 多语言 / 状态突变） | 1d     |
-| `GeminiChat.retryStreamWithModel` + `discardPendingAssistant` 接口实现                     | 1.5d   |
-| ACP Session 同步改造（acp-integration/session/Session.ts）                                 | 1d     |
-| Telemetry span 修正（`requested` / `actual` 拆分）                                         | 0.5d   |
-| User-level setting `summaryTierStrategy` + JSON schema + `/config` 集成                    | 0.5d   |
-| 单测（race、abort 时机、history 不变量、fallback 路径、ACP 路径）                          | 2d     |
-| **合计**                                                                                   | **9d** |
+| Subtask                                                                                                                      | Estimate |
+| ---------------------------------------------------------------------------------------------------------------------------- | -------- |
+| Main-chat fastModel-streaming validation experiment (incl. P_compact measurement)                                            | 1d       |
+| Fast candidate-model baseline measurement (incl. TTFT, P95, `thinkingConfig` compatibility)                                  | 1d       |
+| `selectContinuationTier` + `summaryTierRef` integration (useGeminiStream)                                                    | 0.5d     |
+| Heuristics implementation (incl. `MUTATOR_KINDS` reuse / `wouldTriggerCompression` estimation / multilingual / state change) | 1d       |
+| `GeminiChat.retryStreamWithModel` + `discardPendingAssistant` interface implementation                                       | 1.5d     |
+| ACP Session sync modification (acp-integration/session/Session.ts)                                                           | 1d       |
+| Telemetry span fix (`requested` / `actual` split)                                                                            | 0.5d     |
+| User-level setting `summaryTierStrategy` + JSON schema + `/config` integration                                               | 0.5d     |
+| Unit tests (race, abort timing, history invariant, fallback path, ACP path)                                                  | 2d       |
+| **Total**                                                                                                                    | **9d**   |
 
-> 注：早期估时 6.5d 未含 ACP 路径、`wouldTriggerCompression` gate、清理清单、settings schema 工程化等成本。
+> Note: the earlier estimate of 6.5d did not include the ACP path, the `wouldTriggerCompression` gate, the cleanup checklist, settings-schema engineering, etc.
 
-### 4.2 实施路线
+### 4.2 Implementation Roadmap
 
-#### Phase 1：D1 工具后置指令（1 周）
+#### Phase 1: D1 Tool Post-Execution Directive (1 week)
 
-- 扩展 `ToolResult.postExecution`（tools.ts L422）：`skipLlmRound` + `resultIsTerminal`
-- `handleCompletedTools` 实现 `skipLlmRound` 短路（useGeminiStream.ts L2038）
-- 单测覆盖历史不变量
-- **Phase 1 不消费 `resultIsTerminal`**（留给 Phase 3）
+- Extend `ToolResult.postExecution` (tools.ts L422): `skipLlmRound` + `resultIsTerminal`
+- Implement the `skipLlmRound` short-circuit in `handleCompletedTools` (useGeminiStream.ts L2038)
+- Unit-test coverage of the history invariant
+- **Phase 1 does not consume `resultIsTerminal`** (left for Phase 3)
 
-#### Phase 2：信号生态建设（2 周，与 Phase 4 并行）
+#### Phase 2: Building the Signal Ecosystem (2 weeks, in parallel with Phase 4)
 
-- 内置工具陆续打标 `skipLlmRound` / `resultIsTerminal`（见 §3.1 表）
-- 验证打标覆盖率 ≥60%（按 turn 数加权，非按调用次数）
-- 收集 production 数据，校准 §3.2 否决 gate 阈值
-- Phase 2 末期跑 §3.2 主 chat 验证实验和基线测量
+- Built-in tools are progressively tagged with `skipLlmRound` / `resultIsTerminal` (see the §3.1 table)
+- Verify tagging coverage ≥60% (weighted by turn count, not by call count)
+- Collect production data to calibrate the §3.2 veto-gate thresholds
+- Run the §3.2 main-chat validation experiment and baseline measurement at the end of Phase 2
 
-#### Phase 3：D2 + D3（约 3 周，含 ACP 同步）
+#### Phase 3: D2 + D3 (about 3 weeks, including ACP sync)
 
-> **修正**：早期路线图估 1 周，未含 fastModel-streaming 验证实验、`retryStreamWithModel` 实现、不变量统一修复、ACP 路径同步。
+> **Revision**: the early roadmap estimated 1 week, not including the fastModel-streaming validation experiment, the `retryStreamWithModel` implementation, the unified invariant fix, and the ACP-path sync.
 
-- 编码前：完成主 chat 验证实验 + 基线测量（含 `P_compact` 与 thinkingConfig 兼容性）
-- 新增 `summaryTierRef` + `selectContinuationTier`（含 `wouldTriggerCompression` gate）
-- 新增 `GeminiChat.retryStreamWithModel` + `discardPendingAssistant`
-- **同步改造 ACP Session 路径**（acp-integration/session/Session.ts）使用同一决策函数
-- 新增 `StreamingState.Summarizing` + 输入路径复用 + abort 清理清单
-- 历史不变量统一修复（D1+D3 同源）
-- Feature flag `experimental.summaryRoundFastModel: false`，**Release N 默认关**
+- Before coding: complete the main-chat validation experiment + baseline measurement (incl. `P_compact` and thinkingConfig compatibility)
+- Add `summaryTierRef` + `selectContinuationTier` (incl. the `wouldTriggerCompression` gate)
+- Add `GeminiChat.retryStreamWithModel` + `discardPendingAssistant`
+- **Sync-modify the ACP Session path** (acp-integration/session/Session.ts) to use the same decision function
+- Add `StreamingState.Summarizing` + input-path reuse + abort cleanup checklist
+- Unified history-invariant fix (D1+D3 same source)
+- Feature flag `experimental.summaryRoundFastModel: false`, **off by default in Release N**
 - User setting `summaryTierStrategy`
-- Telemetry span 修正
-- 运行时保险（ToolCallRequest abort + retryStreamWithModel）
+- Telemetry span fix
+- Runtime safeguard (ToolCallRequest abort + retryStreamWithModel)
 
-#### Phase 4：D4 流式提前调度（可独立插入）
+#### Phase 4: D4 Stream-Ahead Scheduling (can be inserted independently)
 
 - `CoreToolScheduler.prevalidate` + allowlist
-- `processGeminiStreamEvents` 增量调度
+- `processGeminiStreamEvents` incremental scheduling
 
 ---
 
-## 5. 度量、验收与限制
+## 5. Metrics, Acceptance, and Limitations
 
-### 5.1 性能指标
+### 5.1 Performance Metrics
 
-| 指标                       | 基线  | Phase 1 | Phase 3                   |
-| -------------------------- | ----- | ------- | ------------------------- |
-| 端到端 RT P50（3 轮 loop） | 13.4s | <10s    | <8s（待实测）             |
-| 端到端 RT P95              | -     | <13s    | <12s（fallback 路径上限） |
-| 用户感知首结果时间 P50     | 13.4s | <10s    | <5s（D3 启用）            |
-| 用户感知首结果时间 P95     | -     | <13s    | <8s                       |
-| LLM 调用次数（可跳过场景） | 3     | 2       | 2（更快）                 |
+| Metric                                  | Baseline | Phase 1 | Phase 3                   |
+| --------------------------------------- | -------- | ------- | ------------------------- |
+| End-to-end RT P50 (3-round loop)        | 13.4s    | <10s    | <8s (pending measurement) |
+| End-to-end RT P95                       | -        | <13s    | <12s (fallback-path cap)  |
+| User-perceived time-to-first-result P50 | 13.4s    | <10s    | <5s (D3 enabled)          |
+| User-perceived time-to-first-result P95 | -        | <13s    | <8s                       |
+| LLM call count (skippable scenarios)    | 3        | 2       | 2 (faster)                |
 
-> 注：基线为单次采样，落地前需补 ≥3 类场景。
+> Note: the baseline is a single sample; baselines for ≥3 scenario classes need to be collected before landing.
 
-### 5.2 质量指标
+### 5.2 Quality Metrics
 
-| 指标                                         | 基线 | 允许退化                 |
-| -------------------------------------------- | ---- | ------------------------ |
-| Tool-calling 准确率（fast model summary 轮） | 100% | ≥98%                     |
-| skipLlmRound 误用率（用户追问"再详细些"）    | -    | <1%                      |
-| Fast model fallback_triggered 率             | -    | <10%（>20% 自动关 flag） |
-| Summarizing 状态下半句 assistant 入 history  | 0    | 0（硬性）                |
+| Metric                                                            | Baseline | Allowed Regression                 |
+| ----------------------------------------------------------------- | -------- | ---------------------------------- |
+| Tool-calling accuracy (fast model summary round)                  | 100%     | ≥98%                               |
+| skipLlmRound misuse rate (user asks "more detail")                | -        | <1%                                |
+| Fast model fallback_triggered rate                                | -        | <10% (>20% auto-disables the flag) |
+| Half-sentence assistant entering history in the Summarizing state | 0        | 0 (hard requirement)               |
 
-### 5.3 成本指标
+### 5.3 Cost Metrics
 
-| 指标                              | 基线 | Phase 3 目标                                                 |
-| --------------------------------- | ---- | ------------------------------------------------------------ |
-| 每千会话 token 成本（summary 轮） | 100% | <70%                                                         |
-| Fallback 路径浪费 tokens 占比     | 0    | <15%（fallback 率 × 单次 fast tokens / 单次 primary tokens） |
+| Metric                                           | Baseline | Phase 3 Target                                                    |
+| ------------------------------------------------ | -------- | ----------------------------------------------------------------- |
+| Token cost per thousand sessions (summary round) | 100%     | <70%                                                              |
+| Share of wasted tokens on the fallback path      | 0        | <15% (fallback rate × single fast tokens / single primary tokens) |
 
-### 5.4 决策日志 schema
+### 5.4 Decision-Log Schema
 
-每次 `selectContinuationTier` 与 `handleCompletedTools` 的关键判定写一条结构化日志：
+For each key decision in `selectContinuationTier` and `handleCompletedTools`, write one structured log line:
 
 ```
 {
   turn_id, prompt_id,
   decision: 'skip' | 'fast' | 'primary',
-  tier_requested: 'fast' | 'primary',          // 决策（fallback 前）
-  tier_actual:    'fast' | 'primary',          // 实际跑（fallback 后）
+  tier_requested: 'fast' | 'primary',          // decision (before fallback)
+  tier_actual:    'fast' | 'primary',          // actually ran (after fallback)
   signal_skipLlmRound: bool,
   signal_resultIsTerminal: bool,
   user_strategy: 'auto' | 'always_primary' | 'always_fast',
@@ -719,472 +723,472 @@ prevalidate 必须与这个分批模型对齐：
   has_error: bool, has_cancel: bool,
   output_tokens_est: int,
   user_prompt_classification: 'query' | 'action' | 'analysis',
-  fast_ttft_ms, primary_ttft_ms,                // fallback 时双份
-  fast_tokens_consumed: int,                    // fallback 浪费的 tokens（成本归因）
+  fast_ttft_ms, primary_ttft_ms,                // both on fallback
+  fast_tokens_consumed: int,                    // tokens wasted on fallback (cost attribution)
   total_rt_ms,
   fallback_triggered: bool,
   fallback_reason: 'tool_call_seen' | 'timeout' | 'error' | null,
 }
 ```
 
-观察指标：
+Observation metrics:
 
-- fast 触发率（预期 30-50%）
-- fallback_triggered 率（预期 <10%；>20% 提示在下个 release 关 default flag）
-- 各 veto 占比（识别过严/过松）
-- fast_tokens_consumed × fallback_rate（成本反向风险）
-- 用户追问"再详细些"频次（fast 质量回归信号）
+- fast trigger rate (expected 30-50%)
+- fallback_triggered rate (expected <10%; >20% suggests disabling the default flag in the next release)
+- share of each veto (identify too-strict/too-loose)
+- fast_tokens_consumed × fallback_rate (reverse cost risk)
+- frequency of users asking "more detail" (a fast quality-regression signal)
 
-**`fast_tokens_consumed` 测量说明**：
+**`fast_tokens_consumed` measurement note**:
 
-abort 中断的 stream **大概率收不到 `finishReason` / `usageMetadata`**——后者只在 stream 完整结束时填充。实现需估算：
+An abort-interrupted stream **most likely will not receive `finishReason` / `usageMetadata`**—the latter is only populated when the stream fully ends. The implementation must estimate:
 
-- 优先：abort 前尝试 `stream.return()` 让生成器走 finally 路径，可能拿到 partial usage
-- 兜底：累计已收 chunk 的文本长度 × 4 估算 output tokens；input tokens 用 history 估算
-- 标注：日志字段附 `tokens_source: 'usage' | 'estimated'`，事后分析需区分
+- Preferred: before aborting, try `stream.return()` to let the generator take the finally path, which may obtain partial usage
+- Fallback: estimate output tokens as the accumulated text length of received chunks × 4; estimate input tokens from history
+- Tagging: attach `tokens_source: 'usage' | 'estimated'` to the log field; downstream analysis must distinguish them
 
-### 5.5 验证方法与发布策略
+### 5.5 Validation Method and Release Strategy
 
-#### 验证
+#### Validation
 
-- 复用 `/tmp/tool-timing.log` 计时框架
-- 新增 `T_userIdle`（用户可再次输入时刻）
-- 新增 `T_firstToken`（流式首 token 时刻）
-- A/B 测试对比各 Phase 前后的 RT 与 cost 分布
+- Reuse the `/tmp/tool-timing.log` timing framework
+- Add `T_userIdle` (the moment the user can type again)
+- Add `T_firstToken` (the moment of the first streaming token)
+- A/B test comparing the RT and cost distributions before and after each Phase
 
-#### 发布策略（适配本地 CLI）
+#### Release Strategy (Adapted for a Local CLI)
 
-Qwen Code 是本地 CLI，**没有运行时下发能力**——传统"5% / 25% / 100% 灰度"不适用。采用**阶段性 release 推进**：
+Qwen Code is a local CLI with **no runtime push capability**—the traditional "5% / 25% / 100% canary" does not apply. We adopt a **staged release rollout**:
 
-| 阶段                  | Release 节点           | feature flag 默认值 | 触发条件                                                    |
-| --------------------- | ---------------------- | ------------------- | ----------------------------------------------------------- |
-| Phase 3a：dogfood     | Release N              | `false`             | 内部用户用 `summaryTierStrategy=always_fast` 自启用         |
-| Phase 3b：opt-in 默认 | Release N+1（≥2 周后） | `false`（不变）     | dogfood 阶段决策日志达标：fallback <10%、净 RT/cost 收益 >0 |
-| Phase 3c：默认开启    | Release N+2（≥4 周后） | `true`              | Phase 3b 用户层面无质量回归报告                             |
-| 回滚                  | Release N+3（如需）    | `true → false`      | 大规模 fallback >20% 或质量指标退化                         |
+| Stage                    | Release Node                 | feature flag default | Trigger Condition                                                               |
+| ------------------------ | ---------------------------- | -------------------- | ------------------------------------------------------------------------------- |
+| Phase 3a: dogfood        | Release N                    | `false`              | Internal users self-enable with `summaryTierStrategy=always_fast`               |
+| Phase 3b: opt-in default | Release N+1 (≥2 weeks later) | `false` (unchanged)  | dogfood-stage decision logs meet the bar: fallback <10%, net RT/cost benefit >0 |
+| Phase 3c: on by default  | Release N+2 (≥4 weeks later) | `true`               | No quality regression reports at the user level in Phase 3b                     |
+| Rollback                 | Release N+3 (if needed)      | `true → false`       | Large-scale fallback >20% or quality metrics regress                            |
 
-**回滚机制**：
+**Rollback mechanism**:
 
-- 无运行时下发，**回滚 = 发新 release 关 default flag**
-- 用户级 `summaryTierStrategy=always_primary` 始终提供"我要立刻退出"通道，不依赖新 release
-- 决策日志的 `fallback_rate` / `cost_regression` 在每个 Release 周期评估，决定下一步
+- No runtime push; **rollback = ship a new release that turns off the default flag**
+- User-level `summaryTierStrategy=always_primary` always provides an "I want to opt out right now" channel, independent of a new release
+- The decision log's `fallback_rate` / `cost_regression` is evaluated each release cycle to decide the next step
 
-### 5.6 已知限制
+### 5.6 Known Limitations
 
-1. **基线数据单薄**：单次采样不能覆盖全部任务模式，落地前需补场景
-2. **fast 模型前提**：不存在显著更快且 tool-calling 达标的同家族模型 → D2 不启用
-3. **`skipLlmRound` 是质量换速度**：跳过 LLM = 放弃模型理解和纠错，仅适用确定性高场景
-4. **D2 是质量+成本换速度**：fast 模型质量低于 primary；fallback 路径反而更贵——必须以决策日志实测净收益
-5. **`tryCompress` 触发可能反向恶化**：fast 模型 context 小，compression 自身耗 LLM 调用——`wouldTriggerCompression` gate 是必备防御
-6. **展示解耦改变交互模型**：新模式需要用户适应；用户行为决定实际感知收益
-7. **网络延迟不可控**：本方案减少调用次数，非优化单次调用
-8. **Anthropic 直连未覆盖**：当前 alternation 容忍度依赖 Qwen / OpenAI 风格 API
-9. **主 chat 上 fastModel-streaming 是首次落地**：无生产先例，需独立验证实验
-10. **本地 CLI 无运行时下发**：发布策略只能阶段性 release 推进，不支持快速灰度调节
-11. **D2 仅作用于交互路径**：Subagent / Cron / Notification 不享收益，刻意如此
-12. **混合模型 history 长期影响未知**：D2 启用后 session 内 turn 在 fast/primary 间切换，长会话 resume 与上下文连贯性需观察
-13. **D4 收益缩水**：Edit 退出 allowlist 后，prevalidate 仅覆盖纯读类工具（50-100ms 收益）；含 Edit 的 200ms 收益需方案 B 的 mtime/hash 校验机制
+1. **Thin baseline data**: a single sample cannot cover all task patterns; scenarios need to be collected before landing
+2. **fast-model premise**: if no significantly faster same-family model with adequate tool-calling exists → D2 is not enabled
+3. **`skipLlmRound` trades quality for speed**: skipping the LLM = giving up model understanding and error correction; only applicable to high-certainty scenarios
+4. **D2 trades quality+cost for speed**: the fast model's quality is below primary's; the fallback path is more expensive instead—net benefit must be measured via the decision log
+5. **A `tryCompress` trigger may worsen things in reverse**: the fast model's small context means compression itself consumes an LLM call—the `wouldTriggerCompression` gate is an essential defense
+6. **Presentation decoupling changes the interaction model**: the new mode requires user adaptation; user behavior determines the actual perceived benefit
+7. **Network latency is uncontrollable**: this design reduces the number of calls, not the latency of a single call
+8. **Direct Anthropic connectivity not covered**: the current alternation tolerance relies on Qwen / OpenAI-style APIs
+9. **fastModel-streaming on the main chat is a first-time landing**: no production precedent, requires a dedicated validation experiment
+10. **Local CLI has no runtime push**: the release strategy can only do staged release rollout, with no fast canary tuning
+11. **D2 applies only to interactive paths**: Subagent / Cron / Notification do not benefit, deliberately so
+12. **Long-term impact of mixed-model history is unknown**: once D2 is enabled, turns within a session switch between fast/primary; the coherence of long-session resume and context needs observation
+13. **D4 benefit shrinks**: after Edit leaves the allowlist, prevalidate only covers pure-read tools (50-100ms benefit); the 200ms benefit including Edit requires approach B's mtime/hash verification mechanism
 
-### 5.7 关键代码位置
+### 5.7 Key Code Locations
 
-| 文件                                                  | 关键符号                                                 | 位置                     |
-| ----------------------------------------------------- | -------------------------------------------------------- | ------------------------ |
-| `packages/core/src/tools/tools.ts`                    | `ToolResult` interface                                   | L422                     |
-| `packages/core/src/tools/tools.ts`                    | `Kind` enum + `MUTATOR_KINDS` + `CONCURRENCY_SAFE_KINDS` | L793, L806, L818         |
-| `packages/core/src/tools/tools.ts`                    | `DeclarativeTool.kind: Kind`（每个 Tool 实例都带）       | L165                     |
-| `packages/core/src/core/client.ts`                    | `SendMessageOptions.modelOverride`                       | L142                     |
-| `packages/core/src/core/client.ts`                    | `sendMessageStream`                                      | L1216                    |
-| `packages/core/src/core/client.ts`                    | `modelOverride ?? getModel()`                            | L1305, L1598             |
-| `packages/core/src/core/client.ts`                    | `turn.run(model, …)`                                     | L1707                    |
-| `packages/core/src/core/geminiChat.ts`                | `sendMessageStream(model, …)`                            | L1387                    |
-| `packages/core/src/core/geminiChat.ts`                | `history.push(userContent)`                              | L1428                    |
-| `packages/core/src/core/geminiChat.ts`                | `sendPromise` 锁                                         | L1392                    |
-| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `modelOverrideRef`（skill 选模型）                       | L376, L2225              |
-| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `processGeminiStreamEvents`                              | L1365                    |
-| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `sendMessageStream` 调用点                               | L1841                    |
-| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `handleCompletedTools`                                   | L2038                    |
-| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `submitQuery(ToolResult, …)`                             | L2355                    |
-| `packages/core/src/services/toolUseSummary.ts`        | fast-model side query（非流式先例）                      | L108                     |
-| `packages/core/src/followup/speculation.ts`           | fast-model streaming（forked chat 先例）                 | L224                     |
-| `packages/core/src/config/config.ts`                  | `fastModel` + `getFastModel` + `setFastModel`            | L684, L1987, L2021       |
-| `packages/core/src/core/coreToolScheduler.ts`         | `attemptExecutionOfScheduledCalls`                       | L2436                    |
-| `packages/core/src/core/coreToolScheduler.ts`         | `runConcurrently` + `partitionToolCalls`                 | L2473                    |
-| `packages/cli/src/acp-integration/session/Session.ts` | `sendMessageStream` 调用点（ACP / IDE 路径）             | L705, L965, L1182, L1423 |
-| `packages/core/src/agents/runtime/agent-core.ts`      | Subagent `sendMessageStream`（不受 D2 影响）             | L614                     |
-
----
-
-## 6. Review 验证记录（2026-05-26）
-
-### 6.1 验证方法
-
-针对设计文档中**只声明、未量化**的几条前置数据质量假设与收益估算，启动 4 个并行 Explore subagent 做只读代码调研。每个 subagent 只回答一个事实问题，不做判断，不给优化建议。调研基于当前 `main` 分支（HEAD: `026f2f768`）。
-
-| 验证问题                                                               | 关联章节                           |
-| ---------------------------------------------------------------------- | ---------------------------------- |
-| Q3 当前所有工具的 `ToolResult.error` 字段填充率                        | §3.2 `hasUnresolvedError` 前置依赖 |
-| Q4 stream abort 后 `usageMetadata` 实际可得性                          | §5.4 `fast_tokens_consumed` 测量   |
-| Q5 "用户追问 / clarification" 埋点存在性                               | §5.2 fast 质量回归监控信号         |
-| Q6 `CONCURRENCY_SAFE_KINDS` 工具 `shouldConfirmExecute` 实际 IO 工作量 | §3.4 D4 收益估算                   |
-
-### 6.2 发现 1：`hasUnresolvedError` 启发式存在 32% 工具盲区（影响 D2）
-
-**事实**：在 22 个有错误路径的工具中，**15 个（68%）规范填 `ToolResult.error` 字段**（shell、read-file、write-file、edit、grep、glob、ls、web-fetch、mcp-tool、cron-\* 等核心 I/O 工具齐备），**7 个（32%）仅把错误塞进 `llmContent` 字符串**：`askUserQuestion`、`monitor`、`skill`、`lsp`、`exitPlanMode`、`todoWrite` 等。
-
-**不存在**统一的 `createErrorResult` helper，每个工具独立实现错误构造。
-
-**对设计的影响**：
-
-- §3.2 的 `hasUnresolvedError` 否决项若仅检查 `ToolResult.error` 字段，**这 7 个工具的失败永远不会触发"切回 primary"**——下一轮仍会被路由到 fast model
-- 其中 **`skill` 工具的失败被 fast model 错误总结**是高优风险场景（本仓库大量 skill 驱动的工作流会被影响）
-- §3.2 列出的"shell 等需正确填 ToolResult.error（前置数据质量依赖）" **范围太窄**，shell 实际已规范，真正漏报的是 skill / lsp / todoWrite 等
-
-**建议修正**：把 "**将 7 个仅靠 `llmContent` 传错的工具改造为规范填 `error` 字段**" 列为 D2 的硬前置依赖（§3.2 前置条件），估时 ~2d；不接受 "用 `llmContent.match(/^Error:/i)` 兜底" 的脏路径（误判风险高）。
-
-### 6.3 发现 2：`fast_tokens_consumed` 指标实现成本被低估（影响 D2 / §5.3）
-
-**事实**：
-
-- `turn.ts` 的 abort 路径（L289-291）直接 `return`，**没有 finally 块，也没有 `stream.return()` 调用**——文档 §5.4 暗示的 "abort 前 `stream.return()` 让生成器走 finally" 在当前代码中不存在该入口
-- `geminiChat.ts:processStreamResponse` 的 `for await` 循环只在完整遍历时记录 turn（L1286），abort 中断意味着最后的 usage-only chunk（通常携带完整 metadata）**被直接丢弃**
-- 主聊天路径**无任何 chunk-level token 累计兜底**；仅 subagent 层（`agent.ts:731-744`）有累计，无法复用
-- 结论：abort 时 `usageMetadata` **零获取**，只能靠 `chars/4` 估算（±20% 误差）
-
-**对设计的影响**：
-
-- §5.4 末尾的"优先 / 兜底 / 标注"三层方案中，**"优先" 路径在当前代码不可达**——需先改 `sendMessageStream` 生成器结构加 finally，工作量约 1d，设计文档没体现这笔成本
-- §5.3 把 "每千会话 token 成本 <70%" 列为 Phase 3 目标，但若指标本身 ±20% 误差，**"70%" 与 "82%" 落在测量噪声内**
-
-**建议修正**：
-
-- §5.3 改写为**趋势指标**，不作为 release gate；改用 "决策日志的 `fallback_triggered` 率 + `fast_tokens_consumed` 同向趋势" 双指标联合判断
-- §5.4 增补：`fast_tokens_consumed` 实现需先改造 turn.ts abort 路径加 finally + `stream.return()`，作为 §3.2 工作量补充（+1d）
-
-### 6.4 发现 3：`user_prompt_classification` 与"用户追问"埋点需新建（影响 D2 / §5.2）
-
-**事实**：
-
-- `packages/core/src/followup/` 已存在 `speculation.ts` / `suggestionGenerator.ts` / `followupState.ts`，但其 telemetry（`PromptSuggestionEvent`）记录的是 **"系统建议被采纳/忽略"**，不是"用户主动追问"
-- `ChatRecordingService` 存储用户消息但**不打分类标签**
-- 全仓库 grep 无 `user_prompt_classification`、无中英文追问模式匹配、无 `clarif*` / `intentDetect` 类机制
-
-**对设计的影响**：
-
-- §5.4 决策日志 schema 里 `user_prompt_classification: 'query' | 'action' | 'analysis'` 字段**没有数据源**——既不能从现有 PromptSuggestionEvent 推导，也不能从 ChatRecord 读出
-- §5.2 "用户追问'再详细些'频次" 监控信号同上，**最接近的现有锚点 `followupState.onOutcome` 不可复用**
-
-**建议修正**：
-
-- §3.2 前置条件中追加"用户输入分类器最小实现"（中英文模式匹配，~3d），否则 §5.4 决策日志的 `user_prompt_classification` 与 `requestImpliesFurtherAction` 都缺数据
-- 或者**接受**在 Phase 3a dogfood 阶段没有这两个信号，仅靠 `fallback_triggered` 率监控质量回归——成本低但风险高
-
-### 6.5 发现 4：D4 设计内在矛盾——allowlist 与收益归因不对齐（影响 D4 / §3.4）
-
-**事实**：
-
-- `Kind.Read`（read_file）、`Kind.Search`（glob / grep）、`Kind.Fetch`（web_fetch）三类工具的 `shouldConfirmExecute` / `getConfirmationDetails`，**绝大多数继承 `BaseToolInvocation` 默认实现，做零 IO**（read_file / glob / grep 完全没 override，web_fetch 只做 5-10 行字符串解析 URL hostname）
-- 真正有 IO 的是 `Edit` / `WriteFile`（`calculateEdit` + `readTextFile` + `Diff.createPatch`，典型 ~20ms），但 §3.4 方案 A 把它们排除出 allowlist 以规避 TOCTOU
-- **结果**：留在 allowlist 里的三类工具，prevalidate 与不 prevalidate 工作量基本相同——allowlist 实际拦截的是"唯一有 IO 可省的 Edit"，留下"本来就零成本的工具"
-
-**对设计的影响**：
-
-- §3.4 的"前置 IO 验证"叙事**不成立**：50-100ms 收益的真正来源是 **"stream 完全结束 → 才批量 schedule" 这段调度等待被消除**，与工具端 IO 几乎无关
-- 收益归因错误会带来两个问题：
-  1. **allowlist 可以更宽**——凡是 idempotent prevalidate 的工具都行，不必绑定 `CONCURRENCY_SAFE_KINDS`
-  2. **5-7d 投入难以自洽**——如果真实收益只有调度模型改变的 ~50ms，Edit 又不在 allowlist 里，这笔投入的 ROI 比设计文档暗示的低
-
-**建议修正**：§3.4 重写收益归因——
-
-- 拆分为两部分：(a) 调度模型改变省下的 stream 等待 ~50ms，(b) 工具端 IO 前置可省的工作量 ~0ms（allowlist 内）/ ~20ms（若 Edit 入 allowlist）
-- 在 §4.1 综合评估表里把 D4 RT 收益从 "50-200ms" 改为 "30-80ms（方案 A，主要来自调度模型）/ 100-200ms（方案 B，含 Edit）"
-- 在 §4.2 路线图中把 D4 进一步降级——纯调度模型改造可独立做，不必强行绑定 prevalidate 概念
-
-### 6.6 对路线图的合并影响
-
-| 章节                          | 原估时 | 验证后估时   | 增量来源                                                                                         |
-| ----------------------------- | ------ | ------------ | ------------------------------------------------------------------------------------------------ |
-| D2 §3.2 工作量（§4.1 细分表） | 9d     | **14-16d**   | +2d（发现 1 前置工具改造）+1d（发现 2 turn.ts finally 改造）+3d（发现 3 输入分类器，如取硬路径） |
-| D4 §3.4 综合评估              | 5-7d   | 5-7d（不变） | 工作量不变，但 **RT 收益归因从"工具端 IO"改为"调度模型"**，投入 ROI 下调                         |
-| Phase 3 总时长（§4.2）        | ~3 周  | **~4-5 周**  | D2 工作量上调 + 前置工具改造 PR 单独走 review 周期                                               |
-
-**对原路线图的修正建议**：
-
-1. **保持 D1（P0）和 D3 紧随其后**——本次验证未触及它们的核心假设，ROI 判断不变
-2. **D2 启动条件加严**——把发现 1/2/3 的前置工作（共 ~6d）作为 "D2 启动 gate"，未完成不进入 §3.2 前置实验
-3. **D4 重新评估优先级**——既然真实收益是调度模型改变而非工具端 IO，要么 (a) 接受 30-80ms 把 D4 降到 P3 后置，要么 (b) 考虑方案 B（Edit + mtime/hash）拿回 100-200ms 但额外 5-7d
-4. **不修改 §1.2 单次采样基线**——但 §5.1 P95 一栏在 D1 落地、补完 ≥3 类场景基线之前不写具体数字
-
-### 6.7 验证未覆盖的追问点
-
-以下追问点属于主观判断或作者意图问题，本次验证未通过 subagent 处理，留作后续 design review 讨论：
-
-- D2 实施次序应否后置于 D3（主观次序）
-- D1/D3 是否应合并到 Phase 1 一起做（实施策略）
-- §3.2 `needsCrossResultReasoning` 阈值 ≥3 是否反向拟合 §1.2 基线场景（作者意图）
-- §5.7 关键代码位置表的行号锚点是否应改为符号锚点（文档稳定性）
+| File                                                  | Key Symbol                                                    | Location                 |
+| ----------------------------------------------------- | ------------------------------------------------------------- | ------------------------ |
+| `packages/core/src/tools/tools.ts`                    | `ToolResult` interface                                        | L422                     |
+| `packages/core/src/tools/tools.ts`                    | `Kind` enum + `MUTATOR_KINDS` + `CONCURRENCY_SAFE_KINDS`      | L793, L806, L818         |
+| `packages/core/src/tools/tools.ts`                    | `DeclarativeTool.kind: Kind` (every Tool instance carries it) | L165                     |
+| `packages/core/src/core/client.ts`                    | `SendMessageOptions.modelOverride`                            | L142                     |
+| `packages/core/src/core/client.ts`                    | `sendMessageStream`                                           | L1216                    |
+| `packages/core/src/core/client.ts`                    | `modelOverride ?? getModel()`                                 | L1305, L1598             |
+| `packages/core/src/core/client.ts`                    | `turn.run(model, …)`                                          | L1707                    |
+| `packages/core/src/core/geminiChat.ts`                | `sendMessageStream(model, …)`                                 | L1387                    |
+| `packages/core/src/core/geminiChat.ts`                | `history.push(userContent)`                                   | L1428                    |
+| `packages/core/src/core/geminiChat.ts`                | `sendPromise` lock                                            | L1392                    |
+| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `modelOverrideRef` (skill model selection)                    | L376, L2225              |
+| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `processGeminiStreamEvents`                                   | L1365                    |
+| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `sendMessageStream` call site                                 | L1841                    |
+| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `handleCompletedTools`                                        | L2038                    |
+| `packages/cli/src/ui/hooks/useGeminiStream.ts`        | `submitQuery(ToolResult, …)`                                  | L2355                    |
+| `packages/core/src/services/toolUseSummary.ts`        | fast-model side query (non-streaming precedent)               | L108                     |
+| `packages/core/src/followup/speculation.ts`           | fast-model streaming (forked-chat precedent)                  | L224                     |
+| `packages/core/src/config/config.ts`                  | `fastModel` + `getFastModel` + `setFastModel`                 | L684, L1987, L2021       |
+| `packages/core/src/core/coreToolScheduler.ts`         | `attemptExecutionOfScheduledCalls`                            | L2436                    |
+| `packages/core/src/core/coreToolScheduler.ts`         | `runConcurrently` + `partitionToolCalls`                      | L2473                    |
+| `packages/cli/src/acp-integration/session/Session.ts` | `sendMessageStream` call site (ACP / IDE path)                | L705, L965, L1182, L1423 |
+| `packages/core/src/agents/runtime/agent-core.ts`      | Subagent `sendMessageStream` (unaffected by D2)               | L614                     |
 
 ---
 
-## 7. 浮油评估与下一步（2026-05-26 二次 review）
+## 6. Review Validation Record (2026-05-26)
 
-### 7.1 触发本次重排的事实
+### 6.1 Validation Method
 
-§6 验证之后，又发现两个**改变 ROI 判断的事实**：
+For the few upstream data-quality assumptions and benefit estimates in the design doc that are **only asserted, not quantified**, we launched 4 parallel Explore subagents to do read-only code investigation. Each subagent answers only one factual question, makes no judgments, and gives no optimization advice. The investigation is based on the current `main` branch (HEAD: `026f2f768`).
 
-1. **DashScope `cache_control` 已实装**（`packages/core/src/core/openaiContentGenerator/provider/dashscope.ts:172-181`）
-   - streaming 请求标记 `system + 最后一条 message + 最后一个 tool definition`
-   - 命中数据 `cached_tokens` 已采集到 `usageMetadata.cachedContentTokenCount`（`converter.ts:1124-1149`）
-   - 这是 prefix cache 机制：Round N+1 自动命中 Round N 写入的前缀
-   - **summary 轮恰好是命中前缀最长的一轮**
+| Validation Question                                                                    | Related Section                                |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Q3 The fill rate of the `ToolResult.error` field across all current tools              | §3.2 `hasUnresolvedError` upstream dependency  |
+| Q4 The actual availability of `usageMetadata` after a stream abort                     | §5.4 `fast_tokens_consumed` measurement        |
+| Q5 The existence of "user follow-up / clarification" instrumentation                   | §5.2 fast quality-regression monitoring signal |
+| Q6 The actual IO workload of `shouldConfirmExecute` for `CONCURRENCY_SAFE_KINDS` tools | §3.4 D4 benefit estimate                       |
 
-2. **system prompt 已经稳态**（`prompts.ts` 审计结果）
-   - 没有 cwd / timestamp / git status / 文件列表 / LSP 状态等"每 turn 都变"的硬伤
-   - `process.cwd()` 仅用作 `isGitRepository()` 开关，不写入 prompt 内容
-   - 唯一动态点：`save_memory` 工具触发 / `/model` 切换 / MCP 动态加载（均事件性，低频）
+### 6.2 Finding 1: The `hasUnresolvedError` Heuristic Has a 32% Tool Blind Spot (Affects D2)
 
-### 7.2 这两条事实改变了 D2 的 ROI 判断
+**Fact**: among the 22 tools with error paths, **15 (68%) properly fill the `ToolResult.error` field** (the core I/O tools—shell, read-file, write-file, edit, grep, glob, ls, web-fetch, mcp-tool, cron-\*, etc.—are all in place), and **7 (32%) only stuff the error into the `llmContent` string**: `askUserQuestion`, `monitor`, `skill`, `lsp`, `exitPlanMode`, `todoWrite`, etc.
 
-§3.2 文档假设 "fast model 比 primary 快 ~2s"，对照基线是 **primary uncached vs fast uncached**。
+There is **no** unified `createErrorResult` helper; each tool implements error construction independently.
 
-但现实运行中 primary 是 **cached**（summary 轮恰好命中最强），所以正确对照是：
+**Impact on the design**:
+
+- If §3.2's `hasUnresolvedError` veto only checks the `ToolResult.error` field, **failures of these 7 tools will never trigger a "switch back to primary"**—the next round will still be routed to the fast model
+- Among them, the **`skill` tool's failure being wrongly summarized by the fast model** is a high-priority risk scenario (the many skill-driven workflows in this repo would be affected)
+- §3.2's listed "shell etc. must correctly fill ToolResult.error (an upstream data-quality dependency)" has **too narrow a scope**; shell is actually already proper, and the real under-reporters are skill / lsp / todoWrite etc.
+
+**Recommended revision**: list "**convert the 7 tools that pass errors only via `llmContent` to properly fill the `error` field**" as a hard upstream dependency of D2 (§3.2 prerequisites), estimated at ~2d; do not accept the dirty path of "fall back to `llmContent.match(/^Error:/i)`" (high misjudgment risk).
+
+### 6.3 Finding 2: The Implementation Cost of the `fast_tokens_consumed` Metric Was Underestimated (Affects D2 / §5.3)
+
+**Fact**:
+
+- `turn.ts`'s abort path (L289-291) `return`s directly, **with no finally block and no `stream.return()` call**—the "before aborting, `stream.return()` to let the generator take the finally path" implied by doc §5.4 has no such entry point in the current code
+- `geminiChat.ts:processStreamResponse`'s `for await` loop records the turn only on a complete traversal (L1286); an abort interruption means the final usage-only chunk (usually carrying complete metadata) is **discarded directly**
+- The main chat path has **no chunk-level token-accumulation fallback whatsoever**; only the subagent layer (`agent.ts:731-744`) has accumulation, which cannot be reused
+- Conclusion: on abort, `usageMetadata` is **obtained zero times**; one can only estimate via `chars/4` (±20% error)
+
+**Impact on the design**:
+
+- In §5.4's "preferred / fallback / tagging" three-tier approach, **the "preferred" path is unreachable in the current code**—it first requires changing the `sendMessageStream` generator structure to add a finally, an effort of about 1d that the design doc does not reflect
+- §5.3 lists "token cost per thousand sessions <70%" as a Phase 3 target, but if the metric itself has ±20% error, **"70%" and "82%" fall within measurement noise**
+
+**Recommended revision**:
+
+- Rewrite §5.3 as a **trend metric**, not a release gate; switch to a joint judgment of the decision log's "`fallback_triggered` rate + `fast_tokens_consumed` co-trend" two metrics
+- Add to §5.4: implementing `fast_tokens_consumed` first requires modifying the turn.ts abort path to add finally + `stream.return()`, as a supplement to the §3.2 effort (+1d)
+
+### 6.4 Finding 3: The `user_prompt_classification` and "User Follow-up" Instrumentation Need to Be Newly Built (Affects D2 / §5.2)
+
+**Fact**:
+
+- `packages/core/src/followup/` already has `speculation.ts` / `suggestionGenerator.ts` / `followupState.ts`, but its telemetry (`PromptSuggestionEvent`) records **"a system suggestion being accepted/ignored"**, not "a user actively following up"
+- `ChatRecordingService` stores user messages but **does not attach classification labels**
+- A whole-repo grep finds no `user_prompt_classification`, no Chinese/English follow-up pattern matching, and no `clarif*` / `intentDetect`-type mechanism
+
+**Impact on the design**:
+
+- The `user_prompt_classification: 'query' | 'action' | 'analysis'` field in the §5.4 decision-log schema **has no data source**—it can neither be derived from the existing PromptSuggestionEvent nor read from the ChatRecord
+- The §5.2 "frequency of users asking 'more detail'" monitoring signal is the same; **the closest existing anchor, `followupState.onOutcome`, is not reusable**
+
+**Recommended revision**:
+
+- Add "a minimal user-input classifier implementation" (Chinese/English pattern matching, ~3d) to the §3.2 prerequisites, otherwise both `user_prompt_classification` and `requestImpliesFurtherAction` in the §5.4 decision log lack data
+- Or **accept** not having these two signals during the Phase 3a dogfood stage, relying only on the `fallback_triggered` rate to monitor quality regression—low cost but high risk
+
+### 6.5 Finding 4: An Inherent Contradiction in the D4 Design—the allowlist and Benefit Attribution Are Misaligned (Affects D4 / §3.4)
+
+**Fact**:
+
+- For the three tool classes `Kind.Read` (read_file), `Kind.Search` (glob / grep), and `Kind.Fetch` (web_fetch), `shouldConfirmExecute` / `getConfirmationDetails` **mostly inherit the `BaseToolInvocation` default implementation and do zero IO** (read_file / glob / grep have no override at all; web_fetch only does a 5-10 line string parse of the URL hostname)
+- The ones that actually do IO are `Edit` / `WriteFile` (`calculateEdit` + `readTextFile` + `Diff.createPatch`, typically ~20ms), but §3.4 approach A excludes them from the allowlist to avoid TOCTOU
+- **Result**: for the three tool classes left in the allowlist, prevalidate and not-prevalidate are essentially the same amount of work—the allowlist actually filters out "the only Edit that has IO to save" and keeps "tools that were zero-cost to begin with"
+
+**Impact on the design**:
+
+- §3.4's "upfront IO validation" narrative **does not hold**: the real source of the 50-100ms benefit is **the elimination of the scheduling wait of "stream fully ends → only then batch-schedule"**, which has almost nothing to do with tool-side IO
+- Wrong benefit attribution brings two problems:
+  1. **the allowlist can be wider**—any tool with an idempotent prevalidate works; it need not be bound to `CONCURRENCY_SAFE_KINDS`
+  2. **the 5-7d investment is hard to justify**—if the real benefit is only the ~50ms from changing the scheduling model, and Edit is not in the allowlist, the ROI of this investment is lower than the design doc implies
+
+**Recommended revision**: rewrite §3.4's benefit attribution—
+
+- Split into two parts: (a) the stream wait saved by changing the scheduling model ~50ms, (b) the work that tool-side IO prefetch can save ~0ms (within the allowlist) / ~20ms (if Edit enters the allowlist)
+- In the §4.1 overall-assessment table, change D4's RT benefit from "50-200ms" to "30-80ms (approach A, mainly from the scheduling model) / 100-200ms (approach B, including Edit)"
+- In the §4.2 roadmap, further demote D4—the pure scheduling-model change can be done independently and need not be forcibly bound to the prevalidate concept
+
+### 6.6 Combined Impact on the Roadmap
+
+| Section                               | Original Estimate | Post-Validation Estimate | Increment Source                                                                                                                          |
+| ------------------------------------- | ----------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| D2 §3.2 effort (§4.1 breakdown table) | 9d                | **14-16d**               | +2d (Finding 1 upstream tool conversion) +1d (Finding 2 turn.ts finally change) +3d (Finding 3 input classifier, if taking the hard path) |
+| D4 §3.4 overall assessment            | 5-7d              | 5-7d (unchanged)         | Effort unchanged, but the **RT benefit attribution changes from "tool-side IO" to "scheduling model"**, lowering the investment ROI       |
+| Phase 3 total duration (§4.2)         | ~3 weeks          | **~4-5 weeks**           | D2 effort increased + the upstream tool-conversion PR goes through its own review cycle                                                   |
+
+**Recommended revisions to the original roadmap**:
+
+1. **Keep D1 (P0) and D3 right after it**—this validation did not touch their core assumptions, the ROI judgment is unchanged
+2. **Tighten D2's start condition**—make the upstream work of Findings 1/2/3 (about ~6d total) a "D2 start gate"; do not enter the §3.2 upstream experiment until it is complete
+3. **Re-evaluate D4's priority**—since the real benefit is the scheduling-model change rather than tool-side IO, either (a) accept 30-80ms and demote D4 to P3 deferred, or (b) consider approach B (Edit + mtime/hash) to reclaim 100-200ms at an extra 5-7d
+4. **Do not modify the §1.2 single-sample baseline**—but do not write a concrete number in the §5.1 P95 column until D1 lands and the ≥3 scenario-class baselines are completed
+
+### 6.7 Follow-up Points Not Covered by Validation
+
+The following follow-up points are subjective judgments or author-intent questions, not handled by subagents in this validation, and are left for later design review:
+
+- Whether D2's implementation order should follow D3 (subjective ordering)
+- Whether D1/D3 should be merged into Phase 1 and done together (implementation strategy)
+- Whether the §3.2 `needsCrossResultReasoning` threshold of ≥3 is reverse-fitted to the §1.2 baseline scenario (author intent)
+- Whether the line-number anchors in the §5.7 key-code-location table should be changed to symbol anchors (doc stability)
+
+---
+
+## 7. Skimmable-Wins Assessment and Next Steps (2026-05-26 second review)
+
+### 7.1 The Facts That Triggered This Reprioritization
+
+After the §6 validation, two more **facts that change the ROI judgment** were found:
+
+1. **DashScope `cache_control` is already implemented** (`packages/core/src/core/openaiContentGenerator/provider/dashscope.ts:172-181`)
+   - Streaming requests tag `system + the last message + the last tool definition`
+   - The hit data `cached_tokens` is already collected into `usageMetadata.cachedContentTokenCount` (`converter.ts:1124-1149`)
+   - This is a prefix-cache mechanism: Round N+1 automatically hits the prefix written by Round N
+   - **The summary round happens to be the round with the longest hit prefix**
+
+2. **The system prompt is already steady-state** (`prompts.ts` audit result)
+   - There are no "changes every turn" liabilities like cwd / timestamp / git status / file list / LSP state
+   - `process.cwd()` is only used as an `isGitRepository()` switch and is not written into the prompt content
+   - The only dynamic points: `save_memory` tool triggers / `/model` switch / MCP dynamic loading (all event-driven, low-frequency)
+
+### 7.2 These Two Facts Change D2's ROI Judgment
+
+The §3.2 doc assumes "the fast model is ~2s faster than primary", with the baseline being **primary uncached vs fast uncached**.
+
+But in real-world operation primary is **cached** (the summary round hits the strongest), so the correct comparison is:
 
 > primary cached vs fast uncached
 
-| 路由                          | 估算延迟  | 备注                     |
-| ----------------------------- | --------- | ------------------------ |
-| primary 命中 80% 前缀 cache   | ~1.8-2.2s | summary 轮的当前实际表现 |
-| fast 无 cache（跨模型不共享） | ~1.5-2s   | D2 切换后的实际表现      |
+| Routing                                | Estimated Latency | Notes                                          |
+| -------------------------------------- | ----------------- | ---------------------------------------------- |
+| primary hits 80% prefix cache          | ~1.8-2.2s         | the summary round's current actual performance |
+| fast no cache (not shared cross-model) | ~1.5-2s           | the actual performance after D2 switches       |
 
-**净差距：几百毫秒，甚至可能 fast 反而慢**。叠加 14-16d 工程成本 + 质量风险 + fallback 浪费，**D2 净收益接近 0 或负**。
+**Net gap: a few hundred milliseconds, or fast might even be slower**. Stacked on top of 14-16d of engineering cost + quality risk + fallback waste, **D2's net benefit approaches 0 or is negative**.
 
-§3.2 前置条件**必须新增**：基线测量必须对比 primary **cached** vs fast **uncached**，且 `T_primary_cached < T_fast_uncached × 1.5` 时 D2 不应启用。
+The §3.2 prerequisites **must add**: the baseline measurement must compare primary **cached** vs fast **uncached**, and D2 should not be enabled when `T_primary_cached < T_fast_uncached × 1.5`.
 
-### 7.3 候选清单（按浮油性重排）
+### 7.3 Candidate List (Reordered by Skimmability)
 
-**真·浮油（立刻动手，< 1d 投入，极低风险，确定收益）**：
+**True skimmable wins (act immediately, < 1d investment, very low risk, certain benefit)**:
 
-| 项                            | 投入  | 收益                              | 操作位置                                                                    |
-| ----------------------------- | ----- | --------------------------------- | --------------------------------------------------------------------------- |
-| 简洁回复指令                  | 30min | ~2s/summary 轮（输出 token 减半） | `prompts.ts` Final Reminder 段加一句                                        |
-| 暴露 cache hit rate telemetry | 0.5d  | 0s 直接，是后续决策 **enabler**   | `cachedContentTokenCount` 已采集，缺暴露；并应识别 `save_memory` 后单独打标 |
+| Item                            | Investment | Benefit                                         | Operation Location                                                                                                      |
+| ------------------------------- | ---------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Concise-reply instruction       | 30min      | ~2s/summary round (output tokens halved)        | Add a sentence to the `prompts.ts` Final Reminder section                                                               |
+| Expose cache hit rate telemetry | 0.5d       | 0s directly, an **enabler** for later decisions | `cachedContentTokenCount` is already collected, just unexposed; and should tag the round after `save_memory` separately |
 
-**近浮油（等数据决定，0.5-1d 投入）**：
+**Near-skimmable (decide based on data, 0.5-1d investment)**:
 
-| 项                              | 投入                  | 收益                                    | 决策前置                                                              |
-| ------------------------------- | --------------------- | --------------------------------------- | --------------------------------------------------------------------- |
-| summary 轮 `tool_choice='none'` | 0.5-1d                | 0.3-1s（sampling 跳过 tool_call token） | 需"是 summary 轮"判定逻辑，错判风险低                                 |
-| summary 轮关 thinking           | 1d                    | 0.5-2s                                  | 仅对启用 thinking 的模型有意义（qwen3.5-plus、glm-4.7、kimi-k2.5 等） |
-| UI 渲染层 chunk batching        | 0.5d 调研 + 0.5d 实施 | 待验证                                  | 假设：长 summary 的 `useGeminiStream` token 渲染累计开销不小          |
+| Item                               | Investment                          | Benefit                                  | Decision Prerequisite                                                                               |
+| ---------------------------------- | ----------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| summary round `tool_choice='none'` | 0.5-1d                              | 0.3-1s (sampling skips tool_call tokens) | Needs "is this a summary round" judgment logic; low misjudgment risk                                |
+| summary round thinking off         | 1d                                  | 0.5-2s                                   | Only meaningful for thinking-enabled models (qwen3.5-plus, glm-4.7, kimi-k2.5, etc.)                |
+| UI rendering-layer chunk batching  | 0.5d research + 0.5d implementation | pending validation                       | Hypothesis: the `useGeminiStream` token-render accumulation overhead of long summaries is not small |
 
-**待调研（可能是大鱼）**：
+**To be investigated (might be a big fish)**:
 
-| 项                                   | 调研投入                 | 潜在收益            | 关键未知                                                                                   |
-| ------------------------------------ | ------------------------ | ------------------- | ------------------------------------------------------------------------------------------ |
-| ~~DashScope `scope: 'global'` 支持~~ | ~~0.5d 文档 + 0.5d A/B~~ | ~~跨 session 命中~~ | **已调研，结论 (c) 不可行**（见 §7.4 发现 B 调研结果）。此行保留作为决策记录，不要重启调研 |
+| Item                                    | Research Investment      | Potential Benefit     | Key Unknown                                                                                                                                                          |
+| --------------------------------------- | ------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ~~DashScope `scope: 'global'` support~~ | ~~0.5d docs + 0.5d A/B~~ | ~~cross-session hit~~ | **Investigated, conclusion (c) not feasible** (see the §7.4 Finding B investigation result). This row is kept as a decision record; do not restart the investigation |
 
-**中等改造（不算浮油，单独评估）**：
+**Medium-scale changes (not skimmable wins, evaluated separately)**:
 
-| 项                                | 投入             | 风险 | 收益        |
-| --------------------------------- | ---------------- | ---- | ----------- |
-| D1 `skipLlmRound`（终态查询场景） | 2-3d             | 中   | 3-4s/终态轮 |
-| summary 轮工具结果裁剪（D5 子集） | 2d               | 中   | 1-2s        |
-| D3 `Summarizing` 状态             | 3-5d             | 中   | 感知改善 3s |
-| system prompt 减肥                | 2-3d 含 A/B 测试 | 中   | 0.5-1s      |
+| Item                                           | Investment          | Risk   | Benefit                  |
+| ---------------------------------------------- | ------------------- | ------ | ------------------------ |
+| D1 `skipLlmRound` (terminal-query scenario)    | 2-3d                | Medium | 3-4s/terminal round      |
+| summary-round tool-result trimming (D5 subset) | 2d                  | Medium | 1-2s                     |
+| D3 `Summarizing` state                         | 3-5d                | Medium | perceived improvement 3s |
+| system prompt slimming                         | 2-3d incl. A/B test | Medium | 0.5-1s                   |
 
-**已废弃方向（不要再做）**：
+**Abandoned directions (do not do again)**:
 
-| 项                                         | 废弃原因                                               |
-| ------------------------------------------ | ------------------------------------------------------ |
-| D2 fast model 路由                         | 被 DashScope cache 抵消，净收益接近 0 或负             |
-| D4 prevalidate                             | 收益归因错（真实仅 ~50ms 来自调度模型），5-7d 投入不值 |
-| system prompt 稳定化                       | 已稳态，无事可做                                       |
-| 流式提前 terminal（提前 abort 收尾客套话） | 高误判风险，用户感知答案被切断                         |
+| Item                                                         | Reason for Abandonment                                                                               |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| D2 fast model routing                                        | Offset by the DashScope cache; net benefit approaches 0 or negative                                  |
+| D4 prevalidate                                               | Benefit misattributed (the real ~50ms comes from the scheduling model), 5-7d investment not worth it |
+| system prompt stabilization                                  | Already steady-state, nothing to do                                                                  |
+| stream-ahead terminal (abort the wrap-up pleasantries early) | High misjudgment risk; the user perceives the answer being cut off                                   |
 
-### 7.4 三个值得展开的新发现
+### 7.4 Three New Findings Worth Expanding On
 
-#### 发现 A：`tool_choice='none'` 的真实机制
+#### Finding A: The Real Mechanism of `tool_choice='none'`
 
-OpenAI / DashScope API 里 `tool_choice='none'` 不仅是"禁止调工具"——模型 sampling 阶段会**完全跳过 `<tool_call>` 特殊 token 的概率分配**，decoder 直接走自然语言生成路径。收益不在"省一两次 retry"，而在 sampling 本身更快。
+In the OpenAI / DashScope API, `tool_choice='none'` is not just "forbid calling tools"—the model's sampling stage will **completely skip the probability allocation for the `<tool_call>` special tokens**, and the decoder goes straight down the natural-language generation path. The benefit is not in "saving one or two retries" but in the sampling itself being faster.
 
-#### 发现 B：`scope: 'global'` 在仓库已有 Anthropic 先例
+#### Finding B: `scope: 'global'` Already Has an Anthropic Precedent in the Repo
 
-`packages/core/src/core/anthropicContentGenerator/converter.test.ts:85, 1543` 已有 `cache_control: { type: 'ephemeral', scope: 'global' }` 用法。但 `provider/dashscope.ts:288` 标 cache_control 时**没传 scope**：
+`packages/core/src/core/anthropicContentGenerator/converter.test.ts:85, 1543` already uses `cache_control: { type: 'ephemeral', scope: 'global' }`. But when `provider/dashscope.ts:288` tags cache_control, it **does not pass scope**:
 
 ```typescript
-cache_control: { type: 'ephemeral' },   // 没有 scope
+cache_control: { type: 'ephemeral' },   // no scope
 ```
 
-若 DashScope 服务端识别 `scope: 'global'`：
+If the DashScope server recognized `scope: 'global'`:
 
-- system + tools 升级为 global cache（TTL 远大于 ephemeral 的 5min）
-- **跨 session 命中**，启动延迟也降
-- 单这一条收益可能超过原 D2 全部假设收益
+- system + tools would be upgraded to a global cache (TTL far larger than ephemeral's 5min)
+- **cross-session hits**, and startup latency drops too
+- This one thing alone might yield more benefit than all of D2's original assumed benefit
 
-##### 调研结果（2026-05-26，结论：(c) 不可行，关闭此线）
+##### Investigation Result (2026-05-26, conclusion: (c) not feasible, closing this thread)
 
-通过查阿里云百炼官方文档 `help.aliyun.com/zh/model-studio/context-cache` 得到的事实清单：
+The fact list obtained by consulting the Alibaba Cloud Bailian official docs `help.aliyun.com/zh/model-studio/context-cache`:
 
-| 问题                   | 结论                                                                                                                                                                                               | 证据                                               |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `scope` 字段支持       | **不支持**。仅识别 `type: 'ephemeral'`，任何 `scope`/`persistent`/`global` 会被 silently dropped                                                                                                   | 官方文档原文："仅支持将 `type` 设置为 `ephemeral`" |
-| ephemeral 实际 TTL     | **5 分钟滑动窗口**（命中后重置）                                                                                                                                                                   | 百炼文档明确说明                                   |
-| 长 TTL / 全局机制      | **无任何公有云 API 端机制**。无 `persistent` type 值、无独立预上传 API、无 `prompt_cache_key`；唯一"全局持久"产品是 PAI 全局上下文缓存（自部署 + vLLM + 灵骏 + 共享 Redis），与 DashScope API 无关 | PAI 文档                                           |
-| 跨 session 共享        | 同账号 + 同模型 + 内容匹配 → 已经命中（这就是 `ephemeral` 已经在做的）；不同账号绝对不共享                                                                                                         | 百炼文档                                           |
-| 定价                   | cache write 125%、显式 cache read 10%、**隐式 cache read 20%**（无 `cache_control` 标记也能拿到隐式 20% 折扣）                                                                                     | 百炼定价文档                                       |
-| 最小可缓存 prompt      | **1024 tokens**                                                                                                                                                                                    | 百炼文档                                           |
-| 模型支持（显式 cache） | qwen3.7-max / qwen3.6-plus / qwen3.5-plus / qwen3-coder-plus / qwen3-vl-plus / deepseek-v3.2 / kimi-k2.5 / glm-5.1 均显式列出。**qwen3.6-plus 与 qwen3.7-max 同样享受 90% 显式 cache 折扣**        | 百炼模型列表（2026-05-26 重核）                    |
+| Question                       | Conclusion                                                                                                                                                                                                                                                                     | Evidence                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `scope` field support          | **Not supported**. Only `type: 'ephemeral'` is recognized; any `scope`/`persistent`/`global` is silently dropped                                                                                                                                                               | Official doc verbatim: "only supports setting `type` to `ephemeral`" |
+| ephemeral actual TTL           | **5-minute sliding window** (reset on hit)                                                                                                                                                                                                                                     | Stated explicitly in the Bailian docs                                |
+| long-TTL / global mechanism    | **No public-cloud API-side mechanism at all**. No `persistent` type value, no separate pre-upload API, no `prompt_cache_key`; the only "global persistent" product is PAI Global Context Cache (self-deployed + vLLM + Lingjun + shared Redis), unrelated to the DashScope API | PAI docs                                                             |
+| cross-session sharing          | Same account + same model + content match → already hits (this is what `ephemeral` already does); different accounts never share                                                                                                                                               | Bailian docs                                                         |
+| Pricing                        | cache write 125%, explicit cache read 10%, **implicit cache read 20%** (you get the implicit 20% discount even without a `cache_control` tag)                                                                                                                                  | Bailian pricing docs                                                 |
+| Minimum cacheable prompt       | **1024 tokens**                                                                                                                                                                                                                                                                | Bailian docs                                                         |
+| Model support (explicit cache) | qwen3.7-max / qwen3.6-plus / qwen3.5-plus / qwen3-coder-plus / qwen3-vl-plus / deepseek-v3.2 / kimi-k2.5 / glm-5.1 are all explicitly listed. **qwen3.6-plus and qwen3.7-max also enjoy the 90% explicit-cache discount**                                                      | Bailian model list (re-verified 2026-05-26)                          |
 
-**几条副发现的连带意义**：
+**The knock-on significance of several side findings**:
 
-1. **TTL 滑动窗口** 对 agent loop 是好消息——loop 内连续调用间隔通常 < 30s，**cache 永远新鲜，不会 5min 失效**
-2. **隐式 cache 20% 折扣** 是免费红利——即使没标 `cache_control` 也能拿；但精细控制需要显式
-3. ~~`qwen3.6-plus` 未在显式列表~~ —— **更正（2026-05-26）**：经重核，qwen3.6-plus **确实在显式 cache 列表里**，享受 90% 折扣。前一轮报告此处错误，已于本节首张表更正
-4. **`dashscope.ts:288` 当前做法已经是 DashScope 公有云 API 的能力上限**——没有继续榨的空间
+1. **The sliding-window TTL** is good news for the agent loop—consecutive calls within a loop are usually <30s apart, so the **cache is always fresh and will not expire after 5min**
+2. **The implicit cache 20% discount** is a free bonus—you get it even without a `cache_control` tag; but fine-grained control requires being explicit
+3. ~~`qwen3.6-plus` not in the explicit list~~ —— **correction (2026-05-26)**: on re-verification, qwen3.6-plus **is indeed in the explicit-cache list** and enjoys the 90% discount. The previous round's report was wrong here and has been corrected in this section's first table
+4. **The current approach in `dashscope.ts:288` is already the capability ceiling of the DashScope public-cloud API**—there is no room to squeeze further
 
-**对 §7.2 D2 判断的连带加强**：
+**The knock-on reinforcement of the §7.2 D2 judgment**:
 
-TTL 滑动窗口意味着 agent loop 内 summary 轮**几乎 100% 命中** primary 的 cache（前几轮刚刚命中过、5min 内）。D2 切 fast model 不仅会打碎累计的 cache 写入链，**还会让 summary 轮从"近 100% 命中"退化为"完全 miss"**——净收益判断比 §7.2 原假设更明确为负。
+The sliding-window TTL means that within the agent loop the summary round **hits primary's cache almost 100%** (the previous rounds just hit it, within 5min). D2 switching to the fast model not only shatters the accumulated cache-write chain, but **also degrades the summary round from "nearly 100% hit" to "complete miss"**—the net-benefit judgment is even more clearly negative than the §7.2 original assumption.
 
-#### 发现 C：UI 渲染层是被忽视的盲区
+#### Finding C: The UI Rendering Layer Is an Overlooked Blind Spot
 
-§1.2 基线把"框架开销"标为 0.3s（3%），但这是粗估。Ink 7 + React 19.2 在每个 chunk 触发 setState → re-render，长 summary 累计可能 200-500ms。需要查 `useGeminiStream` 怎么处理 token 流，有没有 `requestAnimationFrame` / `useDeferredValue` 合并 chunk。
+The §1.2 baseline labels "framework overhead" as 0.3s (3%), but this is a rough estimate. Ink 7 + React 19.2 triggers setState → re-render on every chunk; for a long summary the accumulation may be 200-500ms. We need to check how `useGeminiStream` handles the token stream and whether it merges chunks with `requestAnimationFrame` / `useDeferredValue`.
 
-### 7.5 待数据 checkpoint —— 数据到了该看哪个决策
+### 7.5 Pending-Data Checkpoints — When Data Arrives, Which Decision to Look At
 
-本节是**这份文档的活动入口**：后续有任何度量数据，对照下表决定该回看哪个决策。
+This section is **the active entry point of this document**: whenever any measurement data later arrives, consult the table below to decide which decision to revisit.
 
-#### Checkpoint 1：cache hit rate 数据出来后
+#### Checkpoint 1: After the cache hit rate data is out
 
-**触发条件**：浮油"暴露 cache hit rate telemetry"上线 ≥3 天，决策日志含 `cached_tokens` / `prompt_tokens` 分布。
+**Trigger condition**: the "expose cache hit rate telemetry" skimmable win has been live ≥3 days and the decision log contains the `cached_tokens` / `prompt_tokens` distribution.
 
-**该看的数据**：
+**Data to look at**:
 
-- 整体命中率（cached / prompt）的 P50、P90 分布
-- 按轮次划分：Round 1 / Round 2 / Round 3 (summary) 各自命中率
-- `save_memory` 触发后下一轮命中率（应该接近 0）
-- `/model` 切换后下一轮命中率（应该接近 0）
+- The P50, P90 distribution of the overall hit rate (cached / prompt)
+- By round: the hit rate of Round 1 / Round 2 / Round 3 (summary) each
+- The hit rate of the round following a `save_memory` trigger (should be near 0)
+- The hit rate of the round following a `/model` switch (should be near 0)
 
-**决策路径**：
+**Decision paths**:
 
-| 整体命中率 | 含义                 | 行动                                                                        |
-| ---------- | -------------------- | --------------------------------------------------------------------------- |
-| > 70%      | 现状已经接近理论上限 | 只做 #1 简洁指令 + 发现 B 调研；其余浮油按需                                |
-| 40-70%     | 还有空间但来源不明   | 分析按轮次命中率，找出哪一段在 miss                                         |
-| < 40%      | 有动态点在打 cache   | 重新审计 system prompt / userMemory 触发频率；可能 `save_memory` 比预期频繁 |
+| Overall Hit Rate | Meaning                                                | Action                                                                                                      |
+| ---------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| > 70%            | the status quo is already near the theoretical ceiling | Only do #1 concise instruction + Finding B investigation; the rest as needed                                |
+| 40-70%           | there is still room but the source is unclear          | Analyze the per-round hit rate to find which segment is missing                                             |
+| < 40%            | something dynamic is busting the cache                 | Re-audit the system prompt / userMemory trigger frequency; `save_memory` may be more frequent than expected |
 
-#### Checkpoint 2：DashScope `scope: 'global'` 文档调研结果 ✅ 已完成（2026-05-26）
+#### Checkpoint 2: DashScope `scope: 'global'` doc investigation result ✅ Completed (2026-05-26)
 
-**结果**：**完全不识别**。详见 §7.4 发现 B 的"调研结果"段。
+**Result**: **completely unrecognized**. See the "Investigation Result" paragraph of §7.4 Finding B.
 
-**已执行行动**：接受现状，跳过此项。`dashscope.ts:288` 维持现有 `ephemeral` 标记，无需改造。
+**Action taken**: accept the status quo, skip this item. `dashscope.ts:288` keeps the existing `ephemeral` tag, no change needed.
 
-**后续不要重新启动此调研**——除非 DashScope 官方公告新增持久化机制。
+**Do not restart this investigation later**—unless DashScope officially announces a new persistence mechanism.
 
-#### Checkpoint 3：UI 渲染层调研结果
+#### Checkpoint 3: UI Rendering-Layer Investigation Result
 
-**触发条件**：发现 C 调研完成（看 `useGeminiStream` token 流处理 + Ink/React DevTools 实测）。
+**Trigger condition**: Finding C's investigation is complete (look at `useGeminiStream` token-stream handling + Ink/React DevTools measurements).
 
-**决策路径**：
+**Decision paths**:
 
-| 结果                               | 行动                                             |
-| ---------------------------------- | ------------------------------------------------ |
-| 长 summary stream 渲染累计 > 200ms | 改用 batching（`useDeferredValue` 或自定义节流） |
-| 渲染开销 < 100ms                   | 关闭此线索                                       |
+| Result                                          | Action                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------ |
+| Long-summary stream render accumulation > 200ms | Switch to batching (`useDeferredValue` or custom throttling) |
+| Render overhead < 100ms                         | Close this thread                                            |
 
-#### Checkpoint 4：完成"真·浮油"后的二次基线测量
+#### Checkpoint 4: Second Baseline Measurement After Completing the "True Skimmable Wins"
 
-**触发条件**：#1 简洁指令 + Checkpoint 1/2/3 决策完成 ≥1 周。
+**Trigger condition**: #1 concise instruction + Checkpoint 1/2/3 decisions complete ≥1 week.
 
-**该看的数据**：
+**Data to look at**:
 
-- 端到端 RT P50 与 §1.2 单次采样基线（13.4s）对比
-- summary 轮单独的 P50 / P95
-- 用户追问率（如果浮油 A 顺带做了用户输入分类）
+- End-to-end RT P50 compared with the §1.2 single-sample baseline (13.4s)
+- The summary round's standalone P50 / P95
+- User follow-up rate (if skimmable win A incidentally did user-input classification)
 
-**决策路径**：
+**Decision paths**:
 
-| 累计节省                     | 行动                                                                          |
-| ---------------------------- | ----------------------------------------------------------------------------- |
-| > 4s（达到 9.6s 端到端 P50） | 评估 D1 `skipLlmRound`（再省 3-4s/终态轮）                                    |
-| 2-4s                         | 接受现状，评估 D3 感知改善是否值得做                                          |
-| < 2s                         | 重新审视：是否浮油本身被高估，还是有未识别的瓶颈（网络 RTT、provider 端延迟） |
+| Cumulative Savings               | Action                                                                                                                              |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| > 4s (reach 9.6s end-to-end P50) | Evaluate D1 `skipLlmRound` (saves another 3-4s/terminal round)                                                                      |
+| 2-4s                             | Accept the status quo, evaluate whether D3's perceived improvement is worth doing                                                   |
+| < 2s                             | Re-examine: was the skimmable win itself overestimated, or is there an unidentified bottleneck (network RTT, provider-side latency) |
 
-### 7.6 与 §3 各方向的最终判定
+### 7.6 Final Verdict on Each Direction in §3
 
-基于 §6 验证 + 本节 ROI 重排：
+Based on the §6 validation + this section's ROI reprioritization:
 
-| 方向                 | §3 原优先级 | 本节判定                             | 理由                                               |
-| -------------------- | ----------- | ------------------------------------ | -------------------------------------------------- |
-| D1 工具后置指令      | P0          | **P0 保留**，但等浮油完成后再评估    | ROI 仍然好，但不再"立刻就做"——先把更便宜的浮油拿掉 |
-| D2 summary fast 路由 | P1          | **Defer / Won't Fix**                | 被 DashScope cache 抵消，14-16d 投入换接近 0 收益  |
-| D3 展示解耦          | P1          | **保留为可选**，看 Checkpoint 4 数据 | 感知改善确定，但绝对 RT 不变，依赖用户行为         |
-| D4 流式提前调度      | P2          | **Defer**                            | 收益归因错，真实 ~50ms 不值 5-7d                   |
+| Direction                        | §3 Original Priority | This Section's Verdict                                         | Rationale                                                                                          |
+| -------------------------------- | -------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| D1 Tool post-execution directive | P0                   | **Keep P0**, but re-evaluate after the skimmable wins are done | ROI is still good, but no longer "do it immediately"—first take out the cheaper skimmable wins     |
+| D2 summary fast routing          | P1                   | **Defer / Won't Fix**                                          | Offset by the DashScope cache; 14-16d investment for near-0 benefit                                |
+| D3 Presentation decoupling       | P1                   | **Keep as optional**, see Checkpoint 4 data                    | The perceived improvement is certain, but absolute RT is unchanged and it depends on user behavior |
+| D4 Stream-ahead scheduling       | P2                   | **Defer**                                                      | Benefit misattributed; the real ~50ms is not worth 5-7d                                            |
 
-### 7.7 推荐执行顺序
+### 7.7 Recommended Execution Order
 
-**Day 1**（可单人单日完成）：
+**Day 1** (doable by one person in one day):
 
-- ✅ `prompts.ts` 加简洁回复指令（30min）
-- ✅ `cachedContentTokenCount` 暴露到 telemetry + `save_memory` / `/model` 切换打标（0.5d）
-- ✅ 启动发现 B 调研：DashScope `scope: 'global'` 文档查询 + 现有 Anthropic 用法对照（0.5d）
+- ✅ Add the concise-reply instruction to `prompts.ts` (30min)
+- ✅ Expose `cachedContentTokenCount` to telemetry + tag `save_memory` / `/model` switch (0.5d)
+- ✅ Start the Finding B investigation: query the DashScope `scope: 'global'` docs + compare against the existing Anthropic usage (0.5d)
 
-**Day 2-3**：
+**Day 2-3**:
 
-- 收第一批 cache hit rate 数据
-- 启动发现 C 调研：`useGeminiStream` 的 React 渲染路径
-- 根据 Checkpoint 2 决定要不要做 `scope: 'global'` 改造
+- Collect the first batch of cache hit rate data
+- Start the Finding C investigation: the React render path of `useGeminiStream`
+- Decide whether to do the `scope: 'global'` change based on Checkpoint 2
 
-**Week 1 末**：
+**End of Week 1**:
 
-- Checkpoint 1 数据决策（看分布）
-- 决定要不要做 `tool_choice='none'` / 关 thinking（根据 hit rate 数据）
+- Checkpoint 1 data decision (look at the distribution)
+- Decide whether to do `tool_choice='none'` / thinking off (based on the hit rate data)
 
-**Week 2-3**：
+**Week 2-3**:
 
-- Checkpoint 4 二次基线测量
-- 决定是否启动 D1（最大的非浮油项，3-4s/终态轮）
+- Checkpoint 4 second baseline measurement
+- Decide whether to start D1 (the largest non-skimmable item, 3-4s/terminal round)
 
-**始终不做**：D2 / D4 / system prompt 稳定化。
+**Never do**: D2 / D4 / system prompt stabilization.
 
-### 7.8 `prompts.ts` 动态内容审计（2026-05-27）
+### 7.8 `prompts.ts` Dynamic-Content Audit (2026-05-27)
 
-§7.1 给出 "system prompt 已稳态" 的结论时只做了粗略 grep。本节是对 `packages/core/src/core/prompts.ts`（1169 行）的系统性审计，列清单作为后续 cache 命中率分析与浮油决策的依据。
+When §7.1 gave the conclusion "the system prompt is already steady-state", it only did a rough grep. This section is a systematic audit of `packages/core/src/core/prompts.ts` (1169 lines), listing the inventory as the basis for later cache-hit-rate analysis and skimmable-win decisions.
 
-**审计方法**：枚举所有 `${...}` 插值表达式、IIFE、`process.*` / `new Date` / `Date.now` / `Math.random` / `fs.*` 调用，对每一处判断"在同一 session 内是否会变化"。
+**Audit method**: enumerate all `${...}` interpolation expressions, IIFEs, `process.*` / `new Date` / `Date.now` / `Math.random` / `fs.*` calls, and for each, judge "whether it changes within the same session".
 
-#### 完全没有（常被怀疑的硬伤）
+#### Completely Absent (the Frequently Suspected Liabilities)
 
-| 候选                               | 代码事实                                                                            |
-| ---------------------------------- | ----------------------------------------------------------------------------------- |
-| `Date.now()` / `new Date()`        | 全文 **零次出现**（`rg` 全无匹配）                                                  |
-| `Math.random()`                    | **零次出现**                                                                        |
-| `process.cwd()` 值写入 prompt      | 仅 L366 `if (isGitRepository(process.cwd())) { ... }`，**值不写入字符串**，只作开关 |
-| git status / git branch 子进程调用 | **零次**，git 段是静态指导文本                                                      |
-| 当前文件列表 / 项目结构注入        | **零次**                                                                            |
-| LSP 状态 / 错误数                  | **零次**                                                                            |
-| 用户输入历史                       | **零次**（history 走 messages，不在 system）                                        |
+| Candidate                                       | Code Fact                                                                                                                    |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `Date.now()` / `new Date()`                     | **Zero occurrences** in the whole text (`rg` finds no match)                                                                 |
+| `Math.random()`                                 | **Zero occurrences**                                                                                                         |
+| `process.cwd()` value written into prompt       | Only L366 `if (isGitRepository(process.cwd())) { ... }`; **the value is not written into the string**, only used as a switch |
+| git status / git branch subprocess calls        | **Zero times**; the git section is static guidance text                                                                      |
+| Current file list / project structure injection | **Zero times**                                                                                                               |
+| LSP state / error count                         | **Zero times**                                                                                                               |
+| User input history                              | **Zero times** (history goes through messages, not in system)                                                                |
 
-#### 启动时一次，session 内不变
+#### Once at Startup, Unchanged Within the Session
 
-| 位置     | 内容                                                                                             | 何时可能变                |
-| -------- | ------------------------------------------------------------------------------------------------ | ------------------------- |
-| L190     | `process.env['QWEN_SYSTEM_MD']` 决定 basePrompt 来源（默认 vs 用户 system.md）                   | 进程内不变                |
-| L342-343 | `process.env['SANDBOX']` 决定 sandbox 段选哪一版（Seatbelt / Sandbox / Outside）                 | 进程内不变                |
-| L366     | `isGitRepository(process.cwd())` 决定 git 段是否插入                                             | cwd 同 session 内通常不变 |
-| L871     | `process.env['QWEN_CODE_TOOL_CALL_STYLE']` 决定 tool call 风格（qwen-coder / qwen-vl / general） | 进程内不变                |
+| Location | Content                                                                                                 | When It Might Change                   |
+| -------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| L190     | `process.env['QWEN_SYSTEM_MD']` decides the basePrompt source (default vs user system.md)               | unchanged within the process           |
+| L342-343 | `process.env['SANDBOX']` decides which sandbox-section version to pick (Seatbelt / Sandbox / Outside)   | unchanged within the process           |
+| L366     | `isGitRepository(process.cwd())` decides whether the git section is inserted                            | cwd usually unchanged within a session |
+| L871     | `process.env['QWEN_CODE_TOOL_CALL_STYLE']` decides the tool-call style (qwen-coder / qwen-vl / general) | unchanged within the process           |
 
-#### 事件触发（低频）
+#### Event-Triggered (Low-Frequency)
 
-| 参数                                              | 触发条件                                          | 频率估计           |
-| ------------------------------------------------- | ------------------------------------------------- | ------------------ |
-| `userMemory`（`getCoreSystemPrompt` 第 1 参）     | `save_memory` 工具 / `/memory refresh` / 扩展加载 | 0-3 次/session     |
-| `model` 名（影响 `getToolCallExamples` 选哪一支） | `/model` 切换                                     | 罕见               |
-| `appendInstruction`                               | 配置项，session 内基本不变                        | 几乎从不           |
-| `deferredTools`（`buildDeferredToolsSection`）    | MCP 工具动态加载                                  | session 启动期居多 |
+| Parameter                                                       | Trigger Condition                                       | Frequency Estimate            |
+| --------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
+| `userMemory` (1st param of `getCoreSystemPrompt`)               | `save_memory` tool / `/memory refresh` / extension load | 0-3 times/session             |
+| `model` name (affects which branch `getToolCallExamples` picks) | `/model` switch                                         | rare                          |
+| `appendInstruction`                                             | a config item, essentially unchanged within a session   | almost never                  |
+| `deferredTools` (`buildDeferredToolsSection`)                   | MCP dynamic tool loading                                | mostly during session startup |
 
-#### 一个隐蔽的小坑
+#### A Subtle Little Pitfall
 
-L207-209：若设置了 `QWEN_SYSTEM_MD` env，**每次** `getCoreSystemPrompt` 都会 `fs.readFileSync(systemMdPath)`：
+L207-209: if `QWEN_SYSTEM_MD` env is set, **every** `getCoreSystemPrompt` will `fs.readFileSync(systemMdPath)`:
 
 ```typescript
 const basePrompt = systemMdEnabled
@@ -1192,14 +1196,14 @@ const basePrompt = systemMdEnabled
   : `...`;
 ```
 
-- 文件不变时内容稳定 → cache 命中不受影响
-- 但每轮 LLM 调用都有一次同步 IO（默认 `.qwen/system.md`，网络挂载文件会更慢）
-- 不影响本节"cache 友好性"结论，仅作为已知性能小坑记录
+- When the file is unchanged the content is stable → cache hits are unaffected
+- But every LLM-call round has a synchronous IO (default `.qwen/system.md`; a network-mounted file would be slower)
+- Does not affect this section's "cache-friendliness" conclusion; recorded only as a known minor performance pitfall
 
-#### 连带结论
+#### Knock-on Conclusions
 
-1. **system prompt 在稳态 session 内每次产出 byte-for-byte 一致** → DashScope ephemeral cache key（基于内容 hash）整段稳定 → **system 段 cache 命中率几乎 100%**
-2. 唯一打 cache 的事件是 `save_memory`——核心功能，不能为 cache 让路
-3. **浮油 #1（简洁回复指令）的代价分析**：把指令加到 Final Reminder 段（L389-390）→ system prompt 内容改变一次 → **首次请求 cache miss（一次性预热成本），之后所有请求继续命中**
-4. **§7 的 "system prompt 稳定化" 已废弃判断得到正式证据支持**——不仅没必要做，连"理论上做了能进一步降低 cache miss 率"都不成立，因为本来就 ≈ 0
-5. 本审计可作为后续相关讨论的引用基线，避免重复 grep；若 prompts.ts 有大改动，本节需要同步更新
+1. **Within a steady-state session the system prompt produces byte-for-byte identical output every time** → the DashScope ephemeral cache key (based on content hash) is stable for the whole segment → **the system segment's cache hit rate is nearly 100%**
+2. The only event that busts the cache is `save_memory`—a core feature that cannot give way to cache
+3. **Cost analysis of skimmable win #1 (concise-reply instruction)**: adding the instruction to the Final Reminder section (L389-390) → the system prompt content changes once → **the first request is a cache miss (a one-time warmup cost), after which all requests continue to hit**
+4. **§7's abandoned judgment of "system prompt stabilization" gets formal evidentiary support**—not only is it unnecessary to do, but even "in theory, doing it could further reduce the cache-miss rate" does not hold, because it was already ≈ 0
+5. This audit can serve as a reference baseline for later related discussions, avoiding repeated grep; if prompts.ts changes significantly, this section needs to be updated in sync

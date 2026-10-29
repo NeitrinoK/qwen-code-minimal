@@ -7,11 +7,7 @@
 import type { CommandModule } from 'yargs';
 import { getErrorMessage } from '../../utils/errors.js';
 import { writeStdoutLine, writeStderrLine } from '../../utils/stdioHelpers.js';
-import {
-  ExtensionManager,
-  resolveExtensionTelemetryProxy,
-  resolveUsageStatisticsEnabled,
-} from '@qwen-code/qwen-code-core';
+import { ExtensionManager } from '@qwen-code/qwen-code-core';
 import {
   requestConsentNonInteractive,
   requestConsentOrFail,
@@ -27,7 +23,6 @@ interface UninstallArgs {
 export async function handleUninstall(args: UninstallArgs) {
   try {
     const workspaceDir = process.cwd();
-    const settings = loadSettings(workspaceDir).merged;
     const extensionManager = new ExtensionManager({
       workspaceDir,
       locale: getCurrentLanguage(),
@@ -35,11 +30,8 @@ export async function handleUninstall(args: UninstallArgs) {
         null,
         requestConsentNonInteractive,
       ),
-      isWorkspaceTrusted: isWorkspaceTrusted(settings).isTrusted ?? true,
-      usageStatisticsEnabled: resolveUsageStatisticsEnabled(
-        settings.privacy?.usageStatisticsEnabled,
-      ),
-      proxy: resolveExtensionTelemetryProxy(settings.proxy),
+      isWorkspaceTrusted:
+        isWorkspaceTrusted(loadSettings(workspaceDir).merged).isTrusted ?? true,
     });
     await extensionManager.refreshCache();
     const result = await extensionManager.uninstallExtension(args.name, false);

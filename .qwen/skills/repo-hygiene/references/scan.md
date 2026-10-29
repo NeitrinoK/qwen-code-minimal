@@ -24,11 +24,9 @@ and what "correct" looks like inside it. The scope line is a starting
 boundary, not a reading list — the subagent finds the package's own entry
 points, schemas, registries, and contracts and builds its own map.
 
-Packages intentionally excluded from scan scope: `audio-capture` (native
-addon, thin binding), `channels` (daemon-internal worker transport),
-`cua-driver` (vendored), `mobile-mcp` (vendored), `web-templates` (build
-scaffolding). These are either vendored from upstream or too thin to yield
-hygiene findings.
+Packages intentionally excluded from scan scope: `cua-driver` (vendored),
+`mobile-mcp` (vendored). These are vendored from upstream and too thin to
+yield hygiene findings.
 
 - **cli/config** — config subsystem of the Qwen CLI (`packages/cli/src/config/`).
   - Defines the settings schema (`settingsSchema.ts`, `settings.ts`), the
@@ -95,18 +93,10 @@ hygiene findings.
   - Correct: each extension uses its host's API surface correctly, manifest
     versions match host requirements, generated artifacts are not stale.
 
-- **sdk-typescript** — the TypeScript SDK (`packages/sdk-typescript/`).
-  - ACP / streamable-http client for TS consumers; public surface is its
-    exported types and client classes.
-  - Correct: protocol fields match the wire, retry/abort semantics are
-    honored, breaking changes bump the version.
-
-- **sdk-python-java** — non-TS SDKs and the ACP bridge
-  (`packages/sdk-python/`, `packages/sdk-java/`, `packages/acp-bridge/`).
-  - Python and Java SDKs ship ACP clients; `acp-bridge` is the bridge that
-    lets non-TS code speak ACP to the daemon.
-  - Correct: multi-SDK behavior is consistent, protocol fields match the
-    TS SDK, bridge error mapping preserves the original error class.
+- **acp-bridge** — the ACP bridge (`packages/acp-bridge/`).
+  - The ACP plumbing the CLI's ACP host uses.
+  - Correct: protocol fields match the wire, bridge error mapping preserves
+    the original error class.
 
 - **ui-apps** — the two UI apps (`packages/desktop/` and
   `packages/web-shell/`).

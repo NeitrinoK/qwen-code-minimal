@@ -5701,15 +5701,16 @@ ${getShellCommandSequencingGuidance(shellConfiguration)}
   </bad-example>
 
 **Background vs Foreground Execution:**
-- You should decide whether commands should run in background or foreground based on their nature:
+- You should decide whether commands should run in background or foreground based on their expected duration:
 - Use background execution (is_background: true) for:
+  - Any command expected to run longer than ~60 seconds, even if it eventually terminates — foreground calls block you for their entire duration: long test suites, multi-minute builds, \`sleep\`/polling waits, soak tests
   - Long-running development servers: \`npm run start\`, \`npm run dev\`, \`yarn dev\`, \`bun run start\`
   - Build watchers: \`npm run watch\`, \`webpack --watch\`
   - Database servers: \`mongod\`, \`mysql\`, \`redis-server\`
   - Web servers: \`python -m http.server\`, \`php -S localhost:8000\`
   - Any command expected to run indefinitely until manually stopped
 ${processGroupNote}${processStopNote}
-- Use foreground execution (the default) for commands that finish on their own, such as builds, installs, git operations, and test runs.
+- Use foreground execution (the default) for commands that finish on their own within ~60 seconds, such as quick builds, installs, git operations, and short test runs.
 `;
 }
 

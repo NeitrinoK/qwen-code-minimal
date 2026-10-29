@@ -5,9 +5,7 @@
  */
 
 import type { GenerateContentResponse } from '@google/genai';
-import { AuthType } from './auth-type.js';
 import {
-  isQwenQuotaExceededError,
   isQuotaExhaustedError,
   formatQuotaExhaustedMessage,
 } from './quotaErrorDetection.js';
@@ -376,23 +374,6 @@ export async function retryWithBackoff<T>(
       // regardless of a permissive shouldRetryOnError predicate.
       if (retryDiagnostics.kind === 'abort') {
         throw error;
-      }
-
-      // Check for Qwen OAuth quota exceeded error - throw immediately without retry
-      if (authType === AuthType.QWEN_OAUTH && isQwenQuotaExceededError(error)) {
-        debugLogger.error(
-          'Qwen OAuth quota exceeded, fast-failing',
-          retryDiagnostics,
-          error,
-        );
-        throw new Error(
-          `Qwen OAuth free tier has been discontinued as of 2026-04-15.\n\n` +
-            `To continue using Qwen Code, try one of these alternatives:\n` +
-            `  - OpenRouter:    https://openrouter.ai/docs/quickstart\n` +
-            `  - Fireworks AI:  https://docs.fireworks.ai/api-reference/introduction\n` +
-            `  - ModelStudio:   https://help.aliyun.com/zh/model-studio/coding-plan\n\n` +
-            `After setting up your API key, run /auth to configure your provider.`,
-        );
       }
 
       // Permanent quota exhaustion (e.g. Bailian token-plan "1-week quota has

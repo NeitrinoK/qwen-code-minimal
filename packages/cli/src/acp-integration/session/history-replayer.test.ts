@@ -32,10 +32,13 @@ import type {
   ToolResultDisplay,
   TodoResultDisplay,
 } from '@qwen-code/qwen-code-core';
+import type { SessionUpdate } from '@agentclientprotocol/sdk';
 
 describe('HistoryReplayer', () => {
   let mockContext: SessionContext;
-  let sendUpdateSpy: ReturnType<typeof vi.fn>;
+  let sendUpdateSpy: ReturnType<
+    typeof vi.fn<(update: SessionUpdate) => Promise<void>>
+  >;
   let setActiveRecordIdSpy: ReturnType<typeof vi.fn>;
   let sentUpdateContexts: Array<{
     activeRecordId: string | null;
@@ -47,7 +50,9 @@ describe('HistoryReplayer', () => {
     let activeRecordId: string | null = null;
     let activeRecordTimestamp: string | undefined;
     sentUpdateContexts = [];
-    sendUpdateSpy = vi.fn().mockResolvedValue(undefined);
+    sendUpdateSpy = vi
+      .fn<(update: SessionUpdate) => Promise<void>>()
+      .mockResolvedValue(undefined);
     setActiveRecordIdSpy = vi.fn((id: string | null, timestamp?: string) => {
       activeRecordId = id;
       activeRecordTimestamp = timestamp;

@@ -25,6 +25,28 @@ const REQUEST_TIMEOUT_MS = 60_000;
 // fixture still reports the reason itself instead of vitest timing out.
 const PROMPT_TIMEOUT_MS = 180_000;
 const INITIAL_PROMPT = 'Create a quick note (smoke test).';
+
+/**
+ * Start a local fake OpenAI server that answers every request with plain text
+ * and return the agent env that points at it, so a test needs no real model
+ * credentials. The caller closes the server.
+ */
+async function startFakeModel() {
+  const server = await startFakeOpenAIServer(({ body }) =>
+    body['stream'] === true
+      ? { content: 'Done.' }
+      : { content: '{"selected_memories":[]}' },
+  );
+  const env: NodeJS.ProcessEnv = {
+    OPENAI_API_KEY: 'fake-key',
+    OPENAI_BASE_URL: server.baseUrl,
+    OPENAI_MODEL: 'fake-model',
+    QWEN_MODEL: 'fake-model',
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost',
+  };
+  return { server, env };
+}
 const IS_SANDBOX =
   process.env['QWEN_SANDBOX'] &&
   process.env['QWEN_SANDBOX']!.toLowerCase() !== 'false';
@@ -364,7 +386,10 @@ function setupAcpTest(
     const rig = new TestRig();
     await rig.setup('acp load session');
 
-    const { sendRequest, cleanup, stderr } = setupAcpTest(rig);
+    const fakeModel = await startFakeModel();
+    const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
+      env: fakeModel.env,
+    });
 
     try {
       const initResult = await sendRequest('initialize', {
@@ -397,6 +422,7 @@ function setupAcpTest(
       throw e;
     } finally {
       await cleanup();
+      await fakeModel.server.close();
     }
   });
 
@@ -404,7 +430,10 @@ function setupAcpTest(
     const rig = new TestRig();
     await rig.setup('acp mode and model');
 
-    const { sendRequest, cleanup, stderr } = setupAcpTest(rig);
+    const fakeModel = await startFakeModel();
+    const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
+      env: fakeModel.env,
+    });
 
     try {
       // Test 1: Initialize and verify modes are returned
@@ -461,10 +490,11 @@ function setupAcpTest(
       throw e;
     } finally {
       await cleanup();
+      await fakeModel.server.close();
     }
   });
 
-  it('returns internal error details when model auth is required', async () => {
+  it('rejects the removed Qwen OAuth model route with a structured error', async () => {
     const rig = new TestRig();
     await rig.setup('acp auth methods in error data', {
       settings: {
@@ -505,8 +535,9 @@ function setupAcpTest(
         sessionId: string;
       };
 
-      // Request the discontinued route directly: non-OAuth sessions no longer
-      // advertise it, but the auth error path must still stay structured.
+      // Request the Qwen OAuth route directly. This fork removed Qwen OAuth,
+      // so the route is unknown for the openai auth type and the agent must
+      // answer with a structured invalid-params error rather than crash.
       await expect(
         sendRequest('session/set_config_option', {
           sessionId: newSession.sessionId,
@@ -515,11 +546,10 @@ function setupAcpTest(
         }),
       ).rejects.toMatchObject({
         response: {
-          code: -32603,
-          message: 'Internal error',
-          data: {
-            details: expect.any(String),
-          },
+          code: -32602,
+          message: expect.stringContaining(
+            "Model 'coder-model(qwen-oauth)' not found",
+          ),
         },
       });
     } catch (e) {
@@ -557,8 +587,10 @@ function setupAcpTest(
       },
     });
 
+    // The test only switches modes and models and never prompts, so a dummy
+    // key is enough to authenticate.
     const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
-      env: { OPENAI_MODEL: 'qwen3-coder-plus' },
+      env: { OPENAI_MODEL: 'qwen3-coder-plus', OPENAI_API_KEY: 'fake-key' },
     });
 
     try {
@@ -733,7 +765,10 @@ function setupAcpTest(
     const rig = new TestRig();
     await rig.setup('acp set config option error');
 
-    const { sendRequest, cleanup, stderr } = setupAcpTest(rig);
+    const fakeModel = await startFakeModel();
+    const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
+      env: fakeModel.env,
+    });
 
     try {
       // Initialize
@@ -773,6 +808,7 @@ function setupAcpTest(
       throw e;
     } finally {
       await cleanup();
+      await fakeModel.server.close();
     }
   });
 
@@ -780,7 +816,10 @@ function setupAcpTest(
     const rig = new TestRig();
     await rig.setup('acp slash commands');
 
-    const { sendRequest, cleanup, stderr, sessionUpdates } = setupAcpTest(rig);
+    const fakeModel = await startFakeModel();
+    const { sendRequest, cleanup, stderr, sessionUpdates } = setupAcpTest(rig, {
+      env: fakeModel.env,
+    });
 
     try {
       // Initialize
@@ -840,12 +879,15 @@ function setupAcpTest(
       throw e;
     } finally {
       await cleanup();
+      await fakeModel.server.close();
     }
   });
 
   it('handles exit plan mode with permission request and mode update notification', async () => {
     const rig = new TestRig();
     await rig.setup('acp exit plan mode');
+
+    const fakeModel = await startFakeModel();
 
     // Track which permission requests we've seen
     const planModeRequests: PermissionRequest[] = [];
@@ -858,6 +900,7 @@ function setupAcpTest(
       permissionRequests,
       agent,
     } = setupAcpTest(rig, {
+      env: fakeModel.env,
       permissionHandler: (request) => {
         // Track all permission requests for later verification
         // Auto-approve exit plan mode requests with "proceed_always" to trigger auto-edit mode
@@ -1001,6 +1044,7 @@ function setupAcpTest(
       throw e;
     } finally {
       await cleanup();
+      await fakeModel.server.close();
     }
   });
 
@@ -1216,7 +1260,9 @@ function setupAcpTest(
       const rig = new TestRig();
       await rig.setup('acp backward compatibility');
 
+      const fakeModel = await startFakeModel();
       const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
+        env: fakeModel.env,
         useNewFlag: false,
       });
 
@@ -1255,6 +1301,7 @@ function setupAcpTest(
         throw e;
       } finally {
         await cleanup();
+        await fakeModel.server.close();
       }
     });
 
@@ -1262,7 +1309,9 @@ function setupAcpTest(
       const rig = new TestRig();
       await rig.setup('acp new flag');
 
+      const fakeModel = await startFakeModel();
       const { sendRequest, cleanup, stderr } = setupAcpTest(rig, {
+        env: fakeModel.env,
         useNewFlag: true,
       });
 
@@ -1300,6 +1349,7 @@ function setupAcpTest(
         throw e;
       } finally {
         await cleanup();
+        await fakeModel.server.close();
       }
     });
   },

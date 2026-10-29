@@ -41,14 +41,16 @@ vi.mock('../../services/gitWorktreeService.js', async (importOriginal) => {
     await importOriginal<
       typeof import('../../services/gitWorktreeService.js')
     >();
-  const MockClass = vi.fn().mockImplementation(() => ({
-    checkGitAvailable: vi.fn().mockResolvedValue({ available: true }),
-    isGitRepository: vi.fn().mockResolvedValue(true),
-    setupWorktrees: hoistedMockSetupWorktrees,
-    cleanupSession: hoistedMockCleanupSession,
-    getWorktreeDiff: hoistedMockGetWorktreeDiff,
-    applyWorktreeChanges: hoistedMockApplyWorktreeChanges,
-  }));
+  const MockClass = vi.fn().mockImplementation(function () {
+    return {
+      checkGitAvailable: vi.fn().mockResolvedValue({ available: true }),
+      isGitRepository: vi.fn().mockResolvedValue(true),
+      setupWorktrees: hoistedMockSetupWorktrees,
+      cleanupSession: hoistedMockCleanupSession,
+      getWorktreeDiff: hoistedMockGetWorktreeDiff,
+      applyWorktreeChanges: hoistedMockApplyWorktreeChanges,
+    };
+  });
   // Static methods called by ArenaManager
   (MockClass as unknown as Record<string, unknown>)['getBaseDir'] = () =>
     path.join(os.tmpdir(), 'arena-mock');

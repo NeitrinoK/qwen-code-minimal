@@ -19,19 +19,25 @@ const execFileAsync = promisify(execFile);
 type BrowserLaunchOptions = {
   allowFile?: boolean;
   allowedFilePaths?: string[];
+  allowMailto?: boolean;
 };
 
 /**
  * Validates that a URL is safe to open in a browser.
  * Only allows HTTP and HTTPS URLs by default. file:// URLs are allowed only
- * when a caller opts in for locally generated reports.
+ * when a caller opts in for locally generated reports, and mailto: links only
+ * when a caller opts in for composing an email (e.g. the /bug command).
  *
  * @param url The URL to validate
  * @throws Error if the URL is invalid or uses an unsafe protocol
  */
 function validateUrl(
   url: string,
-  { allowFile = false, allowedFilePaths }: BrowserLaunchOptions = {},
+  {
+    allowFile = false,
+    allowedFilePaths,
+    allowMailto = false,
+  }: BrowserLaunchOptions = {},
 ): void {
   let parsedUrl: URL;
 
@@ -41,9 +47,13 @@ function validateUrl(
     throw new Error(`Invalid URL: ${url}`);
   }
 
-  const allowedProtocols = allowFile
-    ? ['http:', 'https:', 'file:']
-    : ['http:', 'https:'];
+  const allowedProtocols = ['http:', 'https:'];
+  if (allowFile) {
+    allowedProtocols.push('file:');
+  }
+  if (allowMailto) {
+    allowedProtocols.push('mailto:');
+  }
 
   // Only allow browser-safe protocols by default.
   if (!allowedProtocols.includes(parsedUrl.protocol)) {
@@ -94,9 +104,14 @@ export async function openBrowserSecurely(
   let command: string;
   let args: string[];
 
+  // mailto: links must go to the OS default handler (the platform opener
+  // below), never to a $BROWSER binary — a browser can't compose an email.
+  const isMailto = url.startsWith('mailto:');
   const browserEnv = process.env['BROWSER']?.trim();
   const browserCommand =
-    platformName === 'win32' ? undefined : buildBrowserCommand(browserEnv, url);
+    platformName === 'win32' || isMailto
+      ? undefined
+      : buildBrowserCommand(browserEnv, url);
 
   if (browserCommand) {
     try {

@@ -134,8 +134,6 @@ describe('Session.pendingWorktreeNotice', () => {
       endAutomaticActiveTodoWorkChain: vi.fn(),
       assertCanStartTurn: vi.fn().mockResolvedValue(undefined),
       getWorkingDir: vi.fn().mockReturnValue('/tmp'),
-      getTelemetryLogPromptsEnabled: vi.fn().mockReturnValue(false),
-      getUsageStatisticsEnabled: vi.fn().mockReturnValue(false),
       getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
       getChatRecordingService: vi.fn().mockReturnValue({
         getBranchCheckpointCursor: vi.fn().mockReturnValue({

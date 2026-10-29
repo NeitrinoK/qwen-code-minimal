@@ -19,11 +19,8 @@ export interface AcpChannelTransportGuard {
  * replacing the channel factory; production uses
  * `defaultSpawnChannelFactory` (in `./spawnChannel.ts`).
  *
- * This contract is consumed by the daemon HTTP bridge and is available
- * for `packages/channels/base/AcpBridge.ts` and the VSCode IDE
- * companion's `acpConnection.ts` to consume directly via
- * `@qwen-code/acp-bridge/spawnChannel` instead of each reimplementing
- * the child lifecycle. The adapter migrations land separately.
+ * Consumers use it directly via `@qwen-code/acp-bridge/spawnChannel`
+ * instead of each reimplementing the child lifecycle.
  */
 export interface AcpChannel {
   stream: Stream;

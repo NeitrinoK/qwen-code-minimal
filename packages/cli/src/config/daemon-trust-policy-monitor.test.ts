@@ -5,7 +5,6 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ideContextStore } from '@qwen-code/qwen-code-core';
 import { createDaemonTrustPolicyMonitor } from './daemon-trust-policy-monitor.js';
 import type { DaemonTrustPolicySnapshot } from './daemon-trust-policy.js';
 
@@ -21,7 +20,6 @@ function snapshot(revision: string): DaemonTrustPolicySnapshot {
 describe('daemon trust policy monitor', () => {
   afterEach(() => {
     vi.useRealTimers();
-    ideContextStore.clear();
   });
 
   it('publishes only semantic changes', async () => {
@@ -86,28 +84,6 @@ describe('daemon trust policy monitor', () => {
     await monitor.requestReconcile('manual');
     expect(onSnapshot).toHaveBeenCalledTimes(2);
     monitor.stop();
-  });
-
-  it('reacts immediately to IDE trust changes and stops cleanly', async () => {
-    const readSnapshot = vi
-      .fn<() => Promise<DaemonTrustPolicySnapshot>>()
-      .mockResolvedValueOnce(snapshot('one'))
-      .mockResolvedValueOnce(snapshot('two'));
-    const onSnapshot = vi.fn();
-    const monitor = createDaemonTrustPolicyMonitor({
-      readSnapshot,
-      onSnapshot,
-      pollIntervalMs: 60_000,
-    });
-
-    await monitor.start();
-    ideContextStore.set({ workspaceState: { isTrusted: false } });
-    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalledTimes(2));
-    monitor.stop();
-    ideContextStore.set({ workspaceState: { isTrusted: true } });
-    await Promise.resolve();
-
-    expect(readSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('does not publish a snapshot that finishes reading after stop', async () => {

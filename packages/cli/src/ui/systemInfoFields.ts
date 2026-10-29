@@ -102,11 +102,8 @@ function formatAuth(info: ExtendedSystemInfo): string {
     return t(managedProvider.label);
   }
 
-  if (
-    info.selectedAuthType.startsWith('oauth') ||
-    info.selectedAuthType === 'qwen-oauth'
-  ) {
-    return 'Qwen OAuth';
+  if (info.selectedAuthType.startsWith('oauth')) {
+    return 'OAuth';
   }
 
   return `API Key - ${info.selectedAuthType}`;
@@ -117,10 +114,7 @@ function formatBaseUrl(info: ExtendedSystemInfo): string {
     return '';
   }
 
-  if (
-    info.selectedAuthType.startsWith('oauth') ||
-    info.selectedAuthType === 'qwen-oauth'
-  ) {
+  if (info.selectedAuthType.startsWith('oauth')) {
     return '';
   }
 

@@ -241,6 +241,13 @@ export interface SessionStatsState {
   sessionStartTime: Date;
   metrics: SessionMetrics;
   lastPromptTokenCount: number;
+  /**
+   * Prompt tokens reported for the session's FIRST request, latched. At that
+   * point the conversation contributes almost nothing, so the count is the
+   * fixed per-request overhead: system prompt + skill catalog + MCP tool
+   * catalog + tool schemas. 0 until the first response reports it.
+   */
+  basePromptTokenCount: number;
   promptCount: number;
 }
 
@@ -369,6 +376,7 @@ const createDefaultStats = (sessionId: string = ''): SessionStatsState => ({
   sessionStartTime: new Date(),
   metrics: getMetricsForDisplay(sessionId),
   lastPromptTokenCount: 0,
+  basePromptTokenCount: 0,
   promptCount: 0,
 });
 
@@ -404,6 +412,9 @@ export const SessionStatsProvider: React.FC<{
           ...prevState,
           metrics: nextMetrics,
           lastPromptTokenCount,
+          // Latch: only the first non-zero count is the overhead baseline.
+          basePromptTokenCount:
+            prevState.basePromptTokenCount || lastPromptTokenCount,
         };
       });
     };

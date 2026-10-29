@@ -83,12 +83,12 @@ export class StartSessionEvent implements BaseTelemetryEvent {
       config.getTruncateToolOutputThreshold();
     this.truncate_tool_output_lines = config.getTruncateToolOutputLines();
     this.mcp_servers = mcpServers ? Object.keys(mcpServers).join(',') : '';
-    this.telemetry_enabled = config.getTelemetryEnabled();
+    this.telemetry_enabled = false;
     this.file_filtering_respect_git_ignore =
       config.getFileFilteringRespectGitIgnore();
     this.mcp_servers_count = mcpServers ? Object.keys(mcpServers).length : 0;
     this.output_format = config.getOutputFormat();
-    this.ide_enabled = config.getIdeMode();
+    this.ide_enabled = false;
     this.interactive_shell_enabled = config.getShouldUseNodePtyShell();
 
     const hookSystem = config.getHookSystem();
@@ -221,9 +221,9 @@ export class ToolCallEvent implements BaseTelemetryEvent {
     // structured_output args ARE the user's final structured payload (the
     // command's actual answer, already emitted in stdout `result` /
     // `structured_result`). Recording them again as ordinary tool-call
-    // function_args duplicates that data into telemetry surfaces (OTLP
-    // exports, QwenLogger, ui-telemetry stream, the chat-recording UI
-    // event mirror) where it can leak off-device. Replace with a shared
+    // function_args duplicates that data into local telemetry surfaces
+    // (the in-memory ui-telemetry stream and the chat-recording UI
+    // event mirror). Replace with a shared
     // placeholder constant so consumers still see the call happened —
     // duration, success, decision metrics are preserved — but the
     // payload itself doesn't ride along. The same constant is used by
@@ -726,23 +726,6 @@ export class MalformedJsonResponseEvent implements BaseTelemetryEvent {
   }
 }
 
-export enum IdeConnectionType {
-  START = 'start',
-  SESSION = 'session',
-}
-
-export class IdeConnectionEvent {
-  'event.name': 'ide_connection';
-  'event.timestamp': string;
-  connection_type: IdeConnectionType;
-
-  constructor(connection_type: IdeConnectionType) {
-    this['event.name'] = 'ide_connection';
-    this['event.timestamp'] = new Date().toISOString();
-    this.connection_type = connection_type;
-  }
-}
-
 export class ConversationFinishedEvent {
   'event_name': 'conversation_finished';
   'event.timestamp': string; // ISO 8601;
@@ -1194,13 +1177,13 @@ export class AuthEvent implements BaseTelemetryEvent {
   'event.name': 'auth';
   'event.timestamp': string;
   auth_type: AuthType;
-  action_type: 'auto' | 'manual' | 'coding-plan';
+  action_type: 'auto' | 'manual';
   status: 'success' | 'error' | 'cancelled';
   error_message?: string;
 
   constructor(
     auth_type: AuthType,
-    action_type: 'auto' | 'manual' | 'coding-plan',
+    action_type: 'auto' | 'manual',
     status: 'success' | 'error' | 'cancelled',
     error_message?: string,
   ) {
@@ -1279,38 +1262,6 @@ export class SkillLaunchEvent implements BaseTelemetryEvent {
   }
 }
 
-export enum UserFeedbackRating {
-  BAD = 1,
-  FINE = 2,
-  GOOD = 3,
-}
-
-export class UserFeedbackEvent implements BaseTelemetryEvent {
-  'event.name': 'user_feedback';
-  'event.timestamp': string;
-  session_id: string;
-  rating: UserFeedbackRating;
-  model: string;
-  approval_mode: string;
-  prompt_id?: string;
-
-  constructor(
-    session_id: string,
-    rating: UserFeedbackRating,
-    model: string,
-    approval_mode: string,
-    prompt_id?: string,
-  ) {
-    this['event.name'] = 'user_feedback';
-    this['event.timestamp'] = new Date().toISOString();
-    this.session_id = session_id;
-    this.rating = rating;
-    this.model = model;
-    this.approval_mode = approval_mode;
-    this.prompt_id = prompt_id;
-  }
-}
-
 export type TelemetryEvent =
   | StartSessionEvent
   | EndSessionEvent
@@ -1328,7 +1279,6 @@ export type TelemetryEvent =
   | NextSpeakerCheckEvent
   | KittySequenceOverflowEvent
   | MalformedJsonResponseEvent
-  | IdeConnectionEvent
   | ConversationFinishedEvent
   | SlashCommandEvent
   | FileOperationEvent
@@ -1348,7 +1298,6 @@ export type TelemetryEvent =
   | AuthEvent
   | HookCallEvent
   | SkillLaunchEvent
-  | UserFeedbackEvent
   | ArenaSessionStartedEvent
   | ArenaAgentCompletedEvent
   | ArenaSessionEndedEvent;

@@ -9,12 +9,6 @@ export function getDefaultApiKeyEnvVar(authType: string | undefined): string {
     case 'openai':
     case 'openai-responses':
       return 'OPENAI_API_KEY';
-    case 'anthropic':
-      return 'ANTHROPIC_API_KEY';
-    case 'gemini':
-      return 'GEMINI_API_KEY';
-    case 'vertex-ai':
-      return 'GOOGLE_API_KEY';
     default:
       return 'API_KEY';
   }
@@ -25,12 +19,6 @@ export function getDefaultModelEnvVar(authType: string | undefined): string {
     case 'openai':
     case 'openai-responses':
       return 'OPENAI_MODEL';
-    case 'anthropic':
-      return 'ANTHROPIC_MODEL';
-    case 'gemini':
-      return 'GEMINI_MODEL';
-    case 'vertex-ai':
-      return 'GOOGLE_MODEL';
     default:
       return 'MODEL';
   }
@@ -126,27 +114,5 @@ export class MissingModelError extends ModelConfigError {
       `Missing model for ${params.authType} auth. ` +
         `Set the environment variable '${params.envKey}'.`,
     );
-  }
-}
-
-export class MissingBaseUrlError extends ModelConfigError {
-  readonly code = 'MISSING_BASE_URL';
-
-  constructor(params: {
-    authType: string | undefined;
-    model: string | undefined;
-  }) {
-    super(
-      `Missing baseUrl for modelProviders model '${params.model || '(unknown)'}'. ` +
-        `Configure modelProviders.${params.authType || '(unknown)'}[].baseUrl.`,
-    );
-  }
-}
-
-export class MissingAnthropicBaseUrlEnvError extends ModelConfigError {
-  readonly code = 'MISSING_ANTHROPIC_BASE_URL_ENV';
-
-  constructor() {
-    super('ANTHROPIC_BASE_URL environment variable not found.');
   }
 }

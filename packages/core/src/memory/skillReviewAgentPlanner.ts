@@ -7,7 +7,11 @@
 import type { Content } from '@google/genai';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { deriveConfig, type Config } from '../config/config.js';
+import {
+  deriveConfig,
+  type Config,
+  type SkillOutcomesSettings,
+} from '../config/config.js';
 import type {
   PermissionManager,
   ToolRegistrationStatus,
@@ -26,6 +30,11 @@ import {
   isProjectSkillPath,
   SKILL_FILE_NAME,
 } from '../skills/skill-paths.js';
+import {
+  readSkillStats,
+  type SkillStat,
+  type SkillStatsFile,
+} from './skill-stats-store.js';
 import { SKILL_NAME_PATTERN } from '../skills/types.js';
 
 export const SKILL_REVIEW_AGENT_NAME = 'managed-skill-extractor' as const;
@@ -65,8 +74,14 @@ type SkillScopedPermissionManager = Pick<
  * Returns null if the file does not exist (caller may allow creation).
  * Returns false for any other read error (EISDIR, EACCES, etc.) — caller
  * should deny in that case.
+ *
+ * Exported so `skill-deactivation.ts` can reuse the same detection logic
+ * (rather than hand-rolling a second `source: auto-skill` check) to decide
+ * which skill directories it is allowed to move.
  */
-async function hasAutoSkillSource(filePath: string): Promise<boolean | null> {
+export async function hasAutoSkillSource(
+  filePath: string,
+): Promise<boolean | null> {
   let content: string;
   try {
     content = await fs.readFile(filePath, 'utf-8');
@@ -394,6 +409,73 @@ async function listArchivedSkillDirNames(
 }
 
 /**
+ * Fraction of (helped + hurt) outcomes that were hurtful. Skills with no
+ * helped/hurt signal yet (only neutral or unscored launches) sort last
+ * rather than dividing by zero.
+ */
+function hurtRatio(stat: SkillStat): number {
+  const denom = stat.helped + stat.hurt;
+  return denom === 0 ? 0 : stat.hurt / denom;
+}
+
+/**
+ * Render one skill's usage/outcome line (plus capped evidence bullets when
+ * present). Evidence excerpts are read verbatim — they are already redacted
+ * by the outcome tracker (T4) at write time, so no re-redaction happens here.
+ */
+function renderSkillStatsLine(
+  name: string,
+  stat: SkillStat,
+  maxEvidencePerSkill: number,
+): string {
+  const deactivated = stat.deactivatedAt ? ', deactivated' : '';
+  const header = `- ${name}: used ${stat.launches}×, helped ${stat.helped} / hurt ${stat.hurt}${deactivated}`;
+  const evidence = stat.evidence.slice(0, maxEvidencePerSkill);
+  if (evidence.length === 0) {
+    return `${header}.`;
+  }
+  return [
+    `${header}. Recent failures:`,
+    ...evidence.map((e) => `    • [${e.kind}] ${e.excerpt}`),
+    "  → Rewrite so these don't recur.",
+  ].join('\n');
+}
+
+/**
+ * Best-effort skill-usage-and-outcomes block appended to the review
+ * agent's task prompt (Task 5). Returns null when there is nothing to
+ * report — stats read fails, or every skill has zero launches — so the
+ * caller can skip appending anything and keep the prompt unchanged.
+ */
+async function buildSkillStatsBlock(
+  projectRoot: string,
+  maxEvidencePerSkill: number,
+): Promise<string | null> {
+  let statsFile: SkillStatsFile;
+  try {
+    statsFile = await readSkillStats(projectRoot);
+  } catch {
+    return null;
+  }
+  const entries = Object.entries(statsFile.skills).filter(
+    ([, stat]) => stat.launches >= 1,
+  );
+  if (entries.length === 0) return null;
+
+  entries.sort(([nameA, statA], [nameB, statB]) => {
+    const ratioDiff = hurtRatio(statB) - hurtRatio(statA);
+    return ratioDiff !== 0 ? ratioDiff : nameA.localeCompare(nameB);
+  });
+
+  return [
+    'Skill usage & outcomes (prioritize improving high hurt/used ratios; only edit source: auto-skill files):',
+    ...entries.map(([name, stat]) =>
+      renderSkillStatsLine(name, stat, maxEvidencePerSkill),
+    ),
+  ].join('\n');
+}
+
+/**
  * Exported for tests. The "(do not reuse these names)" line is the soft
  * guard for #4437 — the hard guard is `evaluateScopedDecision`'s WRITE_FILE
  * branch denying any write to an existing path.
@@ -401,8 +483,20 @@ async function listArchivedSkillDirNames(
  * Takes `projectRoot` (not `skillsRoot`) so the displayed path and the
  * enumeration both derive from the same source — keeps them from drifting
  * if a future caller passes a non-standard root.
+ *
+ * `skillOutcomesSettings` is optional and, when omitted or `enabled: false`,
+ * the returned prompt is byte-identical to the pre-Task-5 baseline — no
+ * stats lookup happens and nothing is appended. When enabled, a compact
+ * "Skill usage & outcomes" block (Task 5) is appended so the review agent
+ * can prioritize improving skills with a high hurt ratio.
  */
-export async function buildTaskPrompt(projectRoot: string): Promise<string> {
+export async function buildTaskPrompt(
+  projectRoot: string,
+  skillOutcomesSettings?: Pick<
+    Required<SkillOutcomesSettings>,
+    'enabled' | 'maxEvidencePerSkill'
+  >,
+): Promise<string> {
   const skillsRoot = getProjectSkillsRoot(projectRoot);
   const [active, archived] = await Promise.all([
     listExistingSkillDirNames(projectRoot),
@@ -421,7 +515,7 @@ export async function buildTaskPrompt(projectRoot: string): Promise<string> {
         ]
           .filter(Boolean)
           .join('\n');
-  return [
+  const basePrompt = [
     `Project skills directory: \`${skillsRoot}\``,
     '',
     existingLine,
@@ -439,6 +533,15 @@ export async function buildTaskPrompt(projectRoot: string): Promise<string> {
     '',
     '<markdown body with the procedure/approach>',
   ].join('\n');
+
+  if (!skillOutcomesSettings?.enabled) {
+    return basePrompt;
+  }
+  const statsBlock = await buildSkillStatsBlock(
+    projectRoot,
+    skillOutcomesSettings.maxEvidencePerSkill,
+  );
+  return statsBlock === null ? basePrompt : `${basePrompt}\n\n${statsBlock}`;
 }
 
 export async function runSkillReviewByAgent(params: {
@@ -457,7 +560,10 @@ export async function runSkillReviewByAgent(params: {
   const result = await runForkedAgent({
     name: SKILL_REVIEW_AGENT_NAME,
     config: scopedConfig,
-    taskPrompt: await buildTaskPrompt(params.projectRoot),
+    taskPrompt: await buildTaskPrompt(
+      params.projectRoot,
+      params.config.getSkillOutcomesSettings(),
+    ),
     systemPrompt: SKILL_REVIEW_SYSTEM_PROMPT,
     maxTurns:
       params.maxTurns ??

@@ -13,11 +13,10 @@ import { glob } from 'glob';
 import type { ExtensionConfig } from './extensionManager.js';
 import { ExtensionStorage } from './storage.js';
 import type {
-  ExtensionInstallMetadata,
   MCPServerConfig,
+  ExtensionInstallMetadata,
 } from '../config/config.js';
 import type { HookEventName, HookDefinition } from '../hooks/types.js';
-import { cloneFromGit, downloadFromGitHubRelease } from './github.js';
 import { createHash } from 'node:crypto';
 import {
   copyDirectory,
@@ -43,6 +42,9 @@ const debugLogger = createDebugLogger('CLAUDE_CONVERTER');
  * the shared `stripAnsiAndControl` so the rule stays in one place.
  */
 const sanitizeForError = stripAnsiAndControl;
+
+const ONLY_LOCAL_ERROR =
+  'Only local extension installation is supported; remote installs (git, npm, marketplace) have been removed.';
 
 export interface ClaudePluginConfig {
   name: string;
@@ -1156,26 +1158,9 @@ async function resolvePluginSource(
 
   // Handle string source (relative path or URL)
   if (typeof source === 'string') {
-    // Check if it's a URL (scheme is case-insensitive, e.g. HTTPS://)
-    const lowerSource = source.toLowerCase();
-    if (
-      lowerSource.startsWith('http://') ||
-      lowerSource.startsWith('https://')
-    ) {
-      // Download from URL
-      const installMetadata: ExtensionInstallMetadata = {
-        source,
-        type: 'git',
-        originSource: 'Claude',
-        networkPolicy,
-      };
-      try {
-        await downloadFromGitHubRelease(installMetadata, pluginDir, signal);
-      } catch {
-        signal?.throwIfAborted();
-        await cloneFromGit(installMetadata, pluginDir, signal);
-      }
-      return { pluginSource: pluginDir, externalContent: true };
+    // Remote URL sources are no longer supported.
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      throw new Error(ONLY_LOCAL_ERROR);
     }
 
     // Relative path within marketplace. Confine it: a manifest source like
@@ -1218,79 +1203,14 @@ async function resolvePluginSource(
     return { pluginSource: pluginDir, externalContent: false };
   }
 
-  // Handle object source (github or url)
-  if (source.source === 'github') {
-    const installMetadata: ExtensionInstallMetadata = {
-      source: `https://github.com/${source.repo}`,
-      type: 'git',
-      networkPolicy,
-    };
-    try {
-      await downloadFromGitHubRelease(installMetadata, pluginDir, signal);
-    } catch {
-      signal?.throwIfAborted();
-      await cloneFromGit(installMetadata, pluginDir, signal);
-    }
-    return { pluginSource: pluginDir, externalContent: true };
-  }
-
-  if (source.source === 'url') {
-    const installMetadata: ExtensionInstallMetadata = {
-      source: source.url,
-      type: 'git',
-      networkPolicy,
-    };
-    try {
-      await downloadFromGitHubRelease(installMetadata, pluginDir, signal);
-    } catch {
-      signal?.throwIfAborted();
-      await cloneFromGit(installMetadata, pluginDir, signal);
-    }
-    return { pluginSource: pluginDir, externalContent: true };
-  }
-
-  if (source.source === 'git-subdir') {
-    // The plugin lives in a subdirectory of a git repository. Clone the repo
-    // (pinned to the provided ref/sha when present) and return the subdir.
-    const installMetadata: ExtensionInstallMetadata = {
-      source: source.url,
-      type: 'git',
-      // Prefer the immutable SHA pin when present; fall back to a named ref.
-      ref: source.sha || source.ref,
-      originSource: 'Claude',
-      networkPolicy,
-    };
-    await cloneFromGit(installMetadata, pluginDir, signal);
-    // `source.path` comes from an untrusted manifest. Confine it to the cloned
-    // repo so a value like "../../.ssh" (or an absolute path) cannot escape.
-    if (!source.path || source.path === '.' || path.isAbsolute(source.path)) {
-      throw new Error(
-        `Invalid plugin subdirectory "${sanitizeForError(String(source.path))}" for ${sanitizeForError(source.url)}`,
-      );
-    }
-    const subDir = path.resolve(pluginDir, source.path);
-    const repoRoot = path.resolve(pluginDir);
-    if (!subDir.startsWith(repoRoot + path.sep)) {
-      throw new Error(
-        `Plugin subdirectory "${sanitizeForError(source.path)}" escapes the repository root of ${sanitizeForError(source.url)}`,
-      );
-    }
-    if (!fs.existsSync(subDir)) {
-      throw new Error(
-        `Plugin subdirectory "${sanitizeForError(source.path)}" not found in ${sanitizeForError(source.url)} (ref: ${sanitizeForError(source.ref ?? source.sha ?? 'HEAD')})`,
-      );
-    }
-    // The lexical `startsWith` check above is string-only; `cloneFromGit`
-    // checks out symlinks on macOS/Linux, so a hostile repo can commit the
-    // subdir as a symlink whose name stays inside the clone but whose target
-    // escapes it (e.g. `evil -> /etc`). Re-verify the real path before
-    // returning it as the copy source.
-    if (!realPathWithin(subDir, pluginDir)) {
-      throw new Error(
-        `Plugin subdirectory "${sanitizeForError(source.path)}" resolves through a symlink outside the repository root of ${sanitizeForError(source.url)}`,
-      );
-    }
-    return { pluginSource: subDir, externalContent: true };
+  // Remote object sources (github, url, or git-subdir) are no longer
+  // supported — only local relative-path plugins are converted.
+  if (
+    source.source === 'github' ||
+    source.source === 'url' ||
+    source.source === 'git-subdir'
+  ) {
+    throw new Error(ONLY_LOCAL_ERROR);
   }
 
   throw new Error(`Unsupported plugin source type: ${JSON.stringify(source)}`);

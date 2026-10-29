@@ -13,10 +13,8 @@ import type {
 import { ALL_PROVIDERS } from '../providers/all-providers.js';
 import { normalize } from './tokenLimits.js';
 import { isOpenRouterHostname } from './openaiContentGenerator/provider/openrouter.js';
-import {
-  parseClaudeModelVersion,
-  anthropicSupportedEffortTiers,
-} from './anthropic-reasoning.js';
+import type { parseClaudeModelVersion } from './anthropic-reasoning.js';
+import { anthropicSupportedEffortTiers } from './anthropic-reasoning.js';
 import {
   clampReasoningEffort,
   getGptReasoningCapabilities,
@@ -162,10 +160,9 @@ export function validateReasoningCapabilities(
     return parseModelReasoningCapabilities({ ...inherited, ...input });
   }
   const gpt = getGptReasoningCapabilities(route.model);
-  const claude =
-    route.authType === 'anthropic'
-      ? parseClaudeModelVersion(route.model)
-      : undefined;
+  // Claude reasoning profiles need the Anthropic wire, which this build does
+  // not ship; only the OpenAI-compatible profiles below are reachable.
+  const claude: ReturnType<typeof parseClaudeModelVersion> = null;
   if (!inherited && !gpt && !claude && !input.profile)
     return invalidReasoning(route);
   const auth = route.authType;
@@ -176,36 +173,24 @@ export function validateReasoningCapabilities(
     host = '';
   }
   const dashscope =
-    auth === 'qwen-oauth' ||
     /(^|\.)(dashscope(?:-intl|-us)?\.aliyuncs\.com|alibaba-inc\.com|aliyun-inc\.com|alicloudapi\.com)$/.test(
       host,
-    ) ||
-    /^token-plan\..+\.maas\.aliyuncs\.com$/.test(host);
+    ) || /^token-plan\..+\.maas\.aliyuncs\.com$/.test(host);
   const profile =
     input.profile ??
-    (auth === 'gemini' || auth === 'vertex-ai'
-      ? 'gemini'
-      : auth === 'openai-responses'
+    (auth === 'openai-responses'
+      ? 'openai-reasoning'
+      : auth === 'openai' && isOpenRouterHostname(route)
         ? 'openai-reasoning'
-        : auth === 'openai' && isOpenRouterHostname(route)
-          ? 'openai-reasoning'
-          : auth === 'anthropic'
-            ? model.includes('deepseek')
-              ? 'deepseek-anthropic'
-              : claude &&
-                  (claude.major > 4 ||
-                    (claude.major === 4 && claude.minor >= 6))
-                ? 'anthropic-adaptive'
-                : 'anthropic-manual'
-            : model.startsWith('qwen')
-              ? dashscope
-                ? inherited?.disableField === 'reasoning_effort'
-                  ? 'dashscope-effort'
-                  : 'dashscope-thinking'
-                : 'qwen-chat-template'
-              : inherited?.disableField === 'thinking'
-                ? 'deepseek-openai'
-                : 'openai-effort');
+        : model.startsWith('qwen')
+          ? dashscope
+            ? inherited?.disableField === 'reasoning_effort'
+              ? 'dashscope-effort'
+              : 'dashscope-thinking'
+            : 'qwen-chat-template'
+          : inherited?.disableField === 'thinking'
+            ? 'deepseek-openai'
+            : 'openai-effort');
   const protocol =
     profile === 'gemini'
       ? 'gemini'
@@ -214,13 +199,7 @@ export function validateReasoningCapabilities(
         : 'openai';
   if (
     (auth === 'openai-responses' && profile !== 'openai-reasoning') ||
-    (auth &&
-      protocol !==
-        (auth === 'vertex-ai'
-          ? 'gemini'
-          : auth === 'qwen-oauth' || auth === 'openai-responses'
-            ? 'openai'
-            : auth))
+    (auth && protocol !== 'openai')
   )
     return invalidReasoning(route);
   const toggleOnly =

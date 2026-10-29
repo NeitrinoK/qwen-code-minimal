@@ -76,8 +76,6 @@ import {
   refreshMemoryAfterManagedWrite,
   refreshMemoryInstruction,
   finalizeToolResponses,
-  endInteractionSpan,
-  getActiveInteractionSpan,
   decideNotificationAdmission,
   DroppedNotificationTally,
   MAX_BACKGROUND_NOTIFICATION_QUEUE,
@@ -601,10 +599,6 @@ export const useLlmStream = (
 ) => {
   const [initError, setInitError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const activeInteractionPromptIdRef = useRef<string | undefined>(undefined);
-  const activeInteractionOwnerRef = useRef<
-    NonNullable<ReturnType<typeof getActiveInteractionSpan>> | undefined
-  >(undefined);
   const activeGoalTurnRef = useRef<GoalTurnBinding | null>(null);
   const activeGoalAdmissionRef = useRef<GoalTurnAdmission | null>(null);
   const goalTurnBindingsRef = useRef(new Map<string, GoalTurnBinding>());
@@ -1030,9 +1024,6 @@ export const useLlmStream = (
   const pendingDuplicateToolResponsesRef = useRef<
     PendingDuplicateToolResponses[]
   >([]);
-  const interactionOwnersByToolCallIdRef = useRef(
-    new Map<string, NonNullable<ReturnType<typeof getActiveInteractionSpan>>>(),
-  );
   const continuationOwnersByToolCallIdRef = useRef(
     new Map<string, ToolContinuationOwner>(),
   );
@@ -1388,19 +1379,6 @@ export const useLlmStream = (
         controller.abort();
       }
       detachedToolContinuationAbortControllersRef.current.clear();
-    }
-    const activeInteractionPromptId = activeInteractionPromptIdRef.current;
-    const activeInteractionOwner = activeInteractionOwnerRef.current;
-    if (
-      activeInteractionPromptId &&
-      activeInteractionOwner &&
-      getActiveInteractionSpan(activeInteractionPromptId) ===
-        activeInteractionOwner
-    ) {
-      endInteractionSpan('cancelled', {
-        promptId: activeInteractionPromptId,
-      });
-      activeInteractionOwnerRef.current = undefined;
     }
     // Aborting a tick-in-flight ends any self-paced /loop: drop pending loop
     // wakeups so the loop doesn't resume after the cancelled tick. Only clears
@@ -2598,8 +2576,6 @@ export const useLlmStream = (
       signal: AbortSignal,
       submitType: SendMessageType,
       turnAdmission?: GoalTurnAdmission,
-      promptId?: string,
-      trackInteractionOwner = true,
       toolContinuationOwner?: ToolContinuationOwner,
     ): Promise<StreamProcessingResult> => {
       let llmMessageBuffer = '';
@@ -2620,9 +2596,6 @@ export const useLlmStream = (
         0,
       );
       const toolCallRequests: ToolCallRequestInfo[] = [];
-      let streamInteractionOwner = trackInteractionOwner
-        ? activeInteractionOwnerRef.current
-        : undefined;
       const bufferedEvents: BufferedStreamEvent[] = [];
       let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2768,12 +2741,6 @@ export const useLlmStream = (
       dualOutput?.startAssistantMessage();
       try {
         for await (const event of stream) {
-          if (!streamInteractionOwner && promptId) {
-            streamInteractionOwner = getActiveInteractionSpan(promptId);
-            if (trackInteractionOwner && streamInteractionOwner) {
-              activeInteractionOwnerRef.current ??= streamInteractionOwner;
-            }
-          }
           dualOutput?.processEvent(event);
           switch (event.type) {
             case ServerLlmEventType.Thought:
@@ -3238,14 +3205,6 @@ export const useLlmStream = (
               continuationOwnersByToolCallIdRef.current.set(
                 request.callId,
                 toolContinuationOwner,
-              );
-            }
-          }
-          if (streamInteractionOwner) {
-            for (const request of executableToolCallRequests) {
-              interactionOwnersByToolCallIdRef.current.set(
-                request.callId,
-                streamInteractionOwner,
               );
             }
           }
@@ -3797,16 +3756,6 @@ export const useLlmStream = (
       if (!prompt_id) {
         prompt_id = config.getSessionId() + '########' + getPromptCount();
       }
-      if (!allowConcurrentBtwDuringResponse) {
-        activeInteractionPromptIdRef.current = prompt_id;
-        if (
-          submitType !== SendMessageType.ToolResult &&
-          submitType !== SendMessageType.Hook &&
-          submitType !== SendMessageType.Steer
-        ) {
-          activeInteractionOwnerRef.current = undefined;
-        }
-      }
 
       const releaseSubmissionActivity =
         retainSubmissionActivity(submissionGeneration);
@@ -4115,8 +4064,6 @@ export const useLlmStream = (
             processingSignal,
             submitType,
             turnAdmission,
-            prompt_id,
-            !allowConcurrentBtwDuringResponse,
             toolContinuationOwner,
           );
           if (
@@ -4947,7 +4894,6 @@ export const useLlmStream = (
               continuationOwner.foregroundAbortController,
             );
           }
-          interactionOwnersByToolCallIdRef.current.delete(callId);
           continuationOwnersByToolCallIdRef.current.delete(callId);
         }
         for (const controller of detachedAbortControllers) {
@@ -5020,7 +4966,7 @@ export const useLlmStream = (
           !processedMemoryToolsRef.current.has(t.request.callId),
       );
 
-      let llmTools = completedAndReadyToSubmitTools.filter(
+      const llmTools = completedAndReadyToSubmitTools.filter(
         (t) =>
           !t.request.isClientInitiated &&
           !historyCallIdsWithResponse.has(t.request.callId),
@@ -5028,88 +4974,15 @@ export const useLlmStream = (
       const terminalPromptId = completedAndReadyToSubmitTools.find(
         (toolCall) => !toolCall.request.isClientInitiated,
       )?.request.prompt_id;
-      const ownerForToolCall = (toolCall: TrackedToolCall) =>
-        interactionOwnersByToolCallIdRef.current.get(toolCall.request.callId) ??
-        (activeInteractionPromptIdRef.current === toolCall.request.prompt_id
-          ? activeInteractionOwnerRef.current
-          : undefined);
-      const liveOwnerForToolCall = (toolCall: TrackedToolCall) => {
-        const owner = ownerForToolCall(toolCall);
-        const ownerPromptId = toolCall.request.prompt_id;
-        return owner &&
-          ownerPromptId &&
-          getActiveInteractionSpan(ownerPromptId) === owner
-          ? owner
-          : undefined;
-      };
-      const liveActiveInteractionOwner =
-        activeInteractionPromptIdRef.current &&
-        activeInteractionOwnerRef.current &&
-        getActiveInteractionSpan(activeInteractionPromptIdRef.current) ===
-          activeInteractionOwnerRef.current
-          ? activeInteractionOwnerRef.current
-          : undefined;
       const ownerToolCall =
-        (liveActiveInteractionOwner
-          ? llmTools.find(
-              (toolCall) =>
-                liveOwnerForToolCall(toolCall) === liveActiveInteractionOwner,
-            )
-          : undefined) ??
-        llmTools.find((toolCall) => liveOwnerForToolCall(toolCall)) ??
         llmTools[0] ??
         completedAndReadyToSubmitTools.find(
           (toolCall) => !toolCall.request.isClientInitiated,
         );
-      const interactionOwner = ownerToolCall
-        ? liveOwnerForToolCall(ownerToolCall)
-        : undefined;
-      const secondaryInteractionOwners = new Map<
-        NonNullable<ReturnType<typeof getActiveInteractionSpan>>,
-        string
-      >();
-      const secondaryTools = interactionOwner
-        ? llmTools.filter(
-            (toolCall) => ownerForToolCall(toolCall) !== interactionOwner,
-          )
-        : [];
-      for (const toolCall of secondaryTools) {
-        const secondaryOwner = ownerForToolCall(toolCall);
-        if (secondaryOwner && toolCall.request.prompt_id) {
-          secondaryInteractionOwners.set(
-            secondaryOwner,
-            toolCall.request.prompt_id,
-          );
-        }
-        if (toolCall.status !== 'cancelled') {
-          llmClient?.recordCompletedToolCall(
-            toolCall.request.name,
-            toolCall.request.args as Record<string, unknown>,
-          );
-        }
-        dualOutput?.emitToolResult(toolCall.request, toolCall.response);
-      }
-      if (secondaryTools.length > 0) {
-        const secondaryCallIds = new Set(
-          secondaryTools.map((toolCall) => toolCall.request.callId),
-        );
-        markToolsAsSubmitted([...secondaryCallIds]);
-        llmTools = llmTools.filter(
-          (toolCall) => !secondaryCallIds.has(toolCall.request.callId),
-        );
-      }
       for (const toolCall of completedAndReadyToSubmitTools) {
-        interactionOwnersByToolCallIdRef.current.delete(
-          toolCall.request.callId,
-        );
         continuationOwnersByToolCallIdRef.current.delete(
           toolCall.request.callId,
         );
-      }
-      for (const [owner, ownerPromptId] of secondaryInteractionOwners) {
-        if (getActiveInteractionSpan(ownerPromptId) === owner) {
-          endInteractionSpan('cancelled', { promptId: ownerPromptId });
-        }
       }
       let promptId =
         ownerToolCall?.request.prompt_id ?? continuationOwner?.promptId;
@@ -5137,11 +5010,7 @@ export const useLlmStream = (
           parts: responses.flatMap((entry) => entry.responseParts),
         });
       };
-      const endToolInteraction = (
-        status: 'ok' | 'error' | 'cancelled',
-        errorMessage?: string,
-        errorType?: string,
-      ) => {
+      const settleToolContinuation = () => {
         if (continuationOwner?.detachedAbortController) {
           detachedToolContinuationAbortControllersRef.current.delete(
             continuationOwner.detachedAbortController,
@@ -5153,21 +5022,6 @@ export const useLlmStream = (
             continuationOwner.foregroundAbortController
         ) {
           abortControllerRef.current = null;
-        }
-        if (
-          !promptId ||
-          !interactionOwner ||
-          getActiveInteractionSpan(promptId) !== interactionOwner
-        ) {
-          return;
-        }
-        endInteractionSpan(status, {
-          promptId,
-          ...(errorMessage ? { errorMessage } : {}),
-          ...(errorType ? { errorType } : {}),
-        });
-        if (activeInteractionOwnerRef.current === interactionOwner) {
-          activeInteractionOwnerRef.current = undefined;
         }
       };
       let toolGoalPermit: GoalTurnPermit | undefined;
@@ -5214,11 +5068,7 @@ export const useLlmStream = (
           },
           Date.now(),
         );
-        endToolInteraction(
-          'error',
-          'invalid Goal tool context',
-          'continuation_goal_context_invalid',
-        );
+        settleToolContinuation();
         return;
       }
       if (!toolGoalPermit && toolGoalContexts.length > 0) {
@@ -5251,11 +5101,7 @@ export const useLlmStream = (
             },
             Date.now(),
           );
-          endToolInteraction(
-            'error',
-            'missing Goal tool context',
-            'continuation_goal_context_missing',
-          );
+          settleToolContinuation();
           return;
         }
       }
@@ -5278,11 +5124,7 @@ export const useLlmStream = (
             },
             Date.now(),
           );
-          endToolInteraction(
-            'error',
-            'stale Goal tool context',
-            'continuation_goal_context_stale',
-          );
+          settleToolContinuation();
           return;
         }
         toolGoalBinding =
@@ -5338,9 +5180,6 @@ export const useLlmStream = (
       const completedCallIds = new Set(
         llmTools.map((toolCall) => toolCall.request.callId),
       );
-      const secondaryCallIds = new Set(
-        secondaryTools.map((toolCall) => toolCall.request.callId),
-      );
       const readyDuplicateBatches: PendingDuplicateToolResponses[] = [];
       pendingDuplicateToolResponsesRef.current =
         pendingDuplicateToolResponsesRef.current.filter((batch) => {
@@ -5350,19 +5189,11 @@ export const useLlmStream = (
           if (isReady) {
             readyDuplicateBatches.push(batch);
           }
-          const belongsToSecondaryOwner = [...batch.executableCallIds].some(
-            (callId) => secondaryCallIds.has(callId),
-          );
-          return !isReady && !belongsToSecondaryOwner;
+          return !isReady;
         });
-      const pendingDuplicateResponses = readyDuplicateBatches
-        .flatMap((batch) => batch.duplicateResponses)
-        .filter(
-          ({ request }) =>
-            !interactionOwner ||
-            !request.prompt_id ||
-            request.prompt_id === promptId,
-        );
+      const pendingDuplicateResponses = readyDuplicateBatches.flatMap(
+        (batch) => batch.duplicateResponses,
+      );
       const pendingDuplicatePromptId = readyDuplicateBatches[0]?.promptId;
       if (!promptId && pendingDuplicatePromptId) {
         promptId = pendingDuplicatePromptId;
@@ -5386,26 +5217,7 @@ export const useLlmStream = (
             { pauseReason: goalPauseReasonForFailure('') },
           );
         }
-        if (
-          completedAndReadyToSubmitTools.length > 0 &&
-          completedAndReadyToSubmitTools.every(
-            (toolCall) => toolCall.status === 'cancelled',
-          )
-        ) {
-          endToolInteraction('cancelled');
-        } else if (
-          completedAndReadyToSubmitTools.some(
-            (toolCall) => toolCall.status === 'error',
-          )
-        ) {
-          endToolInteraction(
-            'error',
-            'tool continuation ended with an error',
-            'continuation_tool_error',
-          );
-        } else {
-          endToolInteraction('ok');
-        }
+        settleToolContinuation();
         return;
       }
 
@@ -5517,7 +5329,7 @@ export const useLlmStream = (
             { userCancelled: true },
           );
         }
-        endToolInteraction('cancelled');
+        settleToolContinuation();
         return;
       }
 
@@ -5556,7 +5368,7 @@ export const useLlmStream = (
             { userCancelled: true },
           );
         }
-        endToolInteraction('cancelled');
+        settleToolContinuation();
         return;
       }
 
@@ -5610,7 +5422,6 @@ export const useLlmStream = (
       );
       if (terminatesGoalTurn && toolGoalBinding) {
         llmClient.addHistory({ role: 'user', parts: responsesToSend });
-        let goalFinishFailed = false;
         try {
           await config.getChatRecordingService()?.flush();
           const runtime = await config.getGoalRuntimeReady();
@@ -5640,7 +5451,6 @@ export const useLlmStream = (
           }
         } catch (error) {
           const errorMessage = getErrorMessage(error);
-          goalFinishFailed = true;
           await failClosedGoalTurn(
             toolGoalBinding,
             `Goal turn could not finish: ${errorMessage}`,
@@ -5650,15 +5460,7 @@ export const useLlmStream = (
           // Idempotent with the release inside failClosedGoalTurn; also covers the success path.
           releaseGoalTurn(toolGoalBinding);
         }
-        if (goalFinishFailed) {
-          endToolInteraction(
-            'error',
-            'Goal tool continuation could not finish',
-            'continuation_goal_finish_failed',
-          );
-        } else {
-          endToolInteraction('ok');
-        }
+        settleToolContinuation();
         return;
       }
 
@@ -5767,7 +5569,7 @@ export const useLlmStream = (
             { pauseReason: goalPauseReasonForFailure('') },
           );
         }
-        endToolInteraction('cancelled');
+        settleToolContinuation();
         return;
       }
 
@@ -5796,11 +5598,7 @@ export const useLlmStream = (
             { pauseReason: goalPauseReasonForFailure('') },
           );
         }
-        endToolInteraction(
-          'error',
-          'tool continuation capacity exhausted',
-          'continuation_capacity_exhausted',
-        );
+        settleToolContinuation();
         return;
       }
 
@@ -5995,7 +5793,7 @@ export const useLlmStream = (
             { userCancelled: true },
           );
         }
-        endToolInteraction('cancelled');
+        settleToolContinuation();
         return;
       }
       if (toolGoalBinding?.controller.signal.aborted) {
@@ -6012,7 +5810,7 @@ export const useLlmStream = (
           'Goal tool continuation was preempted',
           { pauseReason: GOAL_PAUSE_REASON_USER_INTERRUPT },
         );
-        endToolInteraction('cancelled');
+        settleToolContinuation();
         return;
       }
 
@@ -6021,19 +5819,11 @@ export const useLlmStream = (
         onDelivered: () => submissionSettlement?.accept(),
         onAdmissionFailed: () => {
           submissionSettlement?.restore();
-          endToolInteraction(
-            'error',
-            'tool continuation admission failed',
-            'continuation_admission_failed',
-          );
+          settleToolContinuation();
         },
         onDeliveryFailed: () => {
           submissionSettlement?.restore();
-          endToolInteraction(
-            'error',
-            'tool continuation delivery failed',
-            'continuation_delivery_failed',
-          );
+          settleToolContinuation();
         },
         goalBinding: toolGoalBinding,
         toolContinuationOwner: continuationOwner,

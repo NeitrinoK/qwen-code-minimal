@@ -40,23 +40,17 @@ cd your-project
 qwen
 ```
 
-On first launch you'll be prompted to connect a model provider. The menu offers **Alibaba ModelStudio** (the official recommended setup), **Third-party Providers** (built-in providers such as DeepSeek, MiniMax, Z.AI, Kimi, and OpenRouter, connected with an API key), and **Custom Provider** (a local server, proxy, or unsupported provider). For the [Alibaba Cloud Token Plan](https://bailian.console.aliyun.com/cn-beijing?tab=doc#/doc/?type=model&url=3028856) ([intl](https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=doc#/doc/?type=model)), choose **Alibaba ModelStudio → Token Plan**; to use a ModelStudio API key, choose **Alibaba ModelStudio → Standard API Key** and follow the API setup guide ([Beijing](https://bailian.console.aliyun.com/cn-beijing/?tab=doc#/doc/?type=model&url=3023091) / [intl](https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=doc#/doc/?type=model&url=2974721)). Then let's start with understanding your codebase. Try one of these commands:
+Choose your authentication method — **API Key** — and follow the prompts to configure. See the API setup guide ([Beijing](https://bailian.console.aliyun.com/cn-beijing/?tab=doc#/doc/?type=model&url=3023091) / [intl](https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=doc#/doc/?type=model&url=2974721)) for step-by-step instructions. Then let's start with understanding your codebase. Try one of these commands:
 
 ```
 what does this project do?
 ```
-
-![](https://cloud.video.taobao.com/vod/j7-QtQScn8UEAaEdiv619fSkk5p-t17orpDbSqKVL5A.mp4)
 
 You'll be prompted to log in on first use. That's it! [Continue with Quickstart (5 mins) →](./quickstart)
 
 > [!tip]
 >
 > See [troubleshooting](./support/troubleshooting) if you hit issues.
-
-> [!note]
->
-> **New VS Code Extension (Beta)**: Prefer a graphical interface? Our new **VS Code extension** provides an easy-to-use native IDE experience without requiring terminal familiarity. Simply install from the marketplace and start coding with Qwen Code directly in your sidebar. Download and install the [Qwen Code Companion](https://marketplace.visualstudio.com/items?itemName=qwenlm.qwen-code-vscode-ide-companion) now.
 
 ## What Qwen Code does for you
 

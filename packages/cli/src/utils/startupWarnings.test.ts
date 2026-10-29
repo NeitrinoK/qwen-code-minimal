@@ -9,7 +9,24 @@ import { getStartupWarnings } from './startupWarnings.js';
 import * as fs from 'node:fs/promises';
 import { getErrorMessage } from '@qwen-code/qwen-code-core';
 
-vi.mock('node:fs/promises', { spy: true });
+const { mockAccess, mockReadFile, mockUnlink } = vi.hoisted(() => ({
+  mockAccess: vi.fn(),
+  mockReadFile: vi.fn(),
+  mockUnlink: vi.fn(),
+}));
+vi.mock('node:fs/promises', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:fs/promises')>(
+      'node:fs/promises',
+    );
+  const mocked = {
+    ...actual,
+    access: mockAccess,
+    readFile: mockReadFile,
+    unlink: mockUnlink,
+  };
+  return { ...mocked, default: mocked };
+});
 vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('@qwen-code/qwen-code-core')>();

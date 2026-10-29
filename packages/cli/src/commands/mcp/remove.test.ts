@@ -41,9 +41,11 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     await importOriginal<typeof import('@qwen-code/qwen-code-core')>();
   return {
     ...actual,
-    MCPOAuthTokenStorage: vi.fn(() => ({
-      deleteCredentials: mockDeleteCredentials,
-    })),
+    MCPOAuthTokenStorage: vi.fn(function () {
+      return {
+        deleteCredentials: mockDeleteCredentials,
+      };
+    }),
   };
 });
 

@@ -112,7 +112,9 @@ describe('mcp list command', () => {
 
     mockedCreateMcpClient.mockReturnValue(mockClient);
     mockedCreateTransport.mockResolvedValue(mockTransport);
-    MockedExtensionManager.mockImplementation(() => mockExtensionManager);
+    MockedExtensionManager.mockImplementation(function () {
+      return mockExtensionManager;
+    });
     mockedIsWorkspaceTrusted.mockReturnValue({
       isTrusted: true,
       source: 'file',

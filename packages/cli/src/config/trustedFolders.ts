@@ -12,15 +12,11 @@ import {
   createDebugLogger,
   FatalConfigError,
   getErrorMessage,
-  ideContextStore,
   Storage,
 } from '@qwen-code/qwen-code-core';
 import type { Settings } from './settings.js';
 import { parseJsoncObject, updateJsoncContent } from '../utils/jsonc-editor.js';
-import {
-  arePathsEquivalent,
-  getPathComparisonVariants,
-} from './path-comparison.js';
+import { getPathComparisonVariants } from './path-comparison.js';
 import {
   buildTrustPrecedenceRules,
   resolveTrustDecision,
@@ -269,7 +265,7 @@ function writeTrustedFolders(
       // config path — a redirected write could either leak the
       // trusted-folder list to an attacker target or leave the user's
       // real config silently stale. Matches the credential write
-      // sites' security posture (sharedTokenManager, oauth-token-storage,
+      // sites' security posture (oauth-token-storage,
       // file-token-storage all use noFollow:true).
       { encoding: 'utf-8', mode: 0o600, forceMode: true, noFollow: true },
     );
@@ -369,24 +365,6 @@ export function getWorkspaceTrustStatus(
     };
   }
 
-  const ideTrust = ideContextStore.get()?.workspaceState?.isTrusted;
-  if (
-    ideTrust !== undefined &&
-    arePathsEquivalent(workspaceCwd, process.cwd())
-  ) {
-    return {
-      v: 1,
-      workspaceCwd,
-      folderTrustEnabled: true,
-      effective: {
-        state: ideTrust ? 'trusted' : 'untrusted',
-        source: 'ide',
-      },
-      explicitTrustLevel: null,
-      requiresDaemonRestartForChanges: true,
-    };
-  }
-
   const folders = loadTrustedFoldersWithOverrides(trustConfig);
   const isTrusted = folders.isPathTrusted(workspaceCwd);
   const state: WorkspaceTrustState =
@@ -418,15 +396,6 @@ export function isWorkspaceTrusted(
 ): TrustResult {
   if (!isFolderTrustEnabled(settings)) {
     return { isTrusted: true, source: undefined };
-  }
-
-  const ideTrust = ideContextStore.get()?.workspaceState?.isTrusted;
-  if (
-    ideTrust !== undefined &&
-    (workspacePath === undefined ||
-      arePathsEquivalent(workspacePath, process.cwd()))
-  ) {
-    return { isTrusted: ideTrust, source: 'ide' };
   }
 
   return trustStatusToResult(

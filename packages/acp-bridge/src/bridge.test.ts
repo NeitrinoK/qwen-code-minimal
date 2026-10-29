@@ -12379,7 +12379,11 @@ describe('createAcpSessionBridge', () => {
             );
           }
         },
-        injectPromptContext,
+        injectPromptContext: injectPromptContext as unknown as <
+          T extends object,
+        >(
+          request: T,
+        ) => T,
       };
       const bridge = makeBridge({
         channelFactory: async () => handle.channel,

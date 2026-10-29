@@ -334,6 +334,8 @@ describe('SkillsManagerDialog', () => {
       availableTerminalHeight: 18,
     });
     await vi.waitFor(() => expect(lastFrame()).toContain('› [ ] eight'));
+    // Let the input handler attach before the first keystroke.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     act(() => stdin.write('j'));
     await vi.waitFor(() => expect(lastFrame()).toContain('› [x] nine'));
     act(() => stdin.write('\r'));
@@ -406,10 +408,13 @@ describe('SkillsManagerDialog', () => {
   });
 
   it('keeps the translated title on one row at narrow widths', async () => {
-    await setLanguageAsync('ca');
+    // Russian is the bundled non-English locale with a long title.
+    await setLanguageAsync('ru');
     const result = renderDialog({ availableTerminalHeight: 12 }, 26);
     try {
-      await vi.waitFor(() => expect(result.lastFrame()).toContain('Gestiona'));
+      await vi.waitFor(() =>
+        expect(result.lastFrame()).toContain('Управление'),
+      );
       expect(result.lastFrame()?.split('\n').length).toBeLessThanOrEqual(12);
     } finally {
       result.unmount();

@@ -2,39 +2,39 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 worktree 添加会话持久化、hooksPath 初始化、Footer 状态展示和退出对话框，使 worktree 在 `--resume` 后可恢复，用户始终知道自己在哪个隔离环境中。
+**Goal:** Add session persistence, hooksPath initialization, Footer status display, and an exit dialog for worktrees, so that a worktree can be restored after `--resume` and the user always knows which isolated environment they are in.
 
-**Architecture:** 新增 `WorktreeSession` sidecar JSON 文件（与 JSONL session 文件并存），`EnterWorktree` 写入、`ExitWorktree` 清除；CLI 层通过 `useWorktreeSession` hook 监听文件变化并同步到 `UIState.activeWorktree`；Footer 读取该字段内置渲染 worktree 行；`WorktreeExitDialog` 在检测到活跃 worktree 时拦截第二次 Ctrl+C。
+**Architecture:** Add a `WorktreeSession` sidecar JSON file (coexisting with the JSONL session file); `EnterWorktree` writes it and `ExitWorktree` clears it. The CLI layer watches the file for changes via a `useWorktreeSession` hook and syncs it into `UIState.activeWorktree`; the Footer reads that field and renders a built-in worktree row; `WorktreeExitDialog` intercepts the second Ctrl+C when an active worktree is detected.
 
 **Tech Stack:** TypeScript, React (Ink), Node.js `fs.watch`, `simple-git`, Vitest
 
 ---
 
-## 文件结构
+## File Structure
 
-| 操作 | 文件                                                         | 说明                                                                          |
-| ---- | ------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| 新建 | `packages/core/src/services/worktreeSessionService.ts`       | WorktreeSession 接口 + 读写清除函数                                           |
-| 新建 | `packages/core/src/services/worktreeSessionService.test.ts`  | 单元测试                                                                      |
-| 修改 | `packages/core/src/services/sessionService.ts`               | 新增 `getWorktreeSessionPath()` 公开方法                                      |
-| 修改 | `packages/core/src/services/gitWorktreeService.ts`           | `createUserWorktree()` / `createAgentWorktree()` 后追加 `core.hooksPath` 配置 |
-| 修改 | `packages/core/src/services/gitWorktreeService.test.ts`      | hooksPath 测试                                                                |
-| 修改 | `packages/core/src/tools/enter-worktree.ts`                  | 创建 worktree 后写入 WorktreeSession                                          |
-| 修改 | `packages/core/src/tools/enter-worktree.test.ts`             | session 写入测试                                                              |
-| 修改 | `packages/core/src/tools/exit-worktree.ts`                   | 退出 worktree 后清除 WorktreeSession                                          |
-| 修改 | `packages/core/src/tools/exit-worktree.test.ts`              | session 清除测试                                                              |
-| 新建 | `packages/cli/src/ui/hooks/useWorktreeSession.ts`            | 监听 sidecar 文件，返回当前 WorktreeSession                                   |
-| 修改 | `packages/cli/src/ui/contexts/UIStateContext.tsx`            | 新增 `activeWorktree` 字段                                                    |
-| 修改 | `packages/cli/src/ui/AppContainer.tsx`                       | 同步 `activeWorktree`、注入 resume 上下文、拦截退出                           |
-| 修改 | `packages/cli/src/ui/hooks/useStatusLine.ts`                 | `StatusLineCommandInput` 新增 `worktree` 字段                                 |
-| 修改 | `packages/cli/src/ui/components/Footer.tsx`                  | 内置 worktree 行展示                                                          |
-| 新建 | `packages/cli/src/ui/components/WorktreeExitDialog.tsx`      | 退出提示对话框                                                                |
-| 新建 | `packages/cli/src/ui/components/WorktreeExitDialog.test.tsx` | 组件测试                                                                      |
-| 修改 | `packages/cli/src/ui/components/DialogManager.tsx`           | 注册 WorktreeExitDialog                                                       |
+| Operation | File                                                         | Description                                                                                  |
+| --------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Create    | `packages/core/src/services/worktreeSessionService.ts`       | WorktreeSession interface + read/write/clear functions                                       |
+| Create    | `packages/core/src/services/worktreeSessionService.test.ts`  | Unit tests                                                                                   |
+| Modify    | `packages/core/src/services/sessionService.ts`               | Add the `getWorktreeSessionPath()` public method                                             |
+| Modify    | `packages/core/src/services/gitWorktreeService.ts`           | Append `core.hooksPath` configuration after `createUserWorktree()` / `createAgentWorktree()` |
+| Modify    | `packages/core/src/services/gitWorktreeService.test.ts`      | hooksPath tests                                                                              |
+| Modify    | `packages/core/src/tools/enter-worktree.ts`                  | Write WorktreeSession after creating the worktree                                            |
+| Modify    | `packages/core/src/tools/enter-worktree.test.ts`             | session write test                                                                           |
+| Modify    | `packages/core/src/tools/exit-worktree.ts`                   | Clear WorktreeSession after exiting the worktree                                             |
+| Modify    | `packages/core/src/tools/exit-worktree.test.ts`              | session clear test                                                                           |
+| Create    | `packages/cli/src/ui/hooks/useWorktreeSession.ts`            | Watch the sidecar file and return the current WorktreeSession                                |
+| Modify    | `packages/cli/src/ui/contexts/UIStateContext.tsx`            | Add the `activeWorktree` field                                                               |
+| Modify    | `packages/cli/src/ui/AppContainer.tsx`                       | Sync `activeWorktree`, inject resume context, intercept exit                                 |
+| Modify    | `packages/cli/src/ui/hooks/useStatusLine.ts`                 | Add the `worktree` field to `StatusLineCommandInput`                                         |
+| Modify    | `packages/cli/src/ui/components/Footer.tsx`                  | Built-in worktree row display                                                                |
+| Create    | `packages/cli/src/ui/components/WorktreeExitDialog.tsx`      | Exit-prompt dialog                                                                           |
+| Create    | `packages/cli/src/ui/components/WorktreeExitDialog.test.tsx` | Component test                                                                               |
+| Modify    | `packages/cli/src/ui/components/DialogManager.tsx`           | Register WorktreeExitDialog                                                                  |
 
 ---
 
-## Task 1: WorktreeSession sidecar 存储
+## Task 1: WorktreeSession sidecar storage
 
 **Files:**
 
@@ -42,7 +42,7 @@
 - Create: `packages/core/src/services/worktreeSessionService.test.ts`
 - Modify: `packages/core/src/services/sessionService.ts`
 
-- [ ] **Step 1: 新建 `worktreeSessionService.ts`**
+- [ ] **Step 1: Create `worktreeSessionService.ts`**
 
 ```typescript
 // packages/core/src/services/worktreeSessionService.ts
@@ -89,7 +89,7 @@ export async function clearWorktreeSession(filePath: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 2: 写失败测试**
+- [ ] **Step 2: Write the failing test**
 
 ```typescript
 // packages/core/src/services/worktreeSessionService.test.ts
@@ -162,21 +162,21 @@ describe('clearWorktreeSession', () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the test to confirm it fails**
 
 ```bash
 cd packages/core
 npx vitest run src/services/worktreeSessionService.test.ts
 ```
 
-期望：`FAIL` — 模块不存在。
+Expected: `FAIL` — the module does not exist.
 
-- [ ] **Step 4: 修复 `writeWorktreeSession` 中的 require 调用**
+- [ ] **Step 4: Fix the require call in `writeWorktreeSession`**
 
-`worktreeSessionService.ts` 中用 `path.dirname`，需要在文件顶部引入 `node:path`：
+`worktreeSessionService.ts` uses `path.dirname`, so `node:path` needs to be imported at the top of the file:
 
 ```typescript
-// 把 "require('node:path').dirname(filePath)" 替换为正确引入
+// Replace "require('node:path').dirname(filePath)" with a proper import
 import * as path from 'node:path';
 
 export async function writeWorktreeSession(
@@ -188,18 +188,18 @@ export async function writeWorktreeSession(
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the test to confirm it passes**
 
 ```bash
 cd packages/core
 npx vitest run src/services/worktreeSessionService.test.ts
 ```
 
-期望：`PASS` — 6 tests passed。
+Expected: `PASS` — 6 tests passed.
 
-- [ ] **Step 6: 在 `SessionService` 中新增 `getWorktreeSessionPath()`**
+- [ ] **Step 6: Add `getWorktreeSessionPath()` to `SessionService`**
 
-在 `packages/core/src/services/sessionService.ts` 找到 `private getChatsDir()` 方法（约行 180），在其后添加：
+In `packages/core/src/services/sessionService.ts`, find the `private getChatsDir()` method (around line 180) and add after it:
 
 ```typescript
 getWorktreeSessionPath(sessionId: string): string {
@@ -207,16 +207,16 @@ getWorktreeSessionPath(sessionId: string): string {
 }
 ```
 
-- [ ] **Step 7: 类型检查**
+- [ ] **Step 7: Type check**
 
 ```bash
 cd packages/core
 npm run typecheck
 ```
 
-期望：无错误。
+Expected: no errors.
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/core/src/services/worktreeSessionService.ts \
@@ -231,12 +231,12 @@ git commit -m "feat(worktree): add WorktreeSession sidecar storage"
 
 **Files:**
 
-- Modify: `packages/core/src/services/gitWorktreeService.ts:1133-1158`（`createUserWorktree`）
+- Modify: `packages/core/src/services/gitWorktreeService.ts:1133-1158` (`createUserWorktree`)
 - Modify: `packages/core/src/services/gitWorktreeService.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
-在 `gitWorktreeService.test.ts` 中找到 `createUserWorktree` 测试组，新增：
+In `gitWorktreeService.test.ts`, find the `createUserWorktree` test group and add:
 
 ```typescript
 it('configures core.hooksPath to main repo after creation', async () => {
@@ -255,18 +255,18 @@ it('configures core.hooksPath to main repo after creation', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
 cd packages/core
 npx vitest run src/services/gitWorktreeService.test.ts -t "configures core.hooksPath"
 ```
 
-期望：`FAIL` — hooksPath 为空。
+Expected: `FAIL` — hooksPath is empty.
 
-- [ ] **Step 3: 在 `createUserWorktree` 中追加 hooksPath 配置**
+- [ ] **Step 3: Append hooksPath configuration in `createUserWorktree`**
 
-在 `gitWorktreeService.ts` 中找到 `createUserWorktree` 内 `git worktree add` 调用之后（约行 1140），在 `return { success: true, worktree }` 之前添加：
+In `gitWorktreeService.ts`, find the spot after the `git worktree add` call inside `createUserWorktree` (around line 1140), and before `return { success: true, worktree }` add:
 
 ```typescript
 // Configure hooksPath so commits inside this worktree run the main
@@ -309,22 +309,22 @@ try {
 }
 ```
 
-`this.sourceRepoPath` 是 `GitWorktreeService` 构造函数赋值的私有字段（`this.sourceRepoPath = path.resolve(sourceRepoPath)`，约行 224）。需要在文件顶部确认已 `import * as fs from 'node:fs/promises'`。
+`this.sourceRepoPath` is a private field assigned in the `GitWorktreeService` constructor (`this.sourceRepoPath = path.resolve(sourceRepoPath)`, around line 224). Confirm that `import * as fs from 'node:fs/promises'` is already present at the top of the file.
 
-- [ ] **Step 4: 对 `createAgentWorktree` 做相同修改**
+- [ ] **Step 4: Make the same change to `createAgentWorktree`**
 
-找到 `createAgentWorktree` 方法，在其 `git worktree add` 之后添加相同的 hooksPath 代码块（完整代码与 Step 3 相同，`slug` 来自 agent worktree 的参数）。
+Find the `createAgentWorktree` method and add the same hooksPath code block after its `git worktree add` (the full code is identical to Step 3, with `slug` coming from the agent worktree's parameters).
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the test to confirm it passes**
 
 ```bash
 cd packages/core
 npx vitest run src/services/gitWorktreeService.test.ts -t "configures core.hooksPath"
 ```
 
-期望：`PASS`。
+Expected: `PASS`.
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add packages/core/src/services/gitWorktreeService.ts \
@@ -334,16 +334,16 @@ git commit -m "feat(worktree): configure core.hooksPath after worktree creation"
 
 ---
 
-## Task 3: EnterWorktreeTool 写入 WorktreeSession
+## Task 3: EnterWorktreeTool writes WorktreeSession
 
 **Files:**
 
 - Modify: `packages/core/src/tools/enter-worktree.ts`
 - Modify: `packages/core/src/tools/enter-worktree.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
-在 `enter-worktree.test.ts` 的成功创建用例之后新增：
+After the successful-creation case in `enter-worktree.test.ts`, add:
 
 ```typescript
 import { readWorktreeSession } from '../services/worktreeSessionService.js';
@@ -369,24 +369,24 @@ it('writes WorktreeSession sidecar after creating worktree', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
 cd packages/core
 npx vitest run src/tools/enter-worktree.test.ts -t "writes WorktreeSession"
 ```
 
-期望：`FAIL` — session file is null。
+Expected: `FAIL` — session file is null.
 
-- [ ] **Step 3: 修改 `enter-worktree.ts`，在成功创建后写入 session**
+- [ ] **Step 3: Modify `enter-worktree.ts` to write the session after successful creation**
 
-在 `enter-worktree.ts` 顶部新增 import：
+Add an import at the top of `enter-worktree.ts`:
 
 ```typescript
 import { writeWorktreeSession } from '../services/worktreeSessionService.js';
 ```
 
-在 `execute()` 方法中，获取 baseBranch 之后、`createUserWorktree()` 调用之前，先抓取当前 HEAD commit SHA：
+In the `execute()` method, after obtaining baseBranch and before the `createUserWorktree()` call, first capture the current HEAD commit SHA:
 
 ```typescript
 // Capture HEAD before branching — WorktreeExitDialog uses this to count
@@ -399,7 +399,7 @@ try {
 }
 ```
 
-同时在 `GitWorktreeService` 中新增公开方法（`gitWorktreeService.ts`，放在 `getCurrentBranch()` 附近）：
+Also add a public method to `GitWorktreeService` (in `gitWorktreeService.ts`, placed near `getCurrentBranch()`):
 
 ```typescript
 async getHeadCommit(): Promise<string> {
@@ -411,7 +411,7 @@ async getHeadCommit(): Promise<string> {
 }
 ```
 
-在 `writeWorktreeSessionMarker(...)` 调用之后，新增：
+After the `writeWorktreeSessionMarker(...)` call, add:
 
 ```typescript
 // Persist worktree session so --resume can restore context.
@@ -434,22 +434,22 @@ try {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the test to confirm it passes**
 
 ```bash
 cd packages/core
 npx vitest run src/tools/enter-worktree.test.ts
 ```
 
-期望：全部通过，无回归。
+Expected: all pass, no regressions.
 
-- [ ] **Step 5: 类型检查**
+- [ ] **Step 5: Type check**
 
 ```bash
 cd packages/core && npm run typecheck
 ```
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add packages/core/src/tools/enter-worktree.ts \
@@ -459,16 +459,16 @@ git commit -m "feat(worktree): persist WorktreeSession in EnterWorktreeTool"
 
 ---
 
-## Task 4: ExitWorktreeTool 清除 WorktreeSession
+## Task 4: ExitWorktreeTool clears WorktreeSession
 
 **Files:**
 
 - Modify: `packages/core/src/tools/exit-worktree.ts`
 - Modify: `packages/core/src/tools/exit-worktree.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write the failing test**
 
-在 `exit-worktree.test.ts` 新增两个用例（keep 和 remove 都应该清除 session）：
+Add two cases to `exit-worktree.test.ts` (both keep and remove should clear the session):
 
 ```typescript
 import {
@@ -513,24 +513,24 @@ it('clears WorktreeSession after remove', async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 2: Run the test to confirm it fails**
 
 ```bash
 cd packages/core
 npx vitest run src/tools/exit-worktree.test.ts -t "clears WorktreeSession"
 ```
 
-期望：`FAIL`。
+Expected: `FAIL`.
 
-- [ ] **Step 3: 修改 `exit-worktree.ts`**
+- [ ] **Step 3: Modify `exit-worktree.ts`**
 
-在顶部新增 import：
+Add an import at the top:
 
 ```typescript
 import { clearWorktreeSession } from '../services/worktreeSessionService.js';
 ```
 
-找到 `action === 'keep'` 的返回路径（约行 184-196），在 `return { llmContent: ..., returnDisplay: ... }` 之前新增：
+Find the return path for `action === 'keep'` (around lines 184-196) and, before `return { llmContent: ..., returnDisplay: ... }`, add:
 
 ```typescript
 try {
@@ -544,18 +544,18 @@ try {
 }
 ```
 
-找到 `action === 'remove'` 的成功返回路径（`removeUserWorktree` 调用之后），同样新增相同的 `clearWorktreeSession` 调用块。
+Find the success return path for `action === 'remove'` (after the `removeUserWorktree` call) and likewise add the same `clearWorktreeSession` call block.
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: Run the test to confirm it passes**
 
 ```bash
 cd packages/core
 npx vitest run src/tools/exit-worktree.test.ts
 ```
 
-期望：全部通过。
+Expected: all pass.
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/core/src/tools/exit-worktree.ts \
@@ -573,9 +573,9 @@ git commit -m "feat(worktree): clear WorktreeSession in ExitWorktreeTool"
 - Modify: `packages/cli/src/ui/contexts/UIStateContext.tsx`
 - Modify: `packages/cli/src/ui/AppContainer.tsx`
 
-- [ ] **Step 1: 在 `UIStateContext.tsx` 新增 `activeWorktree` 字段**
+- [ ] **Step 1: Add the `activeWorktree` field to `UIStateContext.tsx`**
 
-找到 `UIState` interface（约行 85），在 `branchName: string | undefined;` 附近新增：
+Find the `UIState` interface (around line 85) and, near `branchName: string | undefined;`, add:
 
 ```typescript
 activeWorktree: {
@@ -588,9 +588,9 @@ activeWorktree: {
 } | null;
 ```
 
-找到 UIState 的初始值（通常在 `AppContainer.tsx` 的 UIState provider 处）或 `createContext` 的 defaultValue，添加 `activeWorktree: null`。
+Find the initial value of UIState (usually at the UIState provider in `AppContainer.tsx`) or the `createContext` defaultValue, and add `activeWorktree: null`.
 
-- [ ] **Step 2: 新建 `useWorktreeSession.ts`**
+- [ ] **Step 2: Create `useWorktreeSession.ts`**
 
 ```typescript
 // packages/cli/src/ui/hooks/useWorktreeSession.ts
@@ -639,7 +639,7 @@ export function useWorktreeSession(): WorktreeSession | null {
 }
 ```
 
-注意：`readWorktreeSession` 和 `WorktreeSession` 需要从 `@qwen-code/qwen-code-core` 导出，需要同时在 `packages/core/src/index.ts` 中新增导出：
+Note: `readWorktreeSession` and `WorktreeSession` need to be exported from `@qwen-code/qwen-code-core`, so a new export must also be added in `packages/core/src/index.ts`:
 
 ```typescript
 export {
@@ -650,21 +650,21 @@ export {
 } from './services/worktreeSessionService.js';
 ```
 
-- [ ] **Step 3: 在 `AppContainer.tsx` 使用 hook 同步 `activeWorktree`**
+- [ ] **Step 3: Use the hook in `AppContainer.tsx` to sync `activeWorktree`**
 
-在 `AppContainer.tsx` 顶部新增 import：
+Add an import at the top of `AppContainer.tsx`:
 
 ```typescript
 import { useWorktreeSession } from './hooks/useWorktreeSession.js';
 ```
 
-在 `AppContainer` 函数体内（靠近 `branchName` 的使用处），新增：
+Inside the `AppContainer` function body (near where `branchName` is used), add:
 
 ```typescript
 const worktreeSession = useWorktreeSession();
 ```
 
-在传递给 `UIStateContext.Provider` 的 value 中新增：
+In the value passed to `UIStateContext.Provider`, add:
 
 ```typescript
 activeWorktree: worktreeSession
@@ -679,15 +679,15 @@ activeWorktree: worktreeSession
   : null,
 ```
 
-- [ ] **Step 4: 类型检查**
+- [ ] **Step 4: Type check**
 
 ```bash
 npm run typecheck
 ```
 
-从仓库根运行（跨 workspace 检查）。期望：无错误。
+Run from the repository root (cross-workspace check). Expected: no errors.
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/core/src/services/worktreeSessionService.ts \
@@ -700,35 +700,35 @@ git commit -m "feat(worktree): add useWorktreeSession hook and UIState.activeWor
 
 ---
 
-## Task 6: StatusLineCommandInput.worktree 字段 + Footer worktree 行
+## Task 6: StatusLineCommandInput.worktree field + Footer worktree row
 
 **Files:**
 
 - Modify: `packages/cli/src/ui/hooks/useStatusLine.ts`
 - Modify: `packages/cli/src/ui/components/Footer.tsx`
 
-- [ ] **Step 1: 在 `useStatusLine.ts` 新增 `worktree` 字段**
+- [ ] **Step 1: Add the `worktree` field to `useStatusLine.ts`**
 
-找到 `StatusLineCommandInput` interface（约行 21），在 `git?: { branch: string }` 字段之后新增：
+Find the `StatusLineCommandInput` interface (around line 21) and, after the `git?: { branch: string }` field, add:
 
 ```typescript
 worktree?: {
-  /** worktree slug（短名称，如 "my-feature"） */
+  /** worktree slug (short name, e.g. "my-feature") */
   name: string;
-  /** worktree 物理路径 */
+  /** worktree physical path */
   path: string;
-  /** git 分支名（如 "worktree-my-feature"） */
+  /** git branch name (e.g. "worktree-my-feature") */
   branch: string;
-  /** 进入 worktree 前的工作目录 */
+  /** working directory before entering the worktree */
   original_cwd: string;
-  /** 进入 worktree 前的分支 */
+  /** branch before entering the worktree */
   original_branch: string;
 };
 ```
 
-字段名和 claude-code 保持一致，方便用户在 qwen-code 和 claude-code 之间复用 statusline 脚本。
+The field names are kept consistent with claude-code so users can reuse statusline scripts between qwen-code and claude-code.
 
-找到 `doUpdate` 回调中构造 `input: StatusLineCommandInput` 对象的地方（约行 225），在 `...(ui.branchName && { git: { branch: ui.branchName } })` 之后新增：
+Find where the `input: StatusLineCommandInput` object is constructed in the `doUpdate` callback (around line 225) and, after `...(ui.branchName && { git: { branch: ui.branchName } })`, add:
 
 ```typescript
 ...(uiStateRef.current.activeWorktree && {
@@ -742,13 +742,13 @@ worktree?: {
 }),
 ```
 
-注意：`UIState.activeWorktree` 需要也包含 `originalCwd` 和 `originalBranch` 字段（在 Task 5 的 AppContainer 映射中补充）。
+Note: `UIState.activeWorktree` must also include the `originalCwd` and `originalBranch` fields (added in the AppContainer mapping in Task 5).
 
-- [ ] **Step 2: 在 `Footer.tsx` 新增 worktree 内置展示行**
+- [ ] **Step 2: Add the built-in worktree display row to `Footer.tsx`**
 
-在 `Footer.tsx` 顶部引入 `useUIState`（已有）。
+Import `useUIState` at the top of `Footer.tsx` (already present).
 
-找到 `statusLineLines` 渲染区域（约行 140-148）：
+Find the `statusLineLines` rendering region (around lines 140-148):
 
 ```tsx
 {
@@ -763,7 +763,7 @@ worktree?: {
 }
 ```
 
-在其之前插入 worktree 行（当 `activeWorktree` 非空且无用户 statusline 时显示）：
+Insert the worktree row before it (shown when `activeWorktree` is non-null and there is no user statusline):
 
 ```tsx
 {
@@ -778,15 +778,15 @@ worktree?: {
 }
 ```
 
-- [ ] **Step 3: 类型检查 + 构建**
+- [ ] **Step 3: Type check + build**
 
 ```bash
 npm run typecheck && npm run build
 ```
 
-期望：无错误。
+Expected: no errors.
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add packages/cli/src/ui/hooks/useStatusLine.ts \
@@ -796,15 +796,15 @@ git commit -m "feat(worktree): show active worktree in Footer and StatusLine pay
 
 ---
 
-## Task 7: --resume worktree 上下文注入
+## Task 7: --resume worktree context injection
 
 **Files:**
 
 - Modify: `packages/cli/src/ui/AppContainer.tsx:459-489`
 
-- [ ] **Step 1: 在 resume 路径中注入 worktree 上下文消息**
+- [ ] **Step 1: Inject a worktree context message into the resume path**
 
-在 `AppContainer.tsx` 中找到 resume 路径（约行 459-489）：
+In `AppContainer.tsx`, find the resume path (around lines 459-489):
 
 ```typescript
 const resumedSessionData = config.getResumedSessionData();
@@ -815,7 +815,7 @@ if (resumedSessionData) {
 }
 ```
 
-修改为：
+Change it to:
 
 ```typescript
 const resumedSessionData = config.getResumedSessionData();
@@ -859,7 +859,7 @@ if (resumedSessionData) {
 }
 ```
 
-在文件顶部新增 import：
+Add imports at the top of the file:
 
 ```typescript
 import {
@@ -869,15 +869,15 @@ import {
 import * as fs from 'node:fs/promises';
 ```
 
-（`fs` 可能已经引入，检查后合并。）
+(`fs` may already be imported; check and merge.)
 
-- [ ] **Step 2: 类型检查**
+- [ ] **Step 2: Type check**
 
 ```bash
 npm run typecheck
 ```
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add packages/cli/src/ui/AppContainer.tsx
@@ -896,29 +896,29 @@ git commit -m "feat(worktree): inject context message on --resume when worktree 
 - Modify: `packages/cli/src/ui/contexts/UIStateContext.tsx`
 - Modify: `packages/cli/src/ui/AppContainer.tsx`
 
-- [ ] **Step 1: 在 `AppContainer.tsx` 新增 dialog 状态**
+- [ ] **Step 1: Add dialog state to `AppContainer.tsx`**
 
-`showWelcomeBackDialog` 等 dialog 状态由各自的 hook 返回给 AppContainer，然后通过 UIState value 对象传入 Provider。对 WorktreeExitDialog 采用同样模式：
+Dialog states such as `showWelcomeBackDialog` are returned to AppContainer by their respective hooks and then passed into the Provider via the UIState value object. Use the same pattern for WorktreeExitDialog:
 
-在 `AppContainer.tsx` 函数体内新增：
+Add to the `AppContainer.tsx` function body:
 
 ```typescript
 const [showWorktreeExitDialog, setShowWorktreeExitDialog] = useState(false);
 ```
 
-在 UIState Provider 的 value 对象中新增：
+Add to the UIState Provider's value object:
 
 ```typescript
 showWorktreeExitDialog,
 ```
 
-在 `UIState` interface 中新增（靠近其他 dialog 字段）：
+Add to the `UIState` interface (near the other dialog fields):
 
 ```typescript
 showWorktreeExitDialog: boolean;
 ```
 
-- [ ] **Step 2: 写失败组件测试**
+- [ ] **Step 2: Write the failing component test**
 
 ```typescript
 // packages/cli/src/ui/components/WorktreeExitDialog.test.tsx
@@ -955,18 +955,18 @@ describe('WorktreeExitDialog', () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [ ] **Step 3: Run the test to confirm it fails**
 
 ```bash
 cd packages/cli
 npx vitest run src/ui/components/WorktreeExitDialog.test.tsx
 ```
 
-期望：`FAIL` — 模块不存在。
+Expected: `FAIL` — the module does not exist.
 
-- [ ] **Step 4: 新建 `WorktreeExitDialog.tsx`**
+- [ ] **Step 4: Create `WorktreeExitDialog.tsx`**
 
-参考 `WelcomeBackDialog.tsx` 的 RadioSelect 模式，加入 mount 时的脏状态检查（对齐 claude-code `WorktreeExitDialog.tsx` 的 `loadChanges` 逻辑）：
+Follow the RadioSelect pattern of `WelcomeBackDialog.tsx`, adding a dirty-state check on mount (aligned with the `loadChanges` logic in claude-code's `WorktreeExitDialog.tsx`):
 
 ```tsx
 // packages/cli/src/ui/components/WorktreeExitDialog.tsx
@@ -1093,25 +1093,25 @@ export const WorktreeExitDialog: React.FC<WorktreeExitDialogProps> = ({
 };
 ```
 
-注意：`execa` 是项目已有依赖（或用 `execFileNoThrow`，参考 claude-code 的方式）。检查 `packages/cli/package.json` 确认可用的 exec 工具；如果无 `execa`，改用 Node.js 内置 `execFile` 包装。
+Note: `execa` is an existing project dependency (or use `execFileNoThrow`, following claude-code's approach). Check `packages/cli/package.json` to confirm the available exec utility; if `execa` is not present, use a wrapper around Node.js's built-in `execFile`.
 
-- [ ] **Step 5: 运行测试确认通过**
+- [ ] **Step 5: Run the test to confirm it passes**
 
 ```bash
 cd packages/cli
 npx vitest run src/ui/components/WorktreeExitDialog.test.tsx
 ```
 
-期望：loading 状态测试通过。
+Expected: the loading-state test passes.
 
-- [ ] **Step 6: 在 `DialogManager.tsx` 注册**
+- [ ] **Step 6: Register in `DialogManager.tsx`**
 
-找到 `DialogManager` 中最后一个 dialog 渲染块，新增：
+Find the last dialog rendering block in `DialogManager` and add:
 
 ```tsx
 import { WorktreeExitDialog } from './WorktreeExitDialog.js';
 
-// 在 DialogManager 返回的 JSX 中，在最后一个 dialog 之后添加：
+// In the JSX returned by DialogManager, after the last dialog, add:
 {
   uiState.showWorktreeExitDialog && uiState.activeWorktree && (
     <WorktreeExitDialog
@@ -1149,11 +1149,11 @@ import { WorktreeExitDialog } from './WorktreeExitDialog.js';
 }
 ```
 
-`setShowWorktreeExitDialog` 来自 Step 1 在 AppContainer 中定义的 useState，需要通过 props 或直接在 DialogManager 的调用处传入（参考其他 dialog 的传参模式）。
+`setShowWorktreeExitDialog` comes from the useState defined in AppContainer in Step 1; it needs to be passed in via props or directly at the DialogManager call site (follow the prop-passing pattern of the other dialogs).
 
-- [ ] **Step 7: 在 `AppContainer.tsx` 拦截第二次 Ctrl+C**
+- [ ] **Step 7: Intercept the second Ctrl+C in `AppContainer.tsx`**
 
-在 `handleExit` 回调（约行 2387）中，找到 `pressedOnce` 为 `true` 时调用 `handleSlashCommand('/quit')` 的分支：
+In the `handleExit` callback (around line 2387), find the branch where `handleSlashCommand('/quit')` is called when `pressedOnce` is `true`:
 
 ```typescript
 // Fast double-press: Direct quit (preserve user habit)
@@ -1167,7 +1167,7 @@ if (pressedOnce) {
 }
 ```
 
-修改为：
+Change it to:
 
 ```typescript
 if (pressedOnce) {
@@ -1184,9 +1184,9 @@ if (pressedOnce) {
 }
 ```
 
-`worktreeSession` 是 Step 1 中 `useWorktreeSession()` 的返回值（已在 AppContainer 函数体内）。将其加入 `handleExit` 的 `useCallback` 依赖数组。`setShowWorktreeExitDialog` 来自 Step 1 的 useState。
+`worktreeSession` is the return value of `useWorktreeSession()` from Step 1 (already in the AppContainer function body). Add it to the `useCallback` dependency array of `handleExit`. `setShowWorktreeExitDialog` comes from the useState in Step 1.
 
-- [ ] **Step 9: 类型检查 + 全量测试**
+- [ ] **Step 9: Type check + full test suite**
 
 ```bash
 npm run typecheck
@@ -1194,17 +1194,17 @@ cd packages/core && npx vitest run
 cd packages/cli && npx vitest run
 ```
 
-期望：全部通过，无回归。
+Expected: all pass, no regressions.
 
-- [ ] **Step 10: 构建**
+- [ ] **Step 10: Build**
 
 ```bash
 npm run build && npm run bundle
 ```
 
-期望：`dist/cli.js` 生成无报错。
+Expected: `dist/cli.js` is generated without errors.
 
-- [ ] **Step 11: 提交**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add packages/cli/src/ui/components/WorktreeExitDialog.tsx \
@@ -1217,16 +1217,16 @@ git commit -m "feat(worktree): add WorktreeExitDialog — intercept Ctrl+C when 
 
 ---
 
-## 验收标准
+## Acceptance Criteria
 
-| 场景                          | 预期行为                                                    |
-| ----------------------------- | ----------------------------------------------------------- |
-| `enter_worktree` 调用后       | `<sessionId>.worktree.json` 存在，内含 slug / path / branch |
-| `exit_worktree` 调用后        | `<sessionId>.worktree.json` 被删除                          |
-| `--resume` 时 worktree 仍存在 | Footer 显示 worktree 行；INFO 消息提示路径                  |
-| `--resume` 时 worktree 已删除 | sidecar 文件被清理，无 worktree 行展示                      |
-| worktree 内第一次 Ctrl+C      | 显示 "Press Ctrl+C again to exit."                          |
-| worktree 内第二次 Ctrl+C      | 显示 WorktreeExitDialog（keep / remove / cancel）           |
-| 非 worktree 环境第二次 Ctrl+C | 直接退出（行为不变）                                        |
-| 新建 worktree 内提交          | `core.hooksPath` 指向主仓库 hooks，pre-commit 正常触发      |
-| statusline 脚本 stdin         | JSON payload 含 `worktree.slug` 和 `worktree.branch`        |
+| Scenario                               | Expected behavior                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| After `enter_worktree` is called       | `<sessionId>.worktree.json` exists, containing slug / path / branch         |
+| After `exit_worktree` is called        | `<sessionId>.worktree.json` is deleted                                      |
+| Worktree still exists on `--resume`    | Footer shows the worktree row; an INFO message indicates the path           |
+| Worktree already deleted on `--resume` | The sidecar file is cleaned up, no worktree row is shown                    |
+| First Ctrl+C inside a worktree         | Shows "Press Ctrl+C again to exit."                                         |
+| Second Ctrl+C inside a worktree        | Shows WorktreeExitDialog (keep / remove / cancel)                           |
+| Second Ctrl+C outside a worktree       | Quits directly (behavior unchanged)                                         |
+| Commit inside a new worktree           | `core.hooksPath` points to the main repo's hooks, pre-commit fires normally |
+| statusline script stdin                | JSON payload contains `worktree.slug` and `worktree.branch`                 |

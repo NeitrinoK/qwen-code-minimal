@@ -32,7 +32,6 @@ import {
 import type { LoadedSettings } from '../config/settings.js';
 import { isValidSessionId } from '../config/config.js';
 import type { InitializationResult } from '../core/initializer.js';
-import type { ExtensionRefreshState } from '../config/extension-refresh-state.js';
 import { DualOutputBridge } from '../dualOutput/DualOutputBridge.js';
 import { DualOutputContext } from '../dualOutput/DualOutputContext.js';
 import { RemoteInputWatcher } from '../remoteInput/RemoteInputWatcher.js';
@@ -66,10 +65,11 @@ import { t } from '../i18n/index.js';
 import { profileCheckpoint } from '../utils/startupProfiler.js';
 import { writeStderrLine, writeStdoutLine } from '../utils/stdioHelpers.js';
 import { sanitizeTerminalText } from './utils/textUtils.js';
-import { startPostRenderPrefetches } from '../startup/startup-prefetch.js';
+import type { ExtensionRefreshState } from '../config/extension-refresh-state.js';
 import { computeWindowTitle, writeTerminalTitle } from './utils/windowTitle.js';
 import { getCliVersion } from '../utils/version.js';
 import { primeGitBranchName } from './hooks/useGitBranchName.js';
+import { startPostRenderPrefetches } from '../startup/startup-prefetch.js';
 
 const debugLogger = createDebugLogger('STARTUP');
 
@@ -79,8 +79,6 @@ const debugLogger = createDebugLogger('STARTUP');
 const PRESSURE_CHECK_INTERVAL_MS = 30_000;
 
 export interface StartInteractiveUIOptions {
-  postRenderConnectIde?: boolean;
-  postRenderInitializeTelemetry?: boolean;
   extensionRefreshState?: ExtensionRefreshState;
 }
 
@@ -361,12 +359,7 @@ export async function startInteractiveUI(
   // `input_enabled` checkpoints that complete the first-screen picture.
   profileCheckpoint('first_paint');
 
-  startPostRenderPrefetches(config, settings, {
-    connectIde: options.postRenderConnectIde ?? false,
-    initializeTelemetry:
-      options.postRenderInitializeTelemetry ??
-      config.isTelemetryInitializationDeferred(),
-  });
+  startPostRenderPrefetches(config, settings);
 
   // Periodic memory-pressure check for the interactive session. The interval
   // is unref'd (can't keep the loop alive on its own) and cleared on cleanup.
@@ -397,13 +390,9 @@ export async function startInteractiveUI(
     remoteInputWatcher?.shutdown();
     await dualOutputBridge?.shutdown();
     instance.unmount();
-    // Pop the Kitty keyboard protocol only after Ink has unmounted. The
-    // protocol was enabled on the main screen before render, and the kitty
-    // spec tracks keyboard flags per screen: with alternateScreen enabled, a
-    // pop written before unmount lands on the alternate screen's (empty)
-    // stack, unmount then leaves the alternate screen, and the main screen's
-    // flags stay set — the user's shell keeps receiving kitty escape codes
-    // (e.g. "9;5u" on Ctrl-C) after exit.
+    // Explicitly disable the Kitty keyboard protocol before unmounting Ink so
+    // that the disable escape sequence is written while stdout is still fully
+    // operational, preventing garbled terminal output after the app exits.
     disableKittyProtocol();
     if (useVP) {
       process.stdout.setMaxListeners(stdoutMaxListeners);

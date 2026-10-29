@@ -91,7 +91,7 @@ if (!image.length) {
 }
 
 if (!argv.s) {
-  execSync('corepack pnpm install --frozen-lockfile', { stdio: 'inherit' });
+  execSync('npm install', { stdio: 'inherit' });
   execSync('npm run build', { stdio: 'inherit' });
 
   console.log('bundling...');

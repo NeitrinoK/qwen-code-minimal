@@ -657,6 +657,7 @@ export const handleSlashCommand = async (
       ? uiTelemetryService.getMetricsForSession(config.getSessionId())
       : uiTelemetryService.getMetrics(),
     lastPromptTokenCount: 0,
+    basePromptTokenCount: 0,
     promptCount: 1,
   };
 

@@ -10,7 +10,23 @@ import {
   resetStartupProfiler,
 } from './startupProfiler.js';
 
-vi.mock('node:fs');
+const { mockMkdirSync, mockWriteFileSync } = vi.hoisted(() => ({
+  mockMkdirSync: vi.fn(),
+  mockWriteFileSync: vi.fn(),
+}));
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      mkdirSync: mockMkdirSync,
+      writeFileSync: mockWriteFileSync,
+    },
+    mkdirSync: mockMkdirSync,
+    writeFileSync: mockWriteFileSync,
+  };
+});
 
 describe('startupProfiler', () => {
   const savedEnv: Record<string, string | undefined> = {};
@@ -35,6 +51,8 @@ describe('startupProfiler', () => {
   beforeEach(() => {
     resetStartupProfiler();
     vi.restoreAllMocks();
+    mockMkdirSync.mockReset();
+    mockWriteFileSync.mockReset();
     saveEnv(
       'QWEN_CODE_PROFILE_STARTUP',
       'QWEN_CODE_PROFILE_STARTUP_OUTER',
@@ -375,34 +393,6 @@ describe('startupProfiler', () => {
         .calls[0]![0] as string;
       // outer-prefixed filename keeps it distinct from sandbox-child reports.
       expect(writtenPath).toMatch(/[\\/]outer-/);
-    });
-
-    it('collects outside sandbox for qwen serve with the primary startup flag', () => {
-      process.env['QWEN_CODE_PROFILE_STARTUP'] = '1';
-      delete process.env['SANDBOX'];
-      process.argv = ['node', 'qwen', 'serve'];
-
-      initStartupProfiler();
-      profileCheckpoint('serve_listener_ready');
-
-      const report = getStartupReport();
-      expect(report).not.toBeNull();
-      expect(report!.outerProcess).toBe(false);
-      expect(report!.phases[0]!.name).toBe('serve_listener_ready');
-    });
-
-    it('collects outside sandbox for bundled qwen serve argv shape', () => {
-      process.env['QWEN_CODE_PROFILE_STARTUP'] = '1';
-      delete process.env['SANDBOX'];
-      process.argv = ['node', 'qwen', '/repo/dist/cli.js', 'serve'];
-
-      initStartupProfiler();
-      profileCheckpoint('serve_listener_ready');
-
-      const report = getStartupReport();
-      expect(report).not.toBeNull();
-      expect(report!.outerProcess).toBe(false);
-      expect(report!.phases[0]!.name).toBe('serve_listener_ready');
     });
   });
 });

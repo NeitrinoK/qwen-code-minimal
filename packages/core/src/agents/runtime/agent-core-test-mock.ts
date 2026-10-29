@@ -27,13 +27,13 @@
  * ```
  */
 
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 
 /**
  * Shared reasoning-loop mock. Suites reset or re-implement it per test;
  * the default resolves one uneventful turn.
  */
-export const runReasoningLoopMock = vi.fn().mockResolvedValue({
+export const runReasoningLoopMock: Mock = vi.fn().mockResolvedValue({
   text: 'Done',
   terminateMode: null,
   turnsUsed: 1,
@@ -95,7 +95,11 @@ export function createAgentCoreMock(): Record<string, unknown> {
  */
 export function agentCoreMockModule(): { AgentCore: unknown } {
   return {
-    AgentCore: vi.fn().mockImplementation(() => createAgentCoreMock()),
+    // `function`, not an arrow: vitest 4 rejects `new` on an arrow-backed mock.
+    // eslint-disable-next-line prefer-arrow-callback
+    AgentCore: vi.fn().mockImplementation(function () {
+      return createAgentCoreMock();
+    }),
   };
 }
 
@@ -125,7 +129,15 @@ export function destructureAgentCoreCall(call: unknown[]) {
 }
 
 /** Mock ToolRegistry covering the surface spawn paths exercise. */
-export function createMockToolRegistry() {
+export function createMockToolRegistry(): {
+  getFunctionDeclarations: Mock;
+  getAllTools: Mock;
+  getAllToolNames: Mock;
+  registerTool: Mock;
+  copyDiscoveredToolsFrom: Mock;
+  stop: Mock;
+  tools: Map<unknown, unknown>;
+} {
   return {
     getFunctionDeclarations: vi.fn().mockReturnValue([]),
     getAllTools: vi.fn().mockReturnValue([]),

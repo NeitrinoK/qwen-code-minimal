@@ -95,12 +95,12 @@ vi.mock('../../core/contentGenerator.js', async (importOriginal) => {
     }),
     createContentGeneratorConfig: vi.fn().mockReturnValue({
       model: DEFAULT_QWEN_MODEL,
-      authType: actual.AuthType.USE_GEMINI,
+      authType: actual.AuthType.USE_OPENAI,
     }),
     resolveContentGeneratorConfigWithSources: vi.fn().mockReturnValue({
       config: {
         model: DEFAULT_QWEN_MODEL,
-        authType: actual.AuthType.USE_GEMINI,
+        authType: actual.AuthType.USE_OPENAI,
         apiKey: 'test-api-key',
       },
       sources: {},
@@ -177,7 +177,7 @@ async function createMockConfig(
     chatRecording: false,
   });
   await config.initialize();
-  await config.refreshAuth(AuthType.USE_GEMINI);
+  await config.refreshAuth(AuthType.USE_OPENAI);
 
   const mockToolRegistry = {
     warmAll: vi.fn().mockResolvedValue(undefined),
@@ -191,7 +191,7 @@ async function createMockConfig(
   vi.spyOn(config, 'getToolRegistry').mockReturnValue(mockToolRegistry);
   vi.spyOn(config, 'getContentGeneratorConfig').mockReturnValue({
     model: DEFAULT_QWEN_MODEL,
-    authType: AuthType.USE_GEMINI,
+    authType: AuthType.USE_OPENAI,
   });
   vi.spyOn(config, 'setModel').mockResolvedValue();
   vi.spyOn(config, 'getSessionId').mockReturnValue('test-session');
@@ -472,7 +472,7 @@ describe('subagent.ts', () => {
       vi.mocked(resolveContentGeneratorConfigWithSources).mockReturnValue({
         config: {
           model: DEFAULT_QWEN_MODEL,
-          authType: AuthType.USE_GEMINI,
+          authType: AuthType.USE_OPENAI,
           apiKey: 'test-api-key',
         },
         sources: {},
@@ -482,14 +482,13 @@ describe('subagent.ts', () => {
       mockGetHistoryToolCallFingerprints = vi.fn(
         () => new Map<string, string>(),
       );
-      vi.mocked(LlmChat).mockImplementation(
-        () =>
-          ({
-            sendMessageStream: mockSendMessageStream,
-            setLastPromptTokenCount: vi.fn(),
-            getHistoryToolCallFingerprints: mockGetHistoryToolCallFingerprints,
-          }) as unknown as LlmChat,
-      );
+      vi.mocked(LlmChat).mockImplementation(function () {
+        return {
+          sendMessageStream: mockSendMessageStream,
+          setLastPromptTokenCount: vi.fn(),
+          getHistoryToolCallFingerprints: mockGetHistoryToolCallFingerprints,
+        } as unknown as LlmChat;
+      });
 
       vi.mocked(executeToolCall).mockResolvedValue({
         callId: 'default-call',

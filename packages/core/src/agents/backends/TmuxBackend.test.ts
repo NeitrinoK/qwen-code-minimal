@@ -121,6 +121,7 @@ describe('TmuxBackend', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     savedTmuxEnv = process.env['TMUX'];
     // Default: running outside tmux
     delete process.env['TMUX'];

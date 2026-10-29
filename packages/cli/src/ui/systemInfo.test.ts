@@ -10,13 +10,11 @@ import {
   getExtendedSystemInfo,
   getNpmVersion,
   getSandboxEnv,
-  getIdeClientName,
 } from './systemInfo.js';
 import type { CommandContext } from './commands/types.js';
 import { createMockCommandContext } from '../test-utils/mockCommandContext.js';
 import type * as child_process from 'node:child_process';
 import os from 'node:os';
-import { IdeClient } from '@qwen-code/qwen-code-core';
 import * as versionUtils from '../utils/version.js';
 
 // `getNpmVersion` / `getGitVersion` use `execFile` callback-style. Mock
@@ -76,17 +74,6 @@ vi.mock('node:os', async (importOriginal) => {
 vi.mock('../utils/version.js', () => ({
   getCliVersion: vi.fn(),
 }));
-
-vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@qwen-code/qwen-code-core')>();
-  return {
-    ...actual,
-    IdeClient: {
-      getInstance: vi.fn(),
-    },
-  };
-});
 
 describe('systemInfo', () => {
   let mockContext: CommandContext;
@@ -193,33 +180,6 @@ describe('systemInfo', () => {
     });
   });
 
-  describe('getIdeClientName', () => {
-    it('should return IDE client name when IDE mode is enabled', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue('test-ide'),
-      } as unknown as IdeClient);
-
-      const ideClient = await getIdeClientName(mockContext);
-      expect(ideClient).toBe('test-ide');
-    });
-
-    it('should return empty string when IDE mode is disabled', async () => {
-      vi.mocked(mockContext.services.config!.getIdeMode).mockReturnValue(false);
-
-      const ideClient = await getIdeClientName(mockContext);
-      expect(ideClient).toBe('');
-    });
-
-    it('should return empty string when IDE client detection fails', async () => {
-      vi.mocked(IdeClient.getInstance).mockRejectedValue(
-        new Error('IDE client error'),
-      );
-
-      const ideClient = await getIdeClientName(mockContext);
-      expect(ideClient).toBe('');
-    });
-  });
-
   describe('getSystemInfo', () => {
     it('reports the Config policy and skips host binary probes', async () => {
       mockContext.services.config!.getShellExecutionSandbox = vi
@@ -244,9 +204,6 @@ describe('systemInfo', () => {
     it('should collect all system information', async () => {
       // Ensure SANDBOX is not set for this test
       delete process.env['SANDBOX'];
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue('test-ide'),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       const systemInfo = await getSystemInfo(mockContext);
@@ -261,7 +218,7 @@ describe('systemInfo', () => {
         sandboxEnv: 'no sandbox',
         modelVersion: 'test-model',
         selectedAuthType: 'test-auth',
-        ideClient: 'test-ide',
+        ideClient: '',
         sessionId: 'test-session-id',
         proxy: undefined,
       });
@@ -269,9 +226,6 @@ describe('systemInfo', () => {
 
     it('should handle missing config gracefully', async () => {
       mockContext.services.config = null;
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
 
       const systemInfo = await getSystemInfo(mockContext);
 
@@ -282,9 +236,6 @@ describe('systemInfo', () => {
 
   describe('getExtendedSystemInfo', () => {
     it('should redact userinfo from the persisted fast model selector', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       (mockContext.services.settings.merged as Record<string, unknown>)[
@@ -300,9 +251,6 @@ describe('systemInfo', () => {
     });
 
     it('should resolve a non-string fast model setting instead of rejecting', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       // Settings get no type validation on load, so a workspace-scope
@@ -319,9 +267,6 @@ describe('systemInfo', () => {
     });
 
     it('should include memory usage and base URL', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue('test-ide'),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       const { AuthType } = await import('@qwen-code/qwen-code-core');
@@ -340,9 +285,6 @@ describe('systemInfo', () => {
     });
 
     it('renders a pinned fast model without the raw endpoint disambiguator (#12760)', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       // The picker persists `authType:id\0<baseUrl>`; every display surface
@@ -361,9 +303,6 @@ describe('systemInfo', () => {
     });
 
     it('should include provider diagnostics for OpenAI Responses auth', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue('test-ide'),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       const { AuthType } = await import('@qwen-code/qwen-code-core');
@@ -386,9 +325,6 @@ describe('systemInfo', () => {
 
     it('should use sandbox env without prefix for bug reports', async () => {
       process.env['SANDBOX'] = 'qwen-code-test-sandbox';
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       const extendedInfo = await getExtendedSystemInfo(mockContext);
@@ -397,9 +333,6 @@ describe('systemInfo', () => {
     });
 
     it('should not include base URL for non-OpenAI auth', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       setExecFileStdout('10.0.0');
 
       const extendedInfo = await getExtendedSystemInfo(mockContext);
@@ -408,9 +341,6 @@ describe('systemInfo', () => {
     });
 
     it('should include formatted LSP status when config exposes it', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       const getLspStatusSnapshot = vi.fn().mockReturnValue({
         enabled: true,
         configuredServers: 2,
@@ -447,9 +377,6 @@ describe('systemInfo', () => {
     });
 
     it('should report unavailable LSP status distinctly', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       mockContext.services.config = {
         ...(mockContext.services.config ?? {}),
         getLspStatusSnapshot: vi.fn().mockReturnValue({
@@ -471,9 +398,6 @@ describe('systemInfo', () => {
     });
 
     it('should omit LSP status when the status snapshot throws', async () => {
-      vi.mocked(IdeClient.getInstance).mockResolvedValue({
-        getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-      } as unknown as IdeClient);
       mockContext.services.config = {
         ...(mockContext.services.config ?? {}),
         getLspStatusSnapshot: vi.fn(() => {
@@ -544,9 +468,6 @@ describe('systemInfo', () => {
     ])(
       'should format LSP status when %s',
       async (_name, snapshot, expected) => {
-        vi.mocked(IdeClient.getInstance).mockResolvedValue({
-          getDetectedIdeDisplayName: vi.fn().mockReturnValue(''),
-        } as unknown as IdeClient);
         mockContext.services.config = {
           ...(mockContext.services.config ?? {}),
           getLspStatusSnapshot: vi.fn().mockReturnValue(snapshot),

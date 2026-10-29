@@ -8,7 +8,6 @@ import * as osActual from 'node:os';
 import {
   atomicWriteFileSync,
   FatalConfigError,
-  ideContextStore,
 } from '@qwen-code/qwen-code-core';
 import {
   describe,
@@ -39,7 +38,7 @@ vi.mock('proper-lockfile', () => ({
   default: { lockSync: vi.fn(() => vi.fn()) },
 }));
 
-vi.mock('os', async (importOriginal) => {
+vi.mock('node:os', async (importOriginal) => {
   const actualOs = await importOriginal<typeof osActual>();
   return {
     ...actualOs,
@@ -47,7 +46,7 @@ vi.mock('os', async (importOriginal) => {
     platform: vi.fn(() => 'linux'),
   };
 });
-vi.mock('fs', async (importOriginal) => {
+vi.mock('node:fs', async (importOriginal) => {
   const actualFs = await importOriginal<typeof fs>();
   return {
     ...actualFs,
@@ -736,54 +735,10 @@ describe('getWorkspaceTrustStatus', () => {
   });
 });
 
-describe('isWorkspaceTrusted with IDE override', () => {
+describe('isWorkspaceTrusted folderTrust toggle', () => {
   afterEach(() => {
     vi.clearAllMocks();
-    ideContextStore.clear();
     resetTrustedFoldersForTesting();
-  });
-
-  const mockSettings: Settings = {
-    security: {
-      folderTrust: {
-        enabled: true,
-      },
-    },
-  };
-
-  it('should return true when ideTrust is true, ignoring config', () => {
-    ideContextStore.set({ workspaceState: { isTrusted: true } });
-    // Even if config says don't trust, ideTrust should win.
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(
-      JSON.stringify({ [process.cwd()]: TrustLevel.DO_NOT_TRUST }),
-    );
-    expect(isWorkspaceTrusted(mockSettings)).toEqual({
-      isTrusted: true,
-      source: 'ide',
-    });
-  });
-
-  it('should return false when ideTrust is false, ignoring config', () => {
-    ideContextStore.set({ workspaceState: { isTrusted: false } });
-    // Even if config says trust, ideTrust should win.
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(
-      JSON.stringify({ [process.cwd()]: TrustLevel.TRUST_FOLDER }),
-    );
-    expect(isWorkspaceTrusted(mockSettings)).toEqual({
-      isTrusted: false,
-      source: 'ide',
-    });
-  });
-
-  it('should fall back to config when ideTrust is undefined', () => {
-    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(
-      JSON.stringify({ [process.cwd()]: TrustLevel.TRUST_FOLDER }),
-    );
-    expect(isWorkspaceTrusted(mockSettings)).toEqual({
-      isTrusted: true,
-      source: 'file',
-    });
   });
 
   it('should always return true if folderTrust setting is disabled', () => {
@@ -794,28 +749,9 @@ describe('isWorkspaceTrusted with IDE override', () => {
         },
       },
     };
-    ideContextStore.set({ workspaceState: { isTrusted: false } });
     expect(isWorkspaceTrusted(settings)).toEqual({
       isTrusted: true,
       source: undefined,
-    });
-  });
-
-  it('should not apply IDE trust to an explicit different workspace', () => {
-    ideContextStore.set({ workspaceState: { isTrusted: true } });
-    vi.spyOn(process, 'cwd').mockReturnValue('/home/user/current');
-    vi.spyOn(fs, 'existsSync').mockImplementation(
-      (p) => p === getTrustedFoldersPath(),
-    );
-    vi.spyOn(fs, 'readFileSync').mockReturnValue(
-      JSON.stringify({ '/home/user/other': TrustLevel.DO_NOT_TRUST }),
-    );
-
-    expect(
-      isWorkspaceTrusted(mockSettings, undefined, '/home/user/other'),
-    ).toEqual({
-      isTrusted: false,
-      source: 'file',
     });
   });
 });
@@ -823,8 +759,12 @@ describe('isWorkspaceTrusted with IDE override', () => {
 describe('Trusted Folders Caching', () => {
   beforeEach(() => {
     resetTrustedFoldersForTesting();
-    vi.mocked(fs.existsSync).mockReturnValue(true);
-    vi.mocked(fs.readFileSync).mockReturnValue('{}');
+    // A prior describe block's `vi.restoreAllMocks()` afterEach restores the
+    // node:fs module-mock functions to their real implementations, so
+    // `vi.mocked(fs.existsSync)` is no longer a mock here. Re-establish the
+    // mocks via vi.spyOn (the pattern used by the other blocks in this file).
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    vi.spyOn(fs, 'readFileSync').mockReturnValue('{}');
   });
 
   afterEach(() => {

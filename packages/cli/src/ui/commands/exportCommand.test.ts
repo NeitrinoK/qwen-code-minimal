@@ -15,7 +15,6 @@ import {
   collectSessionData,
   normalizeSessionData,
   toMarkdown,
-  toHtml,
   toJson,
   toJsonl,
   generateExportFilename,
@@ -57,7 +56,6 @@ vi.mock('../utils/export/index.js', () => ({
   collectSessionData: vi.fn(),
   normalizeSessionData: vi.fn(),
   toMarkdown: vi.fn(),
-  toHtml: vi.fn(),
   toJson: vi.fn(),
   toJsonl: vi.fn(),
   generateExportFilename: vi.fn(),
@@ -114,9 +112,6 @@ describe('exportCommand', () => {
     });
     vi.mocked(normalizeSessionData).mockImplementation((data) => data);
     vi.mocked(toMarkdown).mockReturnValue('# Test Markdown');
-    vi.mocked(toHtml).mockReturnValue(
-      '<html><script id="chat-data" type="application/json">{"data": "test"}</script></html>',
-    );
     vi.mocked(toJson).mockReturnValue('{"messages":[]}');
     vi.mocked(toJsonl).mockReturnValue('{"type":"session_metadata"}');
     vi.mocked(generateExportFilename).mockImplementation(
@@ -124,6 +119,8 @@ describe('exportCommand', () => {
     );
     vi.mocked(fs.chmod).mockResolvedValue(undefined);
     vi.mocked(fs.realpath).mockImplementation(async (p) => p.toString());
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -133,7 +130,6 @@ describe('exportCommand', () => {
   describe('ACP artifacts', () => {
     it.each([
       ['md', 'text/markdown; charset=utf-8', 'file'],
-      ['html', 'text/html; charset=utf-8', 'html'],
       ['json', 'application/json; charset=utf-8', 'file'],
       ['jsonl', 'application/jsonl; charset=utf-8', 'file'],
     ])(
@@ -231,10 +227,9 @@ describe('exportCommand', () => {
       );
     });
 
-    it('should have html, md, json, and jsonl subcommands', () => {
-      expect(exportCommand.subCommands).toHaveLength(4);
+    it('should have md, json, and jsonl subcommands', () => {
+      expect(exportCommand.subCommands).toHaveLength(3);
       expect(exportCommand.subCommands?.map((c) => c.name)).toEqual([
-        'html',
         'md',
         'json',
         'jsonl',
@@ -900,189 +895,6 @@ describe('exportCommand', () => {
       expect(collectSessionData).toHaveBeenCalled();
       expect(toMarkdown).toHaveBeenCalled();
       expect(fs.writeFile).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('exportHtmlAction', () => {
-    it('should export session to HTML file', async () => {
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand?.action) {
-        throw new Error('html command not found');
-      }
-
-      const result = await htmlCommand.action(mockContext, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'info',
-        content: expect.stringContaining(
-          'export-2025-01-01T00-00-00-000Z.html',
-        ),
-      });
-
-      expect(mockSessionServiceMocks.loadSession).toHaveBeenCalled();
-      expect(collectSessionData).toHaveBeenCalledWith(
-        mockSessionData.conversation,
-        expect.anything(),
-      );
-      expect(normalizeSessionData).toHaveBeenCalled();
-      expect(toHtml).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: 'test-session-id' }),
-        mockSessionData.conversation.messages,
-      );
-      expect(generateExportFilename).toHaveBeenCalledWith('html');
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('export-2025-01-01T00-00-00-000Z.html'),
-        expect.stringContaining('{"data": "test"}'),
-        { encoding: 'utf-8', mode: 0o600 },
-      );
-    });
-
-    it('should export default HTML to a relative custom directory', async () => {
-      if (!exportCommand.action) {
-        throw new Error('export command action not found');
-      }
-
-      const result = await exportCommand.action(mockContext, './logs');
-      const outputDir = path.resolve(mockWorkingDir, './logs');
-      const filepath = path.join(
-        outputDir,
-        'export-2025-01-01T00-00-00-000Z.html',
-      );
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'info',
-        content: expect.stringContaining(
-          path.join('./logs', 'export-2025-01-01T00-00-00-000Z.html'),
-        ),
-      });
-      expect(fs.mkdir).toHaveBeenCalledWith(outputDir, {
-        recursive: true,
-        mode: 0o700,
-      });
-      expect(fs.writeFile).toHaveBeenCalledWith(
-        filepath,
-        expect.stringContaining('{"data": "test"}'),
-        { encoding: 'utf-8', mode: 0o600 },
-      );
-    });
-
-    it('should return error when config is not available', async () => {
-      const contextWithoutConfig = createMockCommandContext({
-        services: {
-          config: null,
-        },
-      });
-
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand?.action) {
-        throw new Error('html command not found');
-      }
-      const result = await htmlCommand.action(contextWithoutConfig, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'error',
-        content: 'Configuration not available.',
-      });
-    });
-
-    it('should return error when working directory cannot be determined', async () => {
-      const contextWithoutCwd = createMockCommandContext({
-        services: {
-          config: {
-            getWorkingDir: vi.fn().mockReturnValue(null),
-            getProjectRoot: vi.fn().mockReturnValue(null),
-          },
-        },
-      });
-
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand || !htmlCommand.action) {
-        throw new Error('html command not found');
-      }
-      const result = await htmlCommand.action(contextWithoutCwd, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'error',
-        content: 'Could not determine current working directory.',
-      });
-    });
-
-    it('should return error when no session is found', async () => {
-      mockSessionServiceMocks.loadSession.mockResolvedValue(undefined);
-
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand?.action) {
-        throw new Error('html command not found');
-      }
-      const result = await htmlCommand.action(mockContext, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'error',
-        content: 'No active session found to export.',
-      });
-    });
-
-    it('should handle errors during HTML generation', async () => {
-      const error = new Error('Failed to generate HTML');
-      vi.mocked(toHtml).mockImplementation(() => {
-        throw error;
-      });
-
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand?.action) {
-        throw new Error('html command not found');
-      }
-      const result = await htmlCommand.action(mockContext, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'error',
-        content: expect.stringContaining('Failed to export session:'),
-      });
-      if (!result || result.type !== 'message') {
-        throw new Error('expected message result');
-      }
-      expect(result.content).toContain('Failed to generate HTML');
-      expect(result.content).not.toContain('HTML target:');
-    });
-
-    it('should handle errors during file write', async () => {
-      const error = new Error('File write failed');
-      vi.mocked(fs.writeFile).mockRejectedValue(error);
-
-      const htmlCommand = exportCommand.subCommands?.find(
-        (c) => c.name === 'html',
-      );
-      if (!htmlCommand?.action) {
-        throw new Error('html command not found');
-      }
-      const result = await htmlCommand.action(mockContext, '');
-
-      expect(result).toEqual({
-        type: 'message',
-        messageType: 'error',
-        content: expect.stringContaining('Failed to export session:'),
-      });
-      if (!result || result.type !== 'message') {
-        throw new Error('expected message result');
-      }
-      expect(result.content).toContain('File write failed');
-      expect(result.content).toContain('HTML target:');
     });
   });
 

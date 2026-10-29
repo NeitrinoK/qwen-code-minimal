@@ -12,15 +12,24 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
-vi.mock('fs/promises', () => ({
+vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
 }));
-vi.mock('os');
-vi.mock('crypto');
-vi.mock('fs', async (importOriginal) => {
-  const actualFs = await importOriginal<typeof import('fs')>();
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const homedir = vi.fn();
+  return { ...actual, default: { ...actual, homedir }, homedir };
+});
+vi.mock('node:crypto', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:crypto')>('node:crypto');
+  const createHash = vi.fn();
+  return { ...actual, default: { ...actual, createHash }, createHash };
+});
+vi.mock('node:fs', async (importOriginal) => {
+  const actualFs = await importOriginal<typeof import('node:fs')>();
   return {
     ...actualFs,
     mkdirSync: vi.fn(),

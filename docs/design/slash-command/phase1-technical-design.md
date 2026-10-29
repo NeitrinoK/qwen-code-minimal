@@ -1,36 +1,36 @@
-# Phase 1 技术设计文档：基础设施重建
+# Phase 1 Technical Design: Infrastructure Rebuild
 
-## 1. 设计目标与约束
+## 1. Design Goals and Constraints
 
-### 1.1 目标
+### 1.1 Goals
 
-- 建立统一的命令元数据模型，覆盖来源（source）、执行类型（commandType）、模式能力（supportedModes）、可见性（userInvocable / modelInvocable）四个维度
-- 用 capability-based 过滤替换 non-interactive/acp 中的硬编码白名单
-- 为 Phase 2/3 的能力扩展提供稳定的底层接口
+- Establish a unified command metadata model covering four dimensions: source, execution type (commandType), mode capability (supportedModes), and visibility (userInvocable / modelInvocable)
+- Replace the hardcoded allowlists in non-interactive/acp with capability-based filtering
+- Provide a stable low-level interface for the capability extensions in Phase 2/3
 
-### 1.2 硬性约束
+### 1.2 Hard Constraints
 
-- **零行为变化**：non-interactive 和 acp 模式下现有可用命令集保持不变（例外：修复 MCP_PROMPT 被错误拦截，属于 bug fix）
-- **向后兼容**：`SlashCommand` 接口的新增字段全部为可选或有合理默认值，现有命令代码无需立即修改
-- **不新增执行器**：不创建 ModeAdapter / CommandExecutor 等新执行架构，只扩展现有 CommandService 和过滤逻辑
-- **不改变现有命令能力**：不为任何命令新增 local 子命令，不修改任何命令的 action 实现
+- **Zero behavior change**: the set of commands currently available in non-interactive and acp modes stays unchanged (exception: fixing MCP_PROMPT being incorrectly blocked, which is a bug fix)
+- **Backward compatibility**: all new fields on the `SlashCommand` interface are optional or have sensible defaults, so existing command code does not need to change immediately
+- **No new executors**: do not create new execution architectures such as ModeAdapter / CommandExecutor; only extend the existing CommandService and filtering logic
+- **No change to existing command capabilities**: do not add a local subcommand to any command, and do not modify any command's action implementation
 
 ---
 
-## 2. 新增类型定义
+## 2. New Type Definitions
 
-### 2.1 文件位置
+### 2.1 File Location
 
-所有新增类型定义在 `packages/cli/src/ui/commands/types.ts`，与现有 `SlashCommand` 接口共文件。
+All new types are defined in `packages/cli/src/ui/commands/types.ts`, in the same file as the existing `SlashCommand` interface.
 
 ### 2.2 `ExecutionMode`
 
 ```typescript
 /**
- * 运行模式枚举。
- * - interactive：React/Ink UI 模式（终端交互）
- * - non_interactive：无交互 CLI 模式（文本/JSON 输出）
- * - acp：ACP/Zed 集成模式
+ * Runtime mode enum.
+ * - interactive: React/Ink UI mode (terminal interaction)
+ * - non_interactive: non-interactive CLI mode (text/JSON output)
+ * - acp: ACP/Zed integration mode
  */
 export type ExecutionMode = 'interactive' | 'non_interactive' | 'acp';
 ```
@@ -39,21 +39,21 @@ export type ExecutionMode = 'interactive' | 'non_interactive' | 'acp';
 
 ```typescript
 /**
- * 命令来源枚举，用于 Help 分组、补全 badge、ACP available commands。
+ * Command source enum, used for Help grouping, completion badges, and ACP available commands.
  *
- * 与 CommandKind 的区别：
- * - CommandKind 是内部加载器分类（4 种），影响加载逻辑
- * - CommandSource 是面向用户的来源分类（9 种），影响展示和心智模型
+ * Difference from CommandKind:
+ * - CommandKind is the internal loader classification (4 kinds), which affects loading logic
+ * - CommandSource is the user-facing source classification (9 kinds), which affects presentation and the user's mental model
  *
- * 两者可能重叠，但职责不同，不合并。
+ * The two may overlap, but have different responsibilities and are not merged.
  */
 export type CommandSource =
-  | 'builtin-command' // 内置命令（BuiltinCommandLoader）
-  | 'bundled-skill' // 随包分发的 skill（BundledSkillLoader）
-  | 'skill-dir-command' // 用户/项目 .qwen/commands/ 下的文件命令（FileCommandLoader，非插件）
-  | 'plugin-command' // 插件提供的命令（FileCommandLoader，extensionName 不为空）
-  | 'mcp-prompt'; // MCP server 提供的 prompt（McpPromptLoader）
-// 以下来源预留，Phase 1 不实现对应 Loader，但 schema 先定义：
+  | 'builtin-command' // built-in command (BuiltinCommandLoader)
+  | 'bundled-skill' // skill distributed with the package (BundledSkillLoader)
+  | 'skill-dir-command' // file command under the user/project .qwen/commands/ directory (FileCommandLoader, not a plugin)
+  | 'plugin-command' // command provided by a plugin (FileCommandLoader, extensionName is non-empty)
+  | 'mcp-prompt'; // prompt provided by an MCP server (McpPromptLoader)
+// The following sources are reserved; Phase 1 does not implement their Loaders, but the schema is defined up front:
 // | 'workflow-command'
 // | 'plugin-skill'
 // | 'dynamic-skill'
@@ -65,29 +65,29 @@ export type CommandSource =
 
 ```typescript
 /**
- * 命令执行类型，描述命令"怎么执行"。
+ * Command execution type, describing "how" a command executes.
  *
- * - prompt：产生 submit_prompt，将内容提交给模型。适用于 skill、file command、MCP prompt。
- *   默认 supportedModes 为所有模式，默认 modelInvocable 为 true。
+ * - prompt: produces submit_prompt, submitting the content to the model. Applies to skills, file commands, and MCP prompts.
+ *   Default supportedModes is all modes; default modelInvocable is true.
  *
- * - local：在本地执行逻辑，不依赖 React/Ink UI。可返回 message、stream_messages、
- *   submit_prompt、tool 等类型。适用于查询类、配置类、状态类 built-in 命令。
- *   默认 supportedModes 为 ['interactive']，需显式声明 supportedModes 才能开放给其他模式。
- *   这与 Claude Code 的 supportsNonInteractive: true 语义一致——非交互支持需要显式声明，而非自动推断。
+ * - local: executes logic locally, without depending on the React/Ink UI. Can return message, stream_messages,
+ *   submit_prompt, tool, and similar types. Applies to query, configuration, and status built-in commands.
+ *   Default supportedModes is ['interactive']; supportedModes must be declared explicitly to open it up to other modes.
+ *   This matches the semantics of Claude Code's supportsNonInteractive: true — non-interactive support must be declared explicitly, not inferred automatically.
  *
- * - local-jsx：依赖 React/Ink UI 的命令（打开 dialog、渲染 JSX 组件等）。
- *   默认 supportedModes 仅为 ['interactive']。
+ * - local-jsx: commands that depend on the React/Ink UI (opening dialogs, rendering JSX components, etc.).
+ *   Default supportedModes is only ['interactive'].
  */
 export type CommandType = 'prompt' | 'local' | 'local-jsx';
 ```
 
-### 2.5 扩展 `SlashCommand` 接口
+### 2.5 Extending the `SlashCommand` Interface
 
-在现有接口上追加新字段，**全部为可选**以保证向后兼容：
+New fields are appended to the existing interface, **all optional** to ensure backward compatibility:
 
 ```typescript
 export interface SlashCommand {
-  // ── 现有字段（保持不变） ──────────────────────────────────────────────
+  // ── Existing fields (unchanged) ──────────────────────────────────────
   name: string;
   altNames?: string[];
   description: string;
@@ -99,70 +99,70 @@ export interface SlashCommand {
   completion?: (...) => ...;
   subCommands?: SlashCommand[];
 
-  // ── Phase 1 新增：来源与执行类型 ──────────────────────────────────────
+  // ── Phase 1 new: source and execution type ──────────────────────────
   /**
-   * 命令来源，用于 Help 分组、补全 badge、ACP available commands 展示。
-   * 由各 Loader 填充，不由命令自身声明。
-   * 未来废弃 CommandKind 时，source 将成为唯一来源标识。
+   * Command source, used for Help grouping, completion badges, and ACP available commands display.
+   * Populated by each Loader, not declared by the command itself.
+   * When CommandKind is deprecated in the future, source will become the sole source identifier.
    */
   source?: CommandSource;
 
   /**
-   * 展示用的来源标签，面向用户。
+   * User-facing source label for display.
    * - builtin-command → "Built-in"
    * - bundled-skill → "Skill"
    * - skill-dir-command → "Custom"
    * - plugin-command → "Plugin: <extensionName>"
    * - mcp-prompt → "MCP: <serverName>"
-   * 由各 Loader 填充，可被命令自身覆盖。
+   * Populated by each Loader, can be overridden by the command itself.
    */
   sourceLabel?: string;
 
   /**
-   * 命令执行类型。
-   * - 由各 Loader 填充默认值（prompt/local-jsx）
-   * - built-in 命令由各命令文件自身声明（local 或 local-jsx）
-   * 未声明时的默认策略见 getEffectiveCommandType()。
+   * Command execution type.
+   * - Default value populated by each Loader (prompt/local-jsx)
+   * - For built-in commands, declared by each command file itself (local or local-jsx)
+   * See getEffectiveCommandType() for the default strategy when undeclared.
    */
   commandType?: CommandType;
 
-  // ── Phase 1 新增：模式能力 ──────────────────────────────────────────
+  // ── Phase 1 new: mode capability ────────────────────────────────────
   /**
-   * 此命令在哪些运行模式下可用。
-   * 未声明时根据 commandType 推断默认值（见 getEffectiveSupportedModes()）。
-   * 显式声明优先于推断值。
+   * Which runtime modes this command is available in.
+   * When undeclared, the default is inferred from commandType (see getEffectiveSupportedModes()).
+   * An explicit declaration takes precedence over the inferred value.
    */
   supportedModes?: ExecutionMode[];
 
-  // ── Phase 1 新增：可见性 ──────────────────────────────────────────────
+  // ── Phase 1 new: visibility ──────────────────────────────────────────
   /**
-   * 用户是否可通过 slash command 调用此命令。
-   * 默认 true（几乎所有命令都是 userInvocable）。
+   * Whether the user can invoke this command via a slash command.
+   * Defaults to true (almost all commands are userInvocable).
    */
   userInvocable?: boolean;
 
   /**
-   * 模型是否可通过 tool call 调用此命令。
-   * 默认 false。prompt 类型的命令（skill、file command、MCP prompt）应设为 true。
-   * built-in commands 不允许模型调用（始终为 false）。
+   * Whether the model can invoke this command via a tool call.
+   * Defaults to false. prompt-type commands (skills, file commands, MCP prompts) should set this to true.
+   * built-in commands are not allowed to be invoked by the model (always false).
    */
   modelInvocable?: boolean;
 
-  // ── Phase 3 预留：体验元数据（Phase 1 仅定义，不使用）──────────────────
+  // ── Phase 3 reserved: experience metadata (Phase 1 only defines, does not use) ──
   /**
-   * 参数提示，显示在补全菜单命令名后。
-   * 示例："<model-id>" / "show|list|set <id>" / "[--fast] [<model-id>]"
+   * Argument hint, shown after the command name in the completion menu.
+   * Examples: "<model-id>" / "show|list|set <id>" / "[--fast] [<model-id>]"
    */
   argumentHint?: string;
 
   /**
-   * 供模型理解何时调用此命令的说明。
-   * 将被注入 modelInvocable 命令的 description 中。
+   * Explanation to help the model understand when to invoke this command.
+   * Will be injected into the description of modelInvocable commands.
    */
   whenToUse?: string;
 
   /**
-   * 使用示例，供 Help 目录和补全展示。
+   * Usage examples, shown in the Help catalog and completion.
    */
   examples?: string[];
 }
@@ -170,29 +170,29 @@ export interface SlashCommand {
 
 ---
 
-## 3. 各 Loader 的字段填充规范
+## 3. Field Population Spec for Each Loader
 
-### 3.1 填充原则
+### 3.1 Population Principles
 
-- `source` 和 `sourceLabel` 由 Loader 在构建 `SlashCommand` 时填充，命令自身不声明
-- `commandType`：Loader 填充默认值；built-in 命令由命令文件自身声明
-- `supportedModes`：通过 `getEffectiveSupportedModes()` 推断，不需要显式填充（除非需要覆盖默认值）
-- `modelInvocable`：Loader 填充，built-in 命令始终为 `false`，prompt 类型命令为 `true`
+- `source` and `sourceLabel` are populated by the Loader when building the `SlashCommand`; the command itself does not declare them
+- `commandType`: the Loader populates the default value; built-in commands declare it in the command file itself
+- `supportedModes`: inferred via `getEffectiveSupportedModes()`, no explicit population needed (unless the default needs to be overridden)
+- `modelInvocable`: populated by the Loader; built-in commands are always `false`, prompt-type commands are `true`
 
 ### 3.2 `BuiltinCommandLoader`
 
 ```typescript
-// 不填充 source/sourceLabel/commandType — 由各命令文件自声明
-// 因为 built-in 命令的 commandType 是 local 或 local-jsx，需要逐个标注
+// Does not populate source/sourceLabel/commandType — declared by each command file itself
+// because the commandType of built-in commands is local or local-jsx and must be annotated one by one
 
-// 注入 source 和 sourceLabel：
+// Inject source and sourceLabel:
 for (const cmd of rawCommands) {
   enrichedCommands.push({
     ...cmd,
     source: 'builtin-command',
     sourceLabel: 'Built-in',
     userInvocable: cmd.userInvocable ?? true,
-    modelInvocable: false, // built-in 命令不允许模型调用
+    modelInvocable: false, // built-in commands are not allowed to be invoked by the model
   });
 }
 ```
@@ -216,23 +216,23 @@ return skills.map((skill) => ({
 ### 3.4 `FileCommandLoader`
 
 ```typescript
-// 在 createSlashCommandFromDefinition 中：
+// In createSlashCommandFromDefinition:
 return {
   name: baseCommandName,
   description,
   kind: CommandKind.FILE,
   extensionName,
-  // source 根据 extensionName 决定：
+  // source is determined by extensionName:
   source: extensionName ? 'plugin-command' : 'skill-dir-command',
   sourceLabel: extensionName ? `Plugin: ${extensionName}` : 'Custom',
   commandType: 'prompt',
   userInvocable: true,
-  modelInvocable: !extensionName, // 插件命令暂不允许模型调用，用户/项目命令允许
+  modelInvocable: !extensionName, // plugin commands are not yet allowed to be invoked by the model; user/project commands are
   action: async (...) => { ... },
 };
 ```
 
-> **注**：插件命令（plugin-command）暂不标记为 `modelInvocable`，避免安全隐患。后续 Phase 可以按需开放，由用户通过配置控制。
+> **Note**: plugin commands (plugin-command) are not yet marked `modelInvocable`, to avoid security risks. A later Phase can open this up as needed, controlled by the user via configuration.
 
 ### 3.5 `McpPromptLoader`
 
@@ -246,125 +246,125 @@ const newPromptCommand: SlashCommand = {
   commandType: 'prompt',
   userInvocable: true,
   modelInvocable: true,
-  // ... 其余现有字段
+  // ... remaining existing fields
 };
 ```
 
 ---
 
-## 4. Built-in 命令的 `commandType` 声明规范
+## 4. `commandType` Declaration Spec for Built-in Commands
 
-### 4.1 分类标准
+### 4.1 Classification Criteria
 
-| commandType | 判断标准                                                                                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `local`     | action 只使用 `ui.addItem`（文本类型）、返回 `message` / `stream_messages` / `submit_prompt` / `tool`，不依赖 React 组件渲染                                               |
-| `local-jsx` | action 返回 `dialog`，或 action 中调用 `ui.addItem` 时传入含 JSX 的复杂类型（如 `HistoryItemHelp`、`HistoryItemStats`），或依赖 `confirm_action` / `load_history` / `quit` |
+| commandType | Criteria                                                                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `local`     | The action only uses `ui.addItem` (text types), returns `message` / `stream_messages` / `submit_prompt` / `tool`, and does not depend on React component rendering                                         |
+| `local-jsx` | The action returns `dialog`, or the action calls `ui.addItem` with a complex JSX-containing type (such as `HistoryItemHelp`, `HistoryItemStats`), or depends on `confirm_action` / `load_history` / `quit` |
 
-> **注意**：`ui.addItem(message/error/info 类型)` 是 `local`；`ui.addItem(help/stats/tools/about 等复杂 UI 类型)` 是 `local-jsx`。
+> **Note**: `ui.addItem(message/error/info types)` is `local`; `ui.addItem(complex UI types such as help/stats/tools/about)` is `local-jsx`.
 
-### 4.2 Built-in 命令分类表
+### 4.2 Built-in Command Classification Table
 
-**`local` 类**（声明 `commandType: 'local'`，`supportedModes` 推断为 all modes）：
+**`local` class** (declare `commandType: 'local'`, `supportedModes` inferred as all modes):
 
-| 命令文件             | 命令名     | 说明                                                    |
-| -------------------- | ---------- | ------------------------------------------------------- |
-| `btwCommand.ts`      | `btw`      | 返回 `submit_prompt` 或 `stream_messages`               |
-| `bugCommand.ts`      | `bug`      | 返回 `submit_prompt` 或 `stream_messages`               |
-| `compressCommand.ts` | `compress` | 已有 executionMode 适配，返回 `message`/`submit_prompt` |
-| `contextCommand.ts`  | `context`  | 返回 `message`（含 UI 渲染但文本可替代）                |
-| `exportCommand.ts`   | `export`   | 文件 I/O，返回 `message`                                |
-| `initCommand.ts`     | `init`     | 返回 `submit_prompt`/`message`/`confirm_action`         |
-| `memoryCommand.ts`   | `memory`   | 子命令返回 `message`（文件 I/O）                        |
-| `planCommand.ts`     | `plan`     | 返回 `submit_prompt`                                    |
-| `summaryCommand.ts`  | `summary`  | 已有 executionMode 适配，返回 `submit_prompt`/`message` |
-| `insightCommand.ts`  | `insight`  | 返回 `stream_messages`                                  |
+| Command file         | Command name | Notes                                                                     |
+| -------------------- | ------------ | ------------------------------------------------------------------------- |
+| `btwCommand.ts`      | `btw`        | Returns `submit_prompt` or `stream_messages`                              |
+| `bugCommand.ts`      | `bug`        | Returns `submit_prompt` or `stream_messages`                              |
+| `compressCommand.ts` | `compress`   | Already has executionMode handling; returns `message`/`submit_prompt`     |
+| `contextCommand.ts`  | `context`    | Returns `message` (involves UI rendering but text is a viable substitute) |
+| `exportCommand.ts`   | `export`     | File I/O; returns `message`                                               |
+| `initCommand.ts`     | `init`       | Returns `submit_prompt`/`message`/`confirm_action`                        |
+| `memoryCommand.ts`   | `memory`     | Subcommands return `message` (file I/O)                                   |
+| `planCommand.ts`     | `plan`       | Returns `submit_prompt`                                                   |
+| `summaryCommand.ts`  | `summary`    | Already has executionMode handling; returns `submit_prompt`/`message`     |
+| `insightCommand.ts`  | `insight`    | Returns `stream_messages`                                                 |
 
-> **注意**：`contextCommand` 和 `insightCommand` 虽然当前返回 `addItem` 调用，但其本质是文本内容，属于 `local`。
+> **Note**: although `contextCommand` and `insightCommand` currently make `addItem` calls, their content is essentially text, so they are `local`.
 
-**`local-jsx` 类**（声明 `commandType: 'local-jsx'`，`supportedModes` 推断为 `['interactive']`）：
+**`local-jsx` class** (declare `commandType: 'local-jsx'`, `supportedModes` inferred as `['interactive']`):
 
-| 命令文件                  | 命令名           | 不能 headless 的原因                       |
-| ------------------------- | ---------------- | ------------------------------------------ |
-| `aboutCommand.ts`         | `about`          | `addItem(HistoryItemAbout)` — 复杂 UI 组件 |
-| `agentsCommand.ts`        | `agents`         | `dialog: subagent_create/subagent_list`    |
-| `approvalModeCommand.ts`  | `approval-mode`  | `dialog: approval-mode`                    |
-| `arenaCommand.ts`         | `arena`          | `dialog: arena_*`                          |
-| `authCommand.ts`          | `auth`           | `dialog: auth`                             |
-| `clearCommand.ts`         | `clear`          | `ui.clear()` 直接操作终端                  |
-| `copyCommand.ts`          | `copy`           | 剪贴板操作，无 headless 路径               |
-| `directoryCommand.tsx`    | `directory`      | JSX 组件                                   |
-| `docsCommand.ts`          | `docs`           | 打开浏览器                                 |
-| `editorCommand.ts`        | `editor`         | `dialog: editor`                           |
-| `extensionsCommand.ts`    | `extensions`     | `dialog: extensions_manage`                |
-| `helpCommand.ts`          | `help`           | `addItem(HistoryItemHelp)` — 复杂 Help UI  |
-| `hooksCommand.ts`         | `hooks`          | `dialog: hooks`                            |
-| `ideCommand.ts`           | `ide`            | IDE 进程检测与交互                         |
-| `languageCommand.ts`      | `language`       | `dialog` + `reloadCommands`                |
-| `mcpCommand.ts`           | `mcp`            | `dialog: mcp`                              |
-| `modelCommand.ts`         | `model`          | `dialog: model/fast-model`                 |
-| `permissionsCommand.ts`   | `permissions`    | `dialog: permissions`                      |
-| `quitCommand.ts`          | `quit`           | `quit` result 类型                         |
-| `restoreCommand.ts`       | `restore`        | `load_history` result 类型                 |
-| `resumeCommand.ts`        | `resume`         | `dialog: resume`                           |
-| `settingsCommand.ts`      | `settings`       | `dialog: settings`                         |
-| `setupGithubCommand.ts`   | `setup-github`   | `confirm_shell_commands` + 交互式操作      |
-| `skillsCommand.ts`        | `skills`         | `addItem(HistoryItemSkillsList)` — 复杂 UI |
-| `statsCommand.ts`         | `stats`          | `addItem(HistoryItemStats)` — 复杂 UI      |
-| `statuslineCommand.ts`    | `statusline`     | UI 状态配置                                |
-| `terminalSetupCommand.ts` | `terminal-setup` | 终端配置向导                               |
-| `themeCommand.ts`         | `theme`          | `dialog: theme`                            |
-| `toolsCommand.ts`         | `tools`          | `addItem(HistoryItemTools)` — 复杂 UI      |
-| `trustCommand.ts`         | `trust`          | `dialog: trust`                            |
-| `vimCommand.ts`           | `vim`            | `toggleVimEnabled()` — UI 状态             |
+| Command file              | Command name     | Reason it cannot run headless                      |
+| ------------------------- | ---------------- | -------------------------------------------------- |
+| `aboutCommand.ts`         | `about`          | `addItem(HistoryItemAbout)` — complex UI component |
+| `agentsCommand.ts`        | `agents`         | `dialog: subagent_create/subagent_list`            |
+| `approvalModeCommand.ts`  | `approval-mode`  | `dialog: approval-mode`                            |
+| `arenaCommand.ts`         | `arena`          | `dialog: arena_*`                                  |
+| `authCommand.ts`          | `auth`           | `dialog: auth`                                     |
+| `clearCommand.ts`         | `clear`          | `ui.clear()` directly manipulates the terminal     |
+| `copyCommand.ts`          | `copy`           | Clipboard operation; no headless path              |
+| `directoryCommand.tsx`    | `directory`      | JSX component                                      |
+| `docsCommand.ts`          | `docs`           | Opens a browser                                    |
+| `editorCommand.ts`        | `editor`         | `dialog: editor`                                   |
+| `extensionsCommand.ts`    | `extensions`     | `dialog: extensions_manage`                        |
+| `helpCommand.ts`          | `help`           | `addItem(HistoryItemHelp)` — complex Help UI       |
+| `hooksCommand.ts`         | `hooks`          | `dialog: hooks`                                    |
+| `ideCommand.ts`           | `ide`            | IDE process detection and interaction              |
+| `languageCommand.ts`      | `language`       | `dialog` + `reloadCommands`                        |
+| `mcpCommand.ts`           | `mcp`            | `dialog: mcp`                                      |
+| `modelCommand.ts`         | `model`          | `dialog: model/fast-model`                         |
+| `permissionsCommand.ts`   | `permissions`    | `dialog: permissions`                              |
+| `quitCommand.ts`          | `quit`           | `quit` result type                                 |
+| `restoreCommand.ts`       | `restore`        | `load_history` result type                         |
+| `resumeCommand.ts`        | `resume`         | `dialog: resume`                                   |
+| `settingsCommand.ts`      | `settings`       | `dialog: settings`                                 |
+| `setupGithubCommand.ts`   | `setup-github`   | `confirm_shell_commands` + interactive operations  |
+| `skillsCommand.ts`        | `skills`         | `addItem(HistoryItemSkillsList)` — complex UI      |
+| `statsCommand.ts`         | `stats`          | `addItem(HistoryItemStats)` — complex UI           |
+| `statuslineCommand.ts`    | `statusline`     | UI state configuration                             |
+| `terminalSetupCommand.ts` | `terminal-setup` | Terminal configuration wizard                      |
+| `themeCommand.ts`         | `theme`          | `dialog: theme`                                    |
+| `toolsCommand.ts`         | `tools`          | `addItem(HistoryItemTools)` — complex UI           |
+| `trustCommand.ts`         | `trust`          | `dialog: trust`                                    |
+| `vimCommand.ts`           | `vim`            | `toggleVimEnabled()` — UI state                    |
 
 ---
 
-## 5. `getEffectiveSupportedModes` 推断规则
+## 5. `getEffectiveSupportedModes` Inference Rules
 
-此函数是 Phase 1 的核心逻辑，替代原有白名单，将被 `filterCommandsForMode` 调用。
+This function is the core logic of Phase 1. It replaces the original allowlist and will be called by `filterCommandsForMode`.
 
 ```typescript
 /**
- * 获取命令的实际支持模式列表。
+ * Get the actual list of supported modes for a command.
  *
- * 推断优先级（从高到低）：
- * 1. 命令显式声明的 supportedModes（最高优先级）
- * 2. 基于 commandType 的推断
- * 3. 基于 CommandKind 的兜底（向后兼容）
+ * Inference priority (highest to lowest):
+ * 1. The command's explicitly declared supportedModes (highest priority)
+ * 2. Inference based on commandType
+ * 3. Fallback based on CommandKind (backward compatibility)
  */
 export function getEffectiveSupportedModes(cmd: SlashCommand): ExecutionMode[] {
-  // 优先级 1：显式声明
+  // Priority 1: explicit declaration
   if (cmd.supportedModes !== undefined) {
     return cmd.supportedModes;
   }
 
-  // 优先级 2：基于 commandType 推断
+  // Priority 2: inference based on commandType
   if (cmd.commandType !== undefined) {
     switch (cmd.commandType) {
       case 'prompt':
-        // prompt 类型无 UI 依赖，天然全模式可用
+        // prompt type has no UI dependency, so it is naturally available in all modes
         return ['interactive', 'non_interactive', 'acp'];
       case 'local':
-        // local 类型保守默认：仅 interactive。
-        // 需要非交互支持的命令须显式声明 supportedModes（对应 Claude Code 的 supportsNonInteractive: true）。
-        // Phase 2 中逐个验证并解锁，防止未适配的命令意外暴露给 headless 调用者。
+        // local type uses a conservative default: interactive only.
+        // Commands needing non-interactive support must declare supportedModes explicitly (corresponds to Claude Code's supportsNonInteractive: true).
+        // Phase 2 verifies and unlocks them one by one, to prevent unadapted commands from being accidentally exposed to headless callers.
         return ['interactive'];
       case 'local-jsx':
         return ['interactive'];
     }
   }
 
-  // 优先级 3：兜底（基于 CommandKind，向后兼容旧代码）
+  // Priority 3: fallback (based on CommandKind, backward compatible with old code)
   switch (cmd.kind) {
     case CommandKind.BUILT_IN:
-      // built-in 命令未声明 commandType 时保守默认（interactive only）
-      // 这个分支在 Phase 1 完成后应不再被命中（所有 built-in 都有 commandType）
+      // when a built-in command has no declared commandType, use a conservative default (interactive only)
+      // this branch should no longer be hit after Phase 1 completes (all built-ins have commandType)
       return ['interactive'];
     case CommandKind.FILE:
     case CommandKind.SKILL:
     case CommandKind.MCP_PROMPT:
-      // 这三类命令的 action 天然无 UI 依赖，历史行为也是全模式可用
+      // the actions of these three command kinds have no UI dependency by nature, and their historical behavior was all-mode availability
       return ['interactive', 'non_interactive', 'acp'];
     default:
       return ['interactive'];
@@ -374,8 +374,8 @@ export function getEffectiveSupportedModes(cmd: SlashCommand): ExecutionMode[] {
 
 ```typescript
 /**
- * 根据 supportedModes 过滤适合当前模式的命令。
- * 替代原 filterCommandsForNonInteractive 函数。
+ * Filter commands suitable for the current mode based on supportedModes.
+ * Replaces the original filterCommandsForNonInteractive function.
  */
 export function filterCommandsForMode(
   commands: readonly SlashCommand[],
@@ -389,25 +389,25 @@ export function filterCommandsForMode(
 
 ---
 
-## 6. `CommandService` 接口扩展
+## 6. `CommandService` Interface Extension
 
-在 `packages/cli/src/services/CommandService.ts` 中新增两个方法：
+Add two new methods in `packages/cli/src/services/CommandService.ts`:
 
 ```typescript
 export class CommandService {
-  // ── 现有方法（保持不变）────────────────────────────────────────────────
+  // ── Existing methods (unchanged) ──────────────────────────────────────
   getCommands(): readonly SlashCommand[] {
     return this.commands;
   }
 
-  // ── Phase 1 新增方法 ──────────────────────────────────────────────────
+  // ── Phase 1 new methods ──────────────────────────────────────────────
 
   /**
-   * 返回在指定执行模式下可用的命令列表。
-   * 替代原有白名单 + filterCommandsForNonInteractive 的组合。
+   * Returns the list of commands available in the given execution mode.
+   * Replaces the original combination of allowlist + filterCommandsForNonInteractive.
    *
-   * @param mode 目标运行模式
-   * @returns 适合该模式的命令列表（不含 hidden 命令）
+   * @param mode the target runtime mode
+   * @returns the list of commands suitable for that mode (excluding hidden commands)
    */
   getCommandsForMode(mode: ExecutionMode): readonly SlashCommand[] {
     return this.commands.filter((cmd) => {
@@ -417,10 +417,10 @@ export class CommandService {
   }
 
   /**
-   * 返回所有 modelInvocable 为 true 的命令。
-   * Phase 2 中 SkillTool 将消费此方法；Phase 1 仅提供接口。
+   * Returns all commands whose modelInvocable is true.
+   * In Phase 2, SkillTool will consume this method; Phase 1 only provides the interface.
    *
-   * @returns 模型可调用的命令列表
+   * @returns the list of model-invocable commands
    */
   getModelInvocableCommands(): readonly SlashCommand[] {
     return this.commands.filter(
@@ -430,38 +430,38 @@ export class CommandService {
 }
 ```
 
-> **注意**：`getEffectiveSupportedModes` 和 `filterCommandsForMode` 应作为 `CommandService` 内部使用的工具函数，或提取到独立的 `packages/cli/src/services/commandUtils.ts` 文件并导出，以便测试和复用。
+> **Note**: `getEffectiveSupportedModes` and `filterCommandsForMode` should be used as utility functions internal to `CommandService`, or extracted into a separate `packages/cli/src/services/commandUtils.ts` file and exported, to make them testable and reusable.
 
 ---
 
-## 7. `nonInteractiveCliCommands.ts` 重构
+## 7. `nonInteractiveCliCommands.ts` Refactor
 
-### 7.1 删除内容
+### 7.1 What to Delete
 
 ```typescript
-// ❌ 删除
+// ❌ delete
 export const ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE = [
   'init', 'summary', 'compress', 'btw', 'bug', 'context',
 ] as const;
 
-// ❌ 删除
+// ❌ delete
 function filterCommandsForNonInteractive(
   commands: readonly SlashCommand[],
   allowedBuiltinCommandNames: Set<string>,
 ): SlashCommand[] { ... }
 ```
 
-### 7.2 新增内容
+### 7.2 What to Add
 
 ```typescript
-// ✅ 新增（或从 commandUtils 导入）
+// ✅ add (or import from commandUtils)
 import { filterCommandsForMode } from '../services/commandUtils.js';
 ```
 
-### 7.3 `handleSlashCommand` 函数签名变更
+### 7.3 `handleSlashCommand` Function Signature Change
 
 ```typescript
-// ❌ 旧签名
+// ❌ old signature
 export const handleSlashCommand = async (
   rawQuery: string,
   abortController: AbortController,
@@ -470,7 +470,7 @@ export const handleSlashCommand = async (
   allowedBuiltinCommandNames: string[] = [...ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE],
 ): Promise<NonInteractiveSlashCommandResult>
 
-// ✅ 新签名（移除 allowedBuiltinCommandNames）
+// ✅ new signature (remove allowedBuiltinCommandNames)
 export const handleSlashCommand = async (
   rawQuery: string,
   abortController: AbortController,
@@ -479,31 +479,31 @@ export const handleSlashCommand = async (
 ): Promise<NonInteractiveSlashCommandResult>
 ```
 
-### 7.4 内部实现变更
+### 7.4 Internal Implementation Change
 
 ```typescript
-// 旧：
+// old:
 const filteredCommands = filterCommandsForNonInteractive(
   allCommands,
   allowedBuiltinSet,
 );
 
-// 新：
+// new:
 const executionMode = isAcpMode ? 'acp' : 'non_interactive';
 const filteredCommands = filterCommandsForMode(allCommands, executionMode);
 ```
 
-### 7.5 `getAvailableCommands` 函数签名变更
+### 7.5 `getAvailableCommands` Function Signature Change
 
 ```typescript
-// ❌ 旧签名
+// ❌ old signature
 export const getAvailableCommands = async (
   config: Config,
   abortSignal: AbortSignal,
   allowedBuiltinCommandNames: string[] = [...ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE],
 ): Promise<SlashCommand[]>
 
-// ✅ 新签名
+// ✅ new signature
 export const getAvailableCommands = async (
   config: Config,
   abortSignal: AbortSignal,
@@ -511,23 +511,23 @@ export const getAvailableCommands = async (
 ): Promise<SlashCommand[]>
 ```
 
-> 新增 `mode` 参数替代原来的白名单参数，ACP Session 调用时可明确指定 `'acp'`，non-interactive 调用时指定 `'non_interactive'`。
+> The new `mode` parameter replaces the original allowlist parameter. ACP Session calls can explicitly specify `'acp'`, and non-interactive calls specify `'non_interactive'`.
 
 ---
 
-## 8. `Session.ts`（ACP）调用变更
+## 8. `Session.ts` (ACP) Call Changes
 
 ```typescript
-// ❌ 旧调用
+// ❌ old call
 const slashCommandResult = await handleSlashCommand(
   inputText,
   abortController,
   this.config,
   this.settings,
-  // 不传，使用默认白名单
+  // not passed, uses the default allowlist
 );
 
-// ✅ 新调用（无变化，移除了不再存在的默认参数）
+// ✅ new call (unchanged; removed the default parameter that no longer exists)
 const slashCommandResult = await handleSlashCommand(
   inputText,
   abortController,
@@ -537,13 +537,13 @@ const slashCommandResult = await handleSlashCommand(
 
 // ─────────────────────────────────────────
 
-// ❌ 旧调用
+// ❌ old call
 const slashCommands = await getAvailableCommands(
   this.config,
   abortController.signal,
 );
 
-// ✅ 新调用（明确指定 mode）
+// ✅ new call (explicitly specify mode)
 const slashCommands = await getAvailableCommands(
   this.config,
   abortController.signal,
@@ -553,213 +553,213 @@ const slashCommands = await getAvailableCommands(
 
 ---
 
-## 9. 文件变更总览
+## 9. File Change Overview
 
-### 9.1 修改的文件
+### 9.1 Modified Files
 
-| 文件                                                                    | 修改内容                                                                                         |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `packages/cli/src/ui/commands/types.ts`                                 | 新增 `ExecutionMode`、`CommandSource`、`CommandType` 类型；扩展 `SlashCommand` 接口              |
-| `packages/cli/src/services/CommandService.ts`                           | 新增 `getCommandsForMode()`、`getModelInvocableCommands()` 方法                                  |
-| `packages/cli/src/nonInteractiveCliCommands.ts`                         | 删除白名单常量和旧过滤函数；更新两个导出函数的签名；引入 `filterCommandsForMode`                 |
-| `packages/cli/src/acp-integration/session/Session.ts`                   | 更新 `handleSlashCommand` 和 `getAvailableCommands` 调用                                         |
-| `packages/cli/src/services/BuiltinCommandLoader.ts`                     | 在构建命令时注入 `source: 'builtin-command'`、`sourceLabel: 'Built-in'`、`modelInvocable: false` |
-| `packages/cli/src/services/BundledSkillLoader.ts`                       | 注入 `source: 'bundled-skill'`、`commandType: 'prompt'`、`modelInvocable: true`                  |
-| `packages/cli/src/services/FileCommandLoader.ts` / `command-factory.ts` | 注入 `source`、`commandType: 'prompt'`、`modelInvocable`（根据 extensionName）                   |
-| `packages/cli/src/services/McpPromptLoader.ts`                          | 注入 `source: 'mcp-prompt'`、`commandType: 'prompt'`、`modelInvocable: true`                     |
-| **各 built-in 命令文件（10 个 local + 27 个 local-jsx）**               | 声明 `commandType: 'local'` 或 `commandType: 'local-jsx'`                                        |
+| File                                                                    | Changes                                                                                                                                   |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/cli/src/ui/commands/types.ts`                                 | Add `ExecutionMode`, `CommandSource`, `CommandType` types; extend the `SlashCommand` interface                                            |
+| `packages/cli/src/services/CommandService.ts`                           | Add `getCommandsForMode()` and `getModelInvocableCommands()` methods                                                                      |
+| `packages/cli/src/nonInteractiveCliCommands.ts`                         | Delete the allowlist constant and old filter function; update the signatures of two exported functions; introduce `filterCommandsForMode` |
+| `packages/cli/src/acp-integration/session/Session.ts`                   | Update the `handleSlashCommand` and `getAvailableCommands` calls                                                                          |
+| `packages/cli/src/services/BuiltinCommandLoader.ts`                     | Inject `source: 'builtin-command'`, `sourceLabel: 'Built-in'`, `modelInvocable: false` when building commands                             |
+| `packages/cli/src/services/BundledSkillLoader.ts`                       | Inject `source: 'bundled-skill'`, `commandType: 'prompt'`, `modelInvocable: true`                                                         |
+| `packages/cli/src/services/FileCommandLoader.ts` / `command-factory.ts` | Inject `source`, `commandType: 'prompt'`, `modelInvocable` (based on extensionName)                                                       |
+| `packages/cli/src/services/McpPromptLoader.ts`                          | Inject `source: 'mcp-prompt'`, `commandType: 'prompt'`, `modelInvocable: true`                                                            |
+| **Each built-in command file (10 local + 27 local-jsx)**                | Declare `commandType: 'local'` or `commandType: 'local-jsx'`                                                                              |
 
-### 9.2 新增的文件
+### 9.2 New Files
 
-| 文件                                        | 内容                                                                       |
-| ------------------------------------------- | -------------------------------------------------------------------------- |
-| `packages/cli/src/services/commandUtils.ts` | `getEffectiveSupportedModes()`、`filterCommandsForMode()` 工具函数及其导出 |
+| File                                        | Contents                                                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `packages/cli/src/services/commandUtils.ts` | The `getEffectiveSupportedModes()` and `filterCommandsForMode()` utility functions and their exports |
 
-### 9.3 不变的文件
+### 9.3 Unchanged Files
 
-- `packages/cli/src/ui/commands/commands.ts`（`parseSlashCommand` 无需修改）
-- `packages/cli/src/ui/hooks/slashCommandProcessor.ts`（interactive 路径无需修改）
-- `packages/cli/src/ui/noninteractive/nonInteractiveUi.ts`（stub UI 无需修改）
-- 所有命令的 `action` 实现（Phase 1 不修改任何命令行为）
-
----
-
-## 10. 行为影响分析
-
-### 10.1 变化汇总
-
-| 场景                                 | 旧行为                       | 新行为                                                   | 性质        |
-| ------------------------------------ | ---------------------------- | -------------------------------------------------------- | ----------- |
-| non-interactive 下执行 `/init`       | ✅ 允许（白名单）            | ✅ 允许（`commandType: local`）                          | 无变化      |
-| non-interactive 下执行 `/summary`    | ✅ 允许                      | ✅ 允许                                                  | 无变化      |
-| non-interactive 下执行 `/compress`   | ✅ 允许                      | ✅ 允许                                                  | 无变化      |
-| non-interactive 下执行 `/btw`        | ✅ 允许                      | ✅ 允许                                                  | 无变化      |
-| non-interactive 下执行 `/bug`        | ✅ 允许                      | ✅ 允许                                                  | 无变化      |
-| non-interactive 下执行 `/context`    | ✅ 允许                      | ✅ 允许                                                  | 无变化      |
-| non-interactive 下执行 `/model`      | ❌ unsupported               | ❌ unsupported（`commandType: local-jsx`）               | 无变化      |
-| non-interactive 下执行 file command  | ✅ 允许（CommandKind.FILE）  | ✅ 允许（`commandType: prompt`）                         | 无变化      |
-| non-interactive 下执行 bundled skill | ✅ 允许（CommandKind.SKILL） | ✅ 允许（`commandType: prompt`）                         | 无变化      |
-| non-interactive 下执行 MCP prompt    | ❌ 被 CommandKind 拦截       | ✅ 允许（`commandType: prompt`）                         | **Bug fix** |
-| non-interactive 下执行 `/export`     | ❌ 不在白名单                | ❌ 不允许（`commandType: local`，默认 interactive only） | 无变化      |
-| non-interactive 下执行 `/memory`     | ❌ 不在白名单                | ❌ 不允许（`commandType: local`，默认 interactive only） | 无变化      |
-| non-interactive 下执行 `/plan`       | ❌ 不在白名单                | ❌ 不允许（`commandType: local`，默认 interactive only） | 无变化      |
-
-> **关于 `local` 命令的保守默认策略**：`commandType: 'local'` 的默认 `supportedModes` 为 `['interactive']`，这与 Claude Code 的设计一致——`local` 类型命令需要显式声明 `supportsNonInteractive: true` 才能在非交互模式下运行。Phase 1 中白名单内的 6 个命令（`init`、`summary`、`compress`、`btw`、`bug`、`context`）通过显式声明 `supportedModes: ['interactive', 'non_interactive', 'acp']` 来等价替换原白名单效果。Phase 2 中需要扩展的命令（如 `/export`、`/memory`、`/plan`）在验证 action 实现 headless-friendly 之后，再逐个解锁。
+- `packages/cli/src/ui/commands/commands.ts` (`parseSlashCommand` needs no changes)
+- `packages/cli/src/ui/hooks/slashCommandProcessor.ts` (the interactive path needs no changes)
+- `packages/cli/src/ui/noninteractive/nonInteractiveUi.ts` (the stub UI needs no changes)
+- The `action` implementations of all commands (Phase 1 does not modify any command behavior)
 
 ---
 
-## 10.2 Phase 2 模式差异命令：双注册模式
+## 10. Behavior Impact Analysis
 
-对于 Phase 2 中需要"交互模式有 UI，非交互模式有文本输出"的命令（如 `/model`），应采用 **双注册模式**，而非在单个命令的 `action` 内部分支。
+### 10.1 Summary of Changes
 
-这是 Claude Code 的标准模式，以 `/context` 为例（参见 `src/commands/context/index.ts`）：两个同名 `Command` 对象，一个 `local-jsx` 仅 interactive，另一个 `local` 仅 non-interactive，通过 `isEnabled()` 互斥。
+| Scenario                               | Old behavior                   | New behavior                                                    | Nature      |
+| -------------------------------------- | ------------------------------ | --------------------------------------------------------------- | ----------- |
+| Run `/init` in non-interactive         | ✅ allowed (allowlist)         | ✅ allowed (`commandType: local`)                               | No change   |
+| Run `/summary` in non-interactive      | ✅ allowed                     | ✅ allowed                                                      | No change   |
+| Run `/compress` in non-interactive     | ✅ allowed                     | ✅ allowed                                                      | No change   |
+| Run `/btw` in non-interactive          | ✅ allowed                     | ✅ allowed                                                      | No change   |
+| Run `/bug` in non-interactive          | ✅ allowed                     | ✅ allowed                                                      | No change   |
+| Run `/context` in non-interactive      | ✅ allowed                     | ✅ allowed                                                      | No change   |
+| Run `/model` in non-interactive        | ❌ unsupported                 | ❌ unsupported (`commandType: local-jsx`)                       | No change   |
+| Run a file command in non-interactive  | ✅ allowed (CommandKind.FILE)  | ✅ allowed (`commandType: prompt`)                              | No change   |
+| Run a bundled skill in non-interactive | ✅ allowed (CommandKind.SKILL) | ✅ allowed (`commandType: prompt`)                              | No change   |
+| Run an MCP prompt in non-interactive   | ❌ blocked by CommandKind      | ✅ allowed (`commandType: prompt`)                              | **Bug fix** |
+| Run `/export` in non-interactive       | ❌ not in allowlist            | ❌ not allowed (`commandType: local`, default interactive only) | No change   |
+| Run `/memory` in non-interactive       | ❌ not in allowlist            | ❌ not allowed (`commandType: local`, default interactive only) | No change   |
+| Run `/plan` in non-interactive         | ❌ not in allowlist            | ❌ not allowed (`commandType: local`, default interactive only) | No change   |
 
-Qwen Code 在 Phase 2 中应采用等价方式，以 `supportedModes` 替代 `isEnabled()` 实现互斥：
+> **About the conservative default strategy for `local` commands**: the default `supportedModes` for `commandType: 'local'` is `['interactive']`. This is consistent with Claude Code's design — `local` type commands need to explicitly declare `supportsNonInteractive: true` to run in non-interactive mode. In Phase 1, the 6 commands in the allowlist (`init`, `summary`, `compress`, `btw`, `bug`, `context`) equivalently replace the original allowlist effect by explicitly declaring `supportedModes: ['interactive', 'non_interactive', 'acp']`. Commands that need to be extended in Phase 2 (such as `/export`, `/memory`, `/plan`) are unlocked one by one after verifying their action implementations are headless-friendly.
+
+---
+
+## 10.2 Phase 2 Mode-Divergent Commands: Dual Registration Pattern
+
+For commands in Phase 2 that need "a UI in interactive mode and text output in non-interactive mode" (such as `/model`), use the **dual registration pattern** rather than branching inside a single command's `action`.
+
+This is Claude Code's standard pattern, with `/context` as an example (see `src/commands/context/index.ts`): two `Command` objects with the same name, one `local-jsx` for interactive only and the other `local` for non-interactive only, made mutually exclusive via `isEnabled()`.
+
+In Phase 2, Qwen Code should adopt the equivalent approach, using `supportedModes` instead of `isEnabled()` for mutual exclusion:
 
 ```typescript
-// ① 交互模式版：local-jsx，仅 interactive
+// ① Interactive version: local-jsx, interactive only
 export const modelCommandInteractive: SlashCommand = {
   name: 'model',
   kind: CommandKind.BUILT_IN,
   commandType: 'local-jsx',
-  supportedModes: ['interactive'], // 显式限定
-  // action: 打开 dialog 选择 model
+  supportedModes: ['interactive'], // explicitly scoped
+  // action: open a dialog to select the model
 };
 
-// ② 非交互/acp 版：local，显式开放给 headless 调用者
+// ② Non-interactive/acp version: local, explicitly opened up to headless callers
 export const modelCommandHeadless: SlashCommand = {
   name: 'model',
   kind: CommandKind.BUILT_IN,
   commandType: 'local',
-  supportedModes: ['non_interactive', 'acp'], // 显式限定
-  // action: 读取/设置 model，返回 message（纯文本）
+  supportedModes: ['non_interactive', 'acp'], // explicitly scoped
+  // action: read/set the model, return message (plain text)
 };
 ```
 
-两个对象同名，`supportedModes` 互斥，`filterCommandsForMode` 自动选择正确版本。与 Claude Code 的 `isEnabled()` 互斥相比，`supportedModes` 过滤更显式、更易测试，且不需要运行时环境检测。
+The two objects share the same name, their `supportedModes` are mutually exclusive, and `filterCommandsForMode` automatically selects the correct version. Compared with Claude Code's `isEnabled()` exclusion, `supportedModes` filtering is more explicit, easier to test, and does not require runtime environment detection.
 
-**Phase 1 不实现任何双注册命令**，该模式仅作为 Phase 2 的实施规范预留在此。
+**Phase 1 does not implement any dual-registration commands**; this pattern is reserved here only as an implementation spec for Phase 2.
 
 ---
 
-## 11. 测试策略
+## 11. Testing Strategy
 
-### 11.1 新增工具函数测试
+### 11.1 New Utility Function Tests
 
-在 `packages/cli/src/services/commandUtils.test.ts`（新文件）中：
+In `packages/cli/src/services/commandUtils.test.ts` (new file):
 
 ```typescript
 describe('getEffectiveSupportedModes', () => {
-  it('显式 supportedModes 优先于 commandType 推断', () => {
+  it('explicit supportedModes takes precedence over commandType inference', () => {
     const cmd: SlashCommand = {
       name: 'test', description: '', kind: CommandKind.BUILT_IN,
       commandType: 'local',
-      supportedModes: ['interactive'], // 显式限制
+      supportedModes: ['interactive'], // explicit restriction
     };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive']);
   });
 
-  it('commandType: local 推断为 all modes', () => {
+  it('commandType: local infers all modes', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.BUILT_IN, commandType: 'local' };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive', 'non_interactive', 'acp']);
   });
 
-  it('commandType: local-jsx 推断为 interactive only', () => {
+  it('commandType: local-jsx infers interactive only', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.BUILT_IN, commandType: 'local-jsx' };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive']);
   });
 
-  it('commandType: prompt 推断为 all modes', () => {
+  it('commandType: prompt infers all modes', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.SKILL, commandType: 'prompt' };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive', 'non_interactive', 'acp']);
   });
 
-  it('未声明 commandType 且 CommandKind.BUILT_IN，兜底为 interactive', () => {
+  it('no commandType declared and CommandKind.BUILT_IN, falls back to interactive', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.BUILT_IN };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive']);
   });
 
-  it('未声明 commandType 且 CommandKind.FILE，兜底为 all modes', () => {
+  it('no commandType declared and CommandKind.FILE, falls back to all modes', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.FILE };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive', 'non_interactive', 'acp']);
   });
 
-  it('未声明 commandType 且 CommandKind.MCP_PROMPT，兜底为 all modes（修复原有限制）', () => {
+  it('no commandType declared and CommandKind.MCP_PROMPT, falls back to all modes (fixes the original restriction)', () => {
     const cmd: SlashCommand = { name: 'test', description: '', kind: CommandKind.MCP_PROMPT };
     expect(getEffectiveSupportedModes(cmd)).toEqual(['interactive', 'non_interactive', 'acp']);
   });
 });
 
 describe('filterCommandsForMode', () => {
-  it('正确过滤 non_interactive 模式下的命令', () => { ... });
-  it('正确过滤 acp 模式下的命令', () => { ... });
-  it('不过滤 hidden 命令（filterCommandsForMode 不处理 hidden，CommandService 处理）', () => { ... });
+  it('correctly filters commands in non_interactive mode', () => { ... });
+  it('correctly filters commands in acp mode', () => { ... });
+  it('does not filter hidden commands (filterCommandsForMode does not handle hidden, CommandService does)', () => { ... });
 });
 ```
 
-### 11.2 更新 `nonInteractiveCliCommands.test.ts`
+### 11.2 Update `nonInteractiveCliCommands.test.ts`
 
-- 删除对 `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` 的所有引用
-- 删除对 `allowedBuiltinCommandNames` 参数的测试用例
-- 新增：验证 commandType: local 的命令在 non-interactive 下通过过滤
-- 新增：验证 commandType: local-jsx 的命令在 non-interactive 下被过滤
-- 保留：验证 file command / skill command 在 non-interactive 下通过过滤
+- Delete all references to `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE`
+- Delete test cases for the `allowedBuiltinCommandNames` parameter
+- Add: verify that commandType: local commands pass the filter in non-interactive
+- Add: verify that commandType: local-jsx commands are filtered out in non-interactive
+- Keep: verify that file command / skill command pass the filter in non-interactive
 
-### 11.3 更新 `CommandService.test.ts`
+### 11.3 Update `CommandService.test.ts`
 
-- 新增 `getCommandsForMode` 的测试用例
-- 新增 `getModelInvocableCommands` 的测试用例
+- Add test cases for `getCommandsForMode`
+- Add test cases for `getModelInvocableCommands`
 
-### 11.4 各 Loader 测试
+### 11.4 Tests for Each Loader
 
-- `BuiltinCommandLoader.test.ts`：验证所有命令都有 `source: 'builtin-command'`
-- `BundledSkillLoader.test.ts`：验证 `source: 'bundled-skill'` 和 `modelInvocable: true`
-- `FileCommandLoader.test.ts`：验证用户命令有 `source: 'skill-dir-command'`，插件命令有 `source: 'plugin-command'`
-- `McpPromptLoader.test.ts`：验证 `source: 'mcp-prompt'` 和 `modelInvocable: true`
-
----
-
-## 12. 实施顺序
-
-建议按以下顺序实施，每步可独立 commit 和 review：
-
-**Step 1**（~30min）：修改 `types.ts`，新增 `ExecutionMode`、`CommandSource`、`CommandType` 和 `SlashCommand` 新字段
-→ 纯类型变更，TypeScript 编译检查
-
-**Step 2**（~1h）：新建 `commandUtils.ts`，实现 `getEffectiveSupportedModes` 和 `filterCommandsForMode`，同步新建 `commandUtils.test.ts`
-→ 单元测试覆盖核心逻辑
-
-**Step 3**（~1h）：重构 `nonInteractiveCliCommands.ts`，删除白名单，引入 `filterCommandsForMode`，更新函数签名
-→ 行为等价（Phase 1 保守策略：local 类命令显式写 `supportedModes: ['interactive']`）
-
-**Step 4**（~30min）：更新 `CommandService.ts`，新增两个方法
-
-**Step 5**（~2h）：为所有 built-in 命令文件添加 `commandType` 声明
-→ 逐个确认分类正确性
-
-**Step 6**（~1.5h）：更新所有 Loader，注入 `source`、`sourceLabel`、`commandType`、`modelInvocable`
-
-**Step 7**（~30min）：更新 `Session.ts` 的调用签名
-
-**Step 8**（~1h）：运行所有测试，修复失败用例，更新快照
-
-**Step 9**（~30min）：CR 自查：确认白名单已完全移除，无遗漏调用
+- `BuiltinCommandLoader.test.ts`: verify all commands have `source: 'builtin-command'`
+- `BundledSkillLoader.test.ts`: verify `source: 'bundled-skill'` and `modelInvocable: true`
+- `FileCommandLoader.test.ts`: verify user commands have `source: 'skill-dir-command'` and plugin commands have `source: 'plugin-command'`
+- `McpPromptLoader.test.ts`: verify `source: 'mcp-prompt'` and `modelInvocable: true`
 
 ---
 
-## 13. 验收 Checklist
+## 12. Implementation Order
 
-- [ ] TypeScript 编译无错误（`npm run typecheck`）
-- [ ] `npm run lint` 无新增 lint 错误
-- [ ] 所有现有测试通过（`cd packages/cli && npx vitest run`）
-- [ ] `commandUtils.test.ts` 新增测试全部通过
-- [ ] `getEffectiveSupportedModes` 覆盖所有 7 种 case
-- [ ] `filterCommandsForMode` 覆盖 interactive / non_interactive / acp 三种模式
-- [ ] `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` 在整个代码库中无任何引用（`grep` 验证）
-- [ ] `filterCommandsForNonInteractive` 函数在整个代码库中无任何引用
-- [ ] 所有 built-in 命令有 `commandType` 字段
-- [ ] 所有 Loader 输出的命令有 `source` 和 `sourceLabel` 字段
-- [ ] `BundledSkillLoader` / `FileCommandLoader`（用户命令）/ `McpPromptLoader` 输出的命令 `modelInvocable: true`
-- [ ] `BuiltinCommandLoader` 输出的命令 `modelInvocable: false`
-- [ ] `CommandService.getCommandsForMode('non_interactive')` 返回与重构前等价的命令集
-- [ ] MCP prompt 命令在 non-interactive 模式下不再被错误拦截
+The recommended implementation order below allows each step to be committed and reviewed independently:
+
+**Step 1** (~30min): Modify `types.ts`, adding `ExecutionMode`, `CommandSource`, `CommandType` and the new `SlashCommand` fields
+→ Pure type changes, TypeScript compilation check
+
+**Step 2** (~1h): Create `commandUtils.ts`, implementing `getEffectiveSupportedModes` and `filterCommandsForMode`, and create `commandUtils.test.ts` alongside it
+→ Unit tests cover the core logic
+
+**Step 3** (~1h): Refactor `nonInteractiveCliCommands.ts`, delete the allowlist, introduce `filterCommandsForMode`, update the function signatures
+→ Behaviorally equivalent (Phase 1 conservative strategy: local-class commands explicitly write `supportedModes: ['interactive']`)
+
+**Step 4** (~30min): Update `CommandService.ts`, adding the two methods
+
+**Step 5** (~2h): Add `commandType` declarations to all built-in command files
+→ Confirm the classification of each one
+
+**Step 6** (~1.5h): Update all Loaders, injecting `source`, `sourceLabel`, `commandType`, `modelInvocable`
+
+**Step 7** (~30min): Update the call signatures in `Session.ts`
+
+**Step 8** (~1h): Run all tests, fix failing cases, update snapshots
+
+**Step 9** (~30min): CR self-check: confirm the allowlist is fully removed, with no missed calls
+
+---
+
+## 13. Acceptance Checklist
+
+- [ ] TypeScript compiles without errors (`npm run typecheck`)
+- [ ] `npm run lint` has no new lint errors
+- [ ] All existing tests pass (`cd packages/cli && npx vitest run`)
+- [ ] All new tests in `commandUtils.test.ts` pass
+- [ ] `getEffectiveSupportedModes` covers all 7 cases
+- [ ] `filterCommandsForMode` covers all three modes: interactive / non_interactive / acp
+- [ ] `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` has no references anywhere in the codebase (verified by `grep`)
+- [ ] The `filterCommandsForNonInteractive` function has no references anywhere in the codebase
+- [ ] All built-in commands have a `commandType` field
+- [ ] All commands output by the Loaders have `source` and `sourceLabel` fields
+- [ ] Commands output by `BundledSkillLoader` / `FileCommandLoader` (user commands) / `McpPromptLoader` have `modelInvocable: true`
+- [ ] Commands output by `BuiltinCommandLoader` have `modelInvocable: false`
+- [ ] `CommandService.getCommandsForMode('non_interactive')` returns a command set equivalent to before the refactor
+- [ ] MCP prompt commands are no longer incorrectly blocked in non-interactive mode

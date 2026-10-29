@@ -796,8 +796,8 @@ describe('runForkedAgent (AgentHeadless path) bound-tool isolation', () => {
 
     const { parent } = await makeParent({ model: 'claude-main' });
     vi.spyOn(parent, 'getContentGeneratorConfig').mockReturnValue({
-      model: 'claude-main',
-      authType: AuthType.USE_ANTHROPIC,
+      model: 'parent-main',
+      authType: 'parent-provider' as AuthType,
     });
     vi.spyOn(parent, 'getFastModel').mockReturnValue(
       `${AuthType.USE_OPENAI}:${fastModel}`,

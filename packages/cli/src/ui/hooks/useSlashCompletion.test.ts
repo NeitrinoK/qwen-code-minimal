@@ -104,7 +104,7 @@ vi.mock('fzf', async () => {
   const actual = await vi.importActual<typeof import('fzf')>('fzf');
   return {
     ...actual,
-    AsyncFzf: vi.fn().mockImplementation((items, _options) => {
+    AsyncFzf: vi.fn().mockImplementation(function (items, _options) {
       asyncFzfConstructorCalls++;
       return {
         find: vi

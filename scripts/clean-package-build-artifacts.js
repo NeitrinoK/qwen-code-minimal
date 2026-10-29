@@ -14,21 +14,7 @@ const DEFAULT_ROOT = join(__dirname, '..');
 const RMRF_OPTIONS = { recursive: true, force: true };
 const CLI_BUILD_PACKAGE_PATHS = [
   'packages/core',
-  'packages/web-templates',
-  'packages/channels/base',
-  'packages/channels/telegram',
-  'packages/channels/weixin',
-  'packages/channels/dingtalk',
-  'packages/channels/dws',
-  'packages/channels/email',
-  'packages/channels/wecom',
-  'packages/channels/feishu',
-  'packages/channels/qqbot',
-  'packages/channels/github',
-  'packages/channels/plugin-example',
-  'packages/audio-capture',
   'packages/acp-bridge',
-  'packages/sdk-typescript',
   'packages/cli',
 ];
 

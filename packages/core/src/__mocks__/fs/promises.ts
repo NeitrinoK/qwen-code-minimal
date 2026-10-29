@@ -4,10 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 import * as actualFsPromises from 'node:fs/promises';
 
-const readFileMock = vi.fn();
+// Explicit Mock annotation: vitest 4's inferred vi.fn() type references a
+// nested `vitest/node_modules/@vitest/spy` that TS cannot name portably (TS2742).
+const readFileMock: Mock = vi.fn();
 
 // Export a control object so tests can access and manipulate the mock
 export const mockControl = {

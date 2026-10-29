@@ -363,6 +363,7 @@ describe('collectAvailableSkillEntries memoize cache', () => {
     return {
       listSkills: vi.fn().mockResolvedValue([]),
       isSkillActive: vi.fn().mockReturnValue(false),
+      recordCatalogSize: vi.fn(),
     } as unknown as SkillManager;
   }
 

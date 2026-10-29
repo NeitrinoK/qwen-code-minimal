@@ -14,10 +14,6 @@
  * Every producer and consumer of day keys must go through these helpers;
  * if the convention is ever revisited, this file is the only place that
  * changes.
- *
- * The web renderer (packages/web-templates/src/insight) cannot import
- * this module across the package boundary; it carries a same-shaped twin
- * in `src/insight/src/dates.ts` — keep the two in sync.
  */
 
 /** Keys an instant by its local calendar day as `YYYY-MM-DD`. */

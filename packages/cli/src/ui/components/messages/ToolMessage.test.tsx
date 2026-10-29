@@ -2074,21 +2074,6 @@ describe('<ToolMessage /> localized badge', () => {
     await setLanguageAsync('en');
   });
 
-  it('shows the localized display name under the zh locale', async () => {
-    const { setLanguageAsync } = await import('../../../i18n/index.js');
-    await setLanguageAsync('zh');
-    const { lastFrame } = renderWithContext(
-      <ToolMessage {...localizedProps} />,
-      StreamingState.Idle,
-    );
-    const output = lastFrame() ?? '';
-    expect(output).toContain('读取文件');
-    expect(output).not.toContain('ReadFile');
-    // 15s timeout (not the 5s default): setLanguageAsync() loads locale
-    // resources lazily and intermittently exceeds 5s on the heavily
-    // parallelized macOS CI runner, flaking the merge queue.
-  }, 15000);
-
   it('keeps the English display name under the en locale', async () => {
     const { setLanguageAsync } = await import('../../../i18n/index.js');
     await setLanguageAsync('en');

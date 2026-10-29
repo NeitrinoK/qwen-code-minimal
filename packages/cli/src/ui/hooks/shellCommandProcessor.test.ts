@@ -32,9 +32,38 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     isBinary: mockIsBinary,
   };
 });
-vi.mock('fs');
-vi.mock('os');
-vi.mock('crypto');
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const existsSync = vi.fn();
+  const readFileSync = vi.fn();
+  const unlinkSync = vi.fn();
+  const writeFileSync = vi.fn();
+  return {
+    ...actual,
+    default: { ...actual, existsSync, readFileSync, unlinkSync, writeFileSync },
+    existsSync,
+    readFileSync,
+    unlinkSync,
+    writeFileSync,
+  };
+});
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof import('node:os')>('node:os');
+  const platform = vi.fn();
+  const tmpdir = vi.fn();
+  return {
+    ...actual,
+    default: { ...actual, platform, tmpdir },
+    platform,
+    tmpdir,
+  };
+});
+vi.mock('node:crypto', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:crypto')>('node:crypto');
+  const randomBytes = vi.fn();
+  return { ...actual, default: { ...actual, randomBytes }, randomBytes };
+});
 vi.mock('../utils/textUtils.js');
 
 import {

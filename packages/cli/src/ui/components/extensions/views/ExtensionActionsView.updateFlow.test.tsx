@@ -19,7 +19,7 @@
 
 import { act, useReducer, useRef } from 'react';
 import { render } from 'ink-testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { waitFor } from '@testing-library/react';
 import {
   ExtensionUpdateState,
@@ -33,6 +33,11 @@ import {
 } from '../../../state/extensions.js';
 import type { StatusMessage } from '../ExtensionsManagerDialog.js';
 import { ExtensionActionsView } from './ExtensionActionsView.js';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 const ARROW_DOWN = '\u001B[B';
 const ARROW_UP = '\u001B[A';
@@ -78,7 +83,7 @@ interface HarnessControls {
   /** Simulates the app's own background update check landing a new state. */
   setState: (state: ExtensionUpdateState) => void;
   /** The view's request to leave the detail view (InstalledTab's goToList). */
-  onExit: ReturnType<typeof vi.fn>;
+  onExit: MockAny;
 }
 
 /**

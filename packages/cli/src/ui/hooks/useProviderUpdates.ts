@@ -90,7 +90,6 @@ function getProviderMetadata(
 // ---------------------------------------------------------------------------
 
 const LEGACY_KEY_MAP: Record<string, string> = {
-  codingPlan: 'coding-plan',
   tokenPlan: 'token-plan',
 };
 

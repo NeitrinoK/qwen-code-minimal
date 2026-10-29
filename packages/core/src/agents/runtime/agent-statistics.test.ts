@@ -149,7 +149,11 @@ describe('AgentStatistics', () => {
       expect(result).toContain('▸ Task Completed: Test task');
       expect(result).toContain('● Tool Usage: 1 calls, 100.0% success');
       expect(result).toContain('● Duration: 5.0s | ● Rounds: 2');
-      expect(result).toContain('● Tokens: 1,520 (in 1000, out 500)');
+      // Total is rendered with toLocaleString() (locale-dependent grouping),
+      // so compute the expectation the same way to stay locale-independent.
+      expect(result).toContain(
+        `● Tokens: ${(1520).toLocaleString()} (in 1000, out 500)`,
+      );
     });
 
     it('should handle zero tool calls', () => {

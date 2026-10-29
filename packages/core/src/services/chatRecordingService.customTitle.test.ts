@@ -71,6 +71,7 @@ describe('ChatRecordingService - recordCustomTitle', () => {
   let uuidCounter = 0;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     uuidCounter = 0;
 
     mockConfig = {

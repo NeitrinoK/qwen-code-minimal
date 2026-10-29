@@ -85,7 +85,7 @@ Sandbox: test
 Proxy: no proxy
 Memory Usage: 100 MB`;
     const expectedUrl =
-      'https://github.com/QwenLM/qwen-code/issues/new?template=bug_report.yml&title=A%20test%20bug&info=%0A' +
+      'https://github.com/NeitrinoK/qwen-code-minimal/issues/new?template=bug_report.yml&title=A%20test%20bug&info=%0A' +
       encodeURIComponent(expectedInfo) +
       '%0A';
 
@@ -194,7 +194,7 @@ Sandbox: test
 Proxy: no proxy
 Memory Usage: 100 MB`;
     const expectedUrl =
-      'https://github.com/QwenLM/qwen-code/issues/new?template=bug_report.yml&title=OpenAI%20bug&info=%0A' +
+      'https://github.com/NeitrinoK/qwen-code-minimal/issues/new?template=bug_report.yml&title=OpenAI%20bug&info=%0A' +
       encodeURIComponent(expectedInfo) +
       '%0A';
 

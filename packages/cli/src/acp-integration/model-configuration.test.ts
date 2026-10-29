@@ -5,13 +5,7 @@
  */
 
 import type { Config, ContentGeneratorConfig } from '@qwen-code/qwen-code-core';
-import {
-  buildInstallPlan,
-  findProviderById,
-  REASONING_EFFORT_TIERS,
-  parseModelReasoningCapabilities,
-  resolveBaseUrl,
-} from '@qwen-code/qwen-code-core';
+import { REASONING_EFFORT_TIERS } from '@qwen-code/qwen-code-core';
 import { resolveReasoningCapabilities } from '@qwen-code/qwen-code-core/core/reasoning-overrides.js';
 import type { LoadedSettings } from '../config/settings.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -69,85 +63,6 @@ describe('default reasoning configuration', () => {
 });
 
 describe('model configuration manifest', () => {
-  it.each([
-    ['moonshot', 'kimi-k3', ['low', 'high', 'max'], 'max'],
-    ['moonshot', 'kimi-k2.7-code', ['default'], 'default'],
-    ['moonshot', 'kimi-k2.7-code-highspeed', ['default'], 'default'],
-    ['moonshot', 'kimi-k2.6', ['none', 'default'], 'default'],
-    ['deepseek', 'deepseek-v4-pro', ['none', 'low', 'high', 'max'], 'high'],
-    ['deepseek', 'deepseek-v4-flash', ['none', 'low', 'high', 'max'], 'high'],
-    [
-      'alibabaStandard',
-      'qwen3.8-max',
-      ['none', 'low', 'medium', 'xhigh'],
-      'xhigh',
-    ],
-    [
-      'alibabaStandard',
-      'qwen3.8-max-0902',
-      ['none', 'low', 'medium', 'xhigh'],
-      'xhigh',
-    ],
-    [
-      'alibabaStandard',
-      'qwen3.8-flash',
-      ['none', 'low', 'medium', 'xhigh'],
-      'xhigh',
-    ],
-    ['alibabaStandard', 'deepseek-v4-pro', ['none', 'high', 'max'], 'high'],
-    [
-      'alibabaStandard',
-      'deepseek-v4-pro-0813',
-      ['none', 'low', 'high', 'max'],
-      'high',
-    ],
-    ['alibabaStandard', 'kimi-k3', ['low', 'high', 'max'], 'max'],
-    ['token-plan', 'qwen3.8-max', ['low', 'medium', 'xhigh'], 'xhigh'],
-    ['token-plan', 'qwen3.8-max-preview', ['low', 'medium', 'xhigh'], 'xhigh'],
-    [
-      'token-plan',
-      'qwen3.8-flash',
-      ['none', 'low', 'medium', 'xhigh'],
-      'xhigh',
-    ],
-    [
-      'token-plan',
-      'deepseek-v4-flash-0731',
-      ['none', 'low', 'high', 'max'],
-      'high',
-    ],
-    ['coding-plan', 'qwen3.5-plus', ['none', 'default'], 'default'],
-    ['coding-plan', 'kimi-k2.5', ['none', 'default'], 'default'],
-  ] as const)(
-    'projects installed %s / %s native choices',
-    (providerId, model, values, currentValue) => {
-      const preset = findProviderById(providerId)!;
-      const installed = buildInstallPlan(preset, {
-        baseUrl: resolveBaseUrl(preset),
-        apiKey: 'test-key',
-        modelIds: [model],
-      }).modelProviders![0].models[0];
-      const reasoning = parseModelReasoningCapabilities(
-        installed.capabilities?.reasoning,
-      );
-      expect(reasoning).toBeDefined();
-      const option = buildModelReasoningConfigOption(model, {}, reasoning);
-      expect(
-        option?.options.map((item) =>
-          'value' in item ? item.value : undefined,
-        ),
-      ).toEqual(values);
-      expect(option?.currentValue).toBe(currentValue);
-      const restored = buildModelReasoningConfigOption(
-        model,
-        { effort: 'high' },
-        reasoning,
-      );
-      expect(restored?.currentValue).toBe(
-        values.some((value) => value === 'high') ? 'high' : currentValue,
-      );
-    },
-  );
   it.each([
     ['gpt-5.1', ['none', 'low', 'medium', 'high'], 'none'],
     ['gpt-5.4', ['none', 'low', 'medium', 'high', 'xhigh'], 'none'],

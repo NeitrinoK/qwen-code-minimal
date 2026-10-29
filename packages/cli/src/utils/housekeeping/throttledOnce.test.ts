@@ -12,7 +12,20 @@ import * as os from 'node:os';
 import type { FileHandle } from 'node:fs/promises';
 import { runThrottledOnce } from './throttledOnce.js';
 
-vi.mock('node:fs/promises', { spy: true });
+// vitest 4's `{ spy: true }` no longer wraps exports in spies, so build the
+// spied module explicitly: every function call-throughs to the real impl but
+// remains overridable via vi.mocked(...).mockImplementation(Once).
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const spied: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(actual)) {
+    spied[key] =
+      typeof value === 'function'
+        ? vi.fn(value as (...args: unknown[]) => unknown)
+        : value;
+  }
+  return { ...spied, default: spied };
+});
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 

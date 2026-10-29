@@ -52,6 +52,7 @@ describe('Shell Command Processor - Encoding Functions', () => {
   };
 
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedExecSync = vi.mocked(execSync);
     mockedOsPlatform = vi.mocked(os.platform);
     mockedChardetDetect = vi.mocked(chardetDetect);

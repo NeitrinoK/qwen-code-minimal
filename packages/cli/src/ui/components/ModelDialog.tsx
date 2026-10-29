@@ -6,10 +6,18 @@
 
 import type React from 'react';
 import process from 'node:process';
-import { useCallback, useContext, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Box, Text } from 'ink';
 import {
   AuthType,
+  AUTH_TOKEN_ERROR_HELP,
   buildModelIdContext,
   ModelSlashCommandEvent,
   logModelSlashCommand,
@@ -17,26 +25,36 @@ import {
   isImageCapable,
   isImageGenerationCapable,
   parseVisionModelSetting,
+  probeReasoningSupport,
+  reasoningCandidates,
   resolveModelId,
+  tokenLimit,
   type AvailableModel as CoreAvailableModel,
   type Config,
   type ContentGeneratorConfig,
   type InputModalities,
+  type ModelGenerationConfig,
+  type ModelProvidersConfig,
+  type ProbeResult,
+  type ProviderModelConfig,
+  type ResolvedModelConfig,
 } from '@qwen-code/qwen-code-core';
 import { SettingScope } from '../../config/settings.js';
 import { useKeypress } from '../hooks/useKeypress.js';
+import { useHubModelDiscovery } from '../hooks/use-hub-model-discovery.js';
 import { theme } from '../semantic-colors.js';
 import { DescriptiveRadioButtonSelect } from './shared/DescriptiveRadioButtonSelect.js';
+import { ReasoningConfigDialog, buildTrials } from './ReasoningConfigDialog.js';
+import {
+  mergeReasoningExtraBody,
+  type ReasoningChoice,
+} from './reasoning-config-merge.js';
 import { ConfigContext } from '../contexts/ConfigContext.js';
 import { UIStateContext, type UIState } from '../contexts/UIStateContext.js';
 import { useSettings } from '../contexts/SettingsContext.js';
 import { getPersistScopeForModelSelection } from '../../config/modelProvidersScope.js';
 import { t } from '../../i18n/index.js';
 import { publicProviderBaseUrl } from '../../utils/acpModelUtils.js';
-import {
-  formatUnsupportedVoiceModelMessage,
-  isSelectableVoiceModel,
-} from '../voice/voice-model.js';
 import type { HistoryItemWithoutId } from '../types.js';
 import {
   allowsFastOnlyAdvisorModel,
@@ -95,6 +113,22 @@ function parseModelSelectionKey(key: string): {
 }
 
 /**
+ * Which model-list row the selector should mount on. Prefers the currently
+ * highlighted row (so returning from a sub-screen — e.g. the reasoning config —
+ * restores focus to the model the user was on) and falls back to the active/
+ * preferred model on first open. Returns 0 when neither key is found.
+ */
+export function computeModelListInitialIndex(
+  options: ReadonlyArray<{ value: string }>,
+  highlightedValue: string | null,
+  preferredKey: string,
+): number {
+  const key = highlightedValue ?? preferredKey;
+  const index = options.findIndex((option) => option.value === key);
+  return index === -1 ? 0 : index;
+}
+
+/**
  * Encode a dialog selection key into the `authType:modelId[\0baseUrl]` form
  * persisted for the fast/vision auxiliary models. The baseUrl is kept when
  * the row carries one so same-id endpoints under a single authType stay
@@ -123,7 +157,6 @@ interface ModelDialogProps {
   onClose: () => void;
   isFastModelMode?: boolean;
   isAdvisorModelMode?: boolean;
-  isVoiceModelMode?: boolean;
   isVisionModelMode?: boolean;
   isCompactionModelMode?: boolean;
   isImageModelMode?: boolean;
@@ -210,6 +243,145 @@ function persistModelSelection(
   // is dropped from JSON, so it would not override a stale model.baseUrl left
   // in a lower-priority scope, whereas '' is a present value that does.
   settings.setValue(scope, 'model.baseUrl', baseUrl ?? '');
+}
+
+/**
+ * Persist the definition of a selected model into `settings.modelProviders`
+ * when it isn't already there.
+ *
+ * Hub autodiscovery injects fetched models into the session's in-memory model
+ * registry ephemerally (via `reloadModelProvidersConfig`) — it never writes
+ * them to `settings.modelProviders`. `persistModelSelection` only saves
+ * `model.name`/`model.baseUrl`, so a discovered model's *definition* never
+ * lands in the persisted registry. On next launch the resolver can't find it
+ * and silently falls back to the preset default. This upserts just the one
+ * selected model's definition, additively — every other persisted entry
+ * (including same-provider presets) is preserved.
+ *
+ * Deliberately does NOT use `applyProviderInstallPlan`/`buildInstallPlan`:
+ * a hub provider's default merge strategy is replace-owned, which would
+ * delete sibling presets owned by the same provider.
+ *
+ * Best-effort: any failure is swallowed so it never blocks the model switch
+ * or throws into the dialog.
+ */
+/**
+ * Build a `ProviderModelConfig` entry from a fully resolved model definition,
+ * carrying over only the fields that are actually set. Shared by
+ * `persistSelectedModelDefinition` (upsert on switch/tier-assign) and
+ * `handleReasoningSelect` (upsert when saving reasoning for a model that
+ * isn't in `settings.modelProviders` yet), so both persistence paths build
+ * the identical entry shape for a not-yet-persisted model.
+ */
+/**
+ * Guarantee that a persisted entry states its context window explicitly.
+ *
+ * Without this, an entry written from the dialog carries whatever
+ * `generationConfig` the registry happened to hold — and for a model that
+ * arrived through provider discovery (which returns bare IDs, see
+ * `discover-models.ts`) that means no `contextWindowSize` at all. The value
+ * then falls through to `tokenLimit()`'s regex table on every read
+ * (`modelRegistry.ts`), so the window is re-guessed rather than recorded, and
+ * a wrong guess is invisible in settings.json.
+ *
+ * That guess is load-bearing: it sets the auto-compaction threshold
+ * (`chatCompressionService.ts`) and the output clamp. Pinning it at write time
+ * makes the number the dialog displayed the number that is actually used, and
+ * leaves it somewhere the user can correct.
+ */
+function withPinnedContextWindow(
+  modelId: string,
+  generationConfig: ModelGenerationConfig | undefined,
+): ModelGenerationConfig {
+  if (generationConfig?.contextWindowSize !== undefined) {
+    return generationConfig;
+  }
+  return {
+    ...(generationConfig ?? {}),
+    contextWindowSize: tokenLimit(modelId, 'input'),
+  };
+}
+
+function buildModelConfigFromResolved(
+  resolved: ResolvedModelConfig,
+): ProviderModelConfig {
+  return {
+    id: resolved.id,
+    ...(resolved.name !== undefined ? { name: resolved.name } : {}),
+    ...(resolved.description !== undefined
+      ? { description: resolved.description }
+      : {}),
+    ...(resolved.envKey !== undefined ? { envKey: resolved.envKey } : {}),
+    ...(resolved.baseUrl !== undefined ? { baseUrl: resolved.baseUrl } : {}),
+    ...(resolved.capabilities !== undefined
+      ? { capabilities: resolved.capabilities }
+      : {}),
+    generationConfig: withPinnedContextWindow(
+      resolved.id,
+      resolved.generationConfig,
+    ),
+    ...(resolved.fastOnly !== undefined ? { fastOnly: resolved.fastOnly } : {}),
+    ...(resolved.voiceOnly !== undefined
+      ? { voiceOnly: resolved.voiceOnly }
+      : {}),
+  };
+}
+
+function persistSelectedModelDefinition(
+  settings: ReturnType<typeof useSettings>,
+  config: Config | undefined,
+  authType: AuthType,
+  modelId: string,
+  baseUrl: string | undefined,
+  persistScope?: 'workspace' | 'user',
+): void {
+  try {
+    if (!settings || !config) return;
+
+    const merged =
+      (settings.merged?.['modelProviders'] as
+        | ModelProvidersConfig
+        | undefined) ?? {};
+    const existingForAuthType = merged[authType] ?? [];
+
+    const alreadyPersisted = existingForAuthType.some((m) => {
+      if (m.id !== modelId) return false;
+      if (baseUrl === undefined) return true;
+      return m.baseUrl === baseUrl;
+    });
+    if (alreadyPersisted) return;
+
+    const resolved = config
+      .getModelsConfig()
+      .getResolvedModel(authType, modelId, baseUrl);
+
+    let newModelConfig: ProviderModelConfig;
+    if (resolved) {
+      newModelConfig = buildModelConfigFromResolved(resolved);
+    } else {
+      // No registry entry for it (shouldn't normally happen for a selectable
+      // model) — fall back to a minimal definition so the selection is never
+      // lost. Reuse an envKey already configured for this provider, if any,
+      // since sibling models under the same provider typically share one.
+      const fallbackEnvKey = existingForAuthType.find((m) => m.envKey)?.envKey;
+      newModelConfig = {
+        id: modelId,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
+        ...(fallbackEnvKey !== undefined ? { envKey: fallbackEnvKey } : {}),
+        generationConfig: withPinnedContextWindow(modelId, undefined),
+      };
+    }
+
+    const next: ModelProvidersConfig = {
+      ...merged,
+      [authType]: [...existingForAuthType, newModelConfig],
+    };
+
+    const scope = resolvePersistScope(settings, persistScope);
+    settings.setValue(scope, 'modelProviders', next);
+  } catch {
+    // Best-effort: never let a persistence failure block the model switch.
+  }
 }
 
 function persistAuthTypeSelection(
@@ -327,7 +499,6 @@ export function ModelDialog({
   onClose,
   isFastModelMode,
   isAdvisorModelMode,
-  isVoiceModelMode,
   isVisionModelMode,
   isCompactionModelMode,
   isImageModelMode,
@@ -341,8 +512,41 @@ export function ModelDialog({
   // Local error state for displaying errors within the dialog
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [highlightedValue, setHighlightedValue] = useState<string | null>(null);
+  // When set, the main list is replaced by the reasoning-configuration
+  // sub-screen for the chosen model.
+  const [reasoningFor, setReasoningFor] = useState<
+    { authType: AuthType; modelId: string; baseUrl?: string } | undefined
+  >(undefined);
+  const [reasoningBadges, setReasoningBadges] = useState<Map<
+    string,
+    ProbeResult
+  > | null>(null);
+  const [reasoningVerifying, setReasoningVerifying] = useState(false);
+  // In-flight probe request, if any — aborted when the reasoning sub-screen
+  // is dismissed/model changes/an effort is selected, or the dialog unmounts,
+  // so a stale probe can never resolve into a reopened screen's state.
+  const reasoningAbortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => {
+      reasoningAbortControllerRef.current?.abort();
+    },
+    [],
+  );
 
   const authType = config?.getAuthType();
+
+  // Source of truth for the currently configured providers, read the same
+  // way useProviderUpdates.ts does — there is no getter for this on
+  // ModelsConfig, only the merged settings value.
+  const currentModelProviders = ((
+    settings?.merged as Record<string, unknown> | undefined
+  )?.['modelProviders'] ?? {}) as ModelProvidersConfig;
+  const {
+    state: discoveryState,
+    refreshToken,
+    hubLabel,
+  } = useHubModelDiscovery(config, currentModelProviders);
 
   const availableModelEntries = useMemo(() => {
     const allModels = config ? config.getAllConfiguredModels() : [];
@@ -390,13 +594,11 @@ export function ModelDialog({
         : m.imageOnly !== true;
       return (
         !m.isRuntimeModel &&
-        (m.authType !== AuthType.QWEN_OAUTH ||
-          authType === AuthType.QWEN_OAUTH) &&
         isSelectableImageModel &&
         (isFastModelMode ||
           (isAdvisorModelMode && isAvailableAdvisorModel) ||
           !m.fastOnly) &&
-        (isVoiceModelMode || !m.voiceOnly) &&
+        !m.voiceOnly &&
         (isVisionModelMode || isImageModelMode || !m.visionOnly) &&
         (!isAdvisorModelMode ||
           (isAvailableAdvisorModel &&
@@ -414,14 +616,10 @@ export function ModelDialog({
       modelsByAuthTypeMap.get(authType)!.push(model);
     }
 
-    // Fixed order: qwen-oauth first, then others in a stable order
+    // Fixed, stable order
     const authTypeOrder: AuthType[] = [
-      AuthType.QWEN_OAUTH,
       AuthType.USE_OPENAI,
       AuthType.USE_OPENAI_RESPONSES,
-      AuthType.USE_ANTHROPIC,
-      AuthType.USE_GEMINI,
-      AuthType.USE_VERTEX_AI,
     ];
 
     // Filter to only include authTypes that have registry models and maintain order
@@ -456,14 +654,17 @@ export function ModelDialog({
     }
 
     return result;
+    // refreshToken isn't read in the body, but it bumps after AI Hub model
+    // discovery hot-reloads config's model registry in place — this
+    // dependency forces a recompute so the list picks up the reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    authType,
     config,
     isFastModelMode,
     isAdvisorModelMode,
     isImageModelMode,
-    isVoiceModelMode,
     isVisionModelMode,
+    refreshToken,
   ]);
 
   const MODEL_OPTIONS = useMemo(() => {
@@ -478,19 +679,11 @@ export function ModelDialog({
                 isAdvisorModelMode ? model.registryBaseUrl : model.baseUrl,
               );
 
-        const isQwenOAuth = t2 === AuthType.QWEN_OAUTH;
-
         const title = (
           <Text>
             <Text
               bold
-              color={
-                isQwenOAuth
-                  ? theme.status.warning
-                  : isRuntime
-                    ? theme.status.warning
-                    : theme.text.accent
-              }
+              color={isRuntime ? theme.status.warning : theme.text.accent}
             >
               [{t2}]
             </Text>
@@ -502,21 +695,15 @@ export function ModelDialog({
               </Text>
             )}
             {isRuntime && <Text color={theme.status.warning}> (Runtime)</Text>}
-            {isQwenOAuth && !isRuntime && (
-              <Text color={theme.status.warning}> ({t('Discontinued')})</Text>
-            )}
           </Text>
         );
 
-        // Include runtime / discontinued indicator in description
+        // Include runtime indicator in description
         let description = model.description || '';
         if (isRuntime) {
           description = description
             ? `${description} (Runtime)`
             : 'Runtime model';
-        }
-        if (isQwenOAuth && !isRuntime) {
-          description = t('Discontinued — switch to Coding Plan or API Key');
         }
 
         return {
@@ -574,7 +761,6 @@ export function ModelDialog({
     typeof config?.getAdvisorModel === 'function'
       ? config.getAdvisorModel()
       : undefined;
-  const voiceModelSetting = settings?.merged?.voiceModel as string | undefined;
   const visionModelSetting = settings?.merged?.visionModel as
     | string
     | undefined;
@@ -630,7 +816,6 @@ export function ModelDialog({
   const isAuxiliaryModelMode =
     isFastModelMode ||
     isAdvisorModelMode ||
-    isVoiceModelMode ||
     isVisionModelMode ||
     isCompactionModelMode ||
     isImageModelMode;
@@ -698,12 +883,6 @@ export function ModelDialog({
                 (model.registryBaseUrl ?? null) === advisorRegistryBaseUrl)),
         )
       : undefined;
-  const preferredVoiceModelEntry =
-    isVoiceModelMode && voiceModelSetting
-      ? availableModelEntries.find(
-          ({ model }) => model.id === voiceModelSetting,
-        )
-      : undefined;
   // Like fast mode, the vision/image settings may persist as a bare id
   // (cross-provider) or an `authType:modelId\0baseUrl` selector — highlight
   // whichever row owns it, keeping the same-id fallback when the pinned
@@ -735,49 +914,43 @@ export function ModelDialog({
     ? activeRuntimeSnapshot.id
     : isAdvisorModelMode && !advisorModelSetting
       ? ADVISOR_OFF_OPTION
-      : preferredVoiceModelEntry
+      : preferredVisionModelEntry
         ? buildModelSelectionKey(
-            preferredVoiceModelEntry.authType,
-            preferredVoiceModelEntry.model.id,
-            preferredVoiceModelEntry.model.baseUrl,
+            preferredVisionModelEntry.authType,
+            preferredVisionModelEntry.model.id,
+            preferredVisionModelEntry.model.baseUrl,
           )
-        : preferredVisionModelEntry
+        : preferredCompactionModelEntry
           ? buildModelSelectionKey(
-              preferredVisionModelEntry.authType,
-              preferredVisionModelEntry.model.id,
-              preferredVisionModelEntry.model.baseUrl,
+              preferredCompactionModelEntry.authType,
+              preferredCompactionModelEntry.model.id,
+              preferredCompactionModelEntry.model.baseUrl,
             )
-          : preferredCompactionModelEntry
+          : preferredImageModelEntry
             ? buildModelSelectionKey(
-                preferredCompactionModelEntry.authType,
-                preferredCompactionModelEntry.model.id,
-                preferredCompactionModelEntry.model.baseUrl,
+                preferredImageModelEntry.authType,
+                preferredImageModelEntry.model.id,
+                preferredImageModelEntry.model.baseUrl,
               )
-            : preferredImageModelEntry
+            : preferredAdvisorModelEntry
               ? buildModelSelectionKey(
-                  preferredImageModelEntry.authType,
-                  preferredImageModelEntry.model.id,
-                  preferredImageModelEntry.model.baseUrl,
+                  preferredAdvisorModelEntry.authType,
+                  preferredAdvisorModelEntry.model.id,
+                  preferredAdvisorModelEntry.model.registryBaseUrl,
                 )
-              : preferredAdvisorModelEntry
+              : preferredFastModelEntry
                 ? buildModelSelectionKey(
-                    preferredAdvisorModelEntry.authType,
-                    preferredAdvisorModelEntry.model.id,
-                    preferredAdvisorModelEntry.model.registryBaseUrl,
+                    preferredFastModelEntry.authType,
+                    preferredFastModelEntry.model.id,
+                    preferredFastModelEntry.model.baseUrl,
                   )
-                : preferredFastModelEntry
+                : authType
                   ? buildModelSelectionKey(
-                      preferredFastModelEntry.authType,
-                      preferredFastModelEntry.model.id,
-                      preferredFastModelEntry.model.baseUrl,
+                      authType,
+                      preferredModelId,
+                      currentBaseUrl,
                     )
-                  : authType
-                    ? buildModelSelectionKey(
-                        authType,
-                        preferredModelId,
-                        currentBaseUrl,
-                      )
-                    : '';
+                  : '';
 
   // Escape can arrive twice in one stdin chunk before the parent unmounts
   // the dialog; latch so the close feedback and onClose fire only once.
@@ -822,32 +995,6 @@ export function ModelDialog({
     uiState,
   ]);
 
-  useKeypress(
-    (key) => {
-      if (
-        key.name === 'escape' ||
-        (key.name === 'left' && isAuxiliaryModelMode)
-      ) {
-        closeWithoutSelection();
-      }
-    },
-    { isActive: true },
-  );
-
-  const initialIndex = useMemo(() => {
-    const index = MODEL_OPTIONS.findIndex(
-      (option) => option.value === preferredKey,
-    );
-    if (index !== -1) return index;
-    return isAdvisorModelMode && advisorModelSetting && MODEL_OPTIONS.length > 1
-      ? 1
-      : 0;
-  }, [MODEL_OPTIONS, preferredKey, isAdvisorModelMode, advisorModelSetting]);
-
-  const handleHighlight = useCallback((value: string) => {
-    setHighlightedValue(value);
-  }, []);
-
   const highlightedEntry = useMemo(() => {
     const key = highlightedValue ?? preferredKey;
     return availableModelEntries.find(
@@ -869,6 +1016,403 @@ export function ModelDialog({
     availableModelEntries,
     isAdvisorModelMode,
   ]);
+
+  useKeypress(
+    (key) => {
+      // In the reasoning sub-screen, Escape/Left steps back to the model list
+      // rather than closing the whole dialog.
+      if (reasoningFor) {
+        if (key.name === 'escape' || key.name === 'left') {
+          reasoningAbortControllerRef.current?.abort();
+          reasoningAbortControllerRef.current = null;
+          setReasoningFor(undefined);
+          setReasoningBadges(null);
+          setReasoningVerifying(false);
+        }
+        return;
+      }
+      if (key.name === 'r' && highlightedEntry) {
+        setReasoningFor({
+          authType: highlightedEntry.authType as AuthType,
+          modelId: highlightedEntry.model.id,
+          baseUrl: highlightedEntry.model.baseUrl,
+        });
+        setReasoningBadges(null);
+        setReasoningVerifying(false);
+        return;
+      }
+      if (
+        key.name === 'escape' ||
+        (key.name === 'left' && isAuxiliaryModelMode)
+      ) {
+        closeWithoutSelection();
+      }
+    },
+    { isActive: true },
+  );
+
+  const initialIndex = useMemo(() => {
+    // Returning from the reasoning sub-screen restores the highlighted row;
+    // otherwise mount on the active/preferred model.
+    const found = MODEL_OPTIONS.some(
+      (option) => option.value === (highlightedValue ?? preferredKey),
+    );
+    if (
+      !found &&
+      isAdvisorModelMode &&
+      advisorModelSetting &&
+      MODEL_OPTIONS.length > 1
+    ) {
+      return 1;
+    }
+    return computeModelListInitialIndex(
+      MODEL_OPTIONS,
+      highlightedValue,
+      preferredKey,
+    );
+  }, [
+    MODEL_OPTIONS,
+    highlightedValue,
+    preferredKey,
+    isAdvisorModelMode,
+    advisorModelSetting,
+  ]);
+
+  const handleHighlight = useCallback((value: string) => {
+    setHighlightedValue(value);
+  }, []);
+
+  // Switches the session to the model identified by `selected` (a selection
+  // key or a `$runtime|…` snapshot id), persisting the choice.
+  const performModelSwitch = useCallback(
+    async (selected: string): Promise<boolean> => {
+      const selectedEntry = availableModelEntries.find(
+        ({ authType: t2, model, isRuntime: r, snapshotId }) => {
+          const value =
+            r && snapshotId
+              ? snapshotId
+              : buildModelSelectionKey(t2, model.id, model.baseUrl);
+          return value === selected;
+        },
+      );
+
+      let after: ContentGeneratorConfig | undefined;
+      let effectiveAuthType: AuthType | undefined;
+      let effectiveModelId = selected;
+      let isRuntime = false;
+
+      if (!config) {
+        onClose();
+        return false;
+      }
+
+      try {
+        // Determine if this is a runtime model selection
+        // Runtime model format: $runtime|${authType}|${modelId}
+        isRuntime = selected.startsWith('$runtime|');
+
+        let selectedAuthType: AuthType;
+        let modelId: string;
+
+        let selectedBaseUrl: string | undefined;
+        if (isRuntime) {
+          // For runtime models, extract authType from the snapshot ID
+          // Format: $runtime|${authType}|${modelId}
+          const parts = selected.split('|');
+          if (parts.length >= 2 && parts[0] === '$runtime') {
+            selectedAuthType = parts[1] as AuthType;
+          } else {
+            selectedAuthType = authType as AuthType;
+          }
+          modelId = selected; // Pass the full snapshot ID to switchModel
+        } else {
+          const parsed = parseModelSelectionKey(selected);
+          selectedAuthType = (parsed.authType || authType) as AuthType;
+          modelId = parsed.modelId;
+          selectedBaseUrl = parsed.baseUrl;
+        }
+
+        selectionInFlightRef.current = true;
+        try {
+          await config.switchModel(selectedAuthType, modelId, {
+            baseUrl: selectedBaseUrl,
+          });
+          selectionCommittedRef.current = true;
+        } finally {
+          selectionInFlightRef.current = false;
+        }
+
+        if (!isRuntime) {
+          const event = new ModelSlashCommandEvent(modelId);
+          logModelSlashCommand(config, event);
+        }
+
+        after = config.getContentGeneratorConfig?.() as
+          | ContentGeneratorConfig
+          | undefined;
+        effectiveAuthType = after?.authType ?? selectedAuthType ?? authType;
+        effectiveModelId = after?.model ?? modelId;
+
+        // Discovered (non-registry-persisted) models are only injected into
+        // the session's model registry ephemerally — persist this one
+        // selected model's definition so it survives to the next launch.
+        // Runtime model selections are keyed by snapshot id, not a
+        // persistable model definition, so they're skipped.
+        if (!isRuntime) {
+          persistSelectedModelDefinition(
+            settings,
+            config,
+            selectedAuthType,
+            effectiveModelId,
+            after?.baseUrl ?? selectedBaseUrl,
+            persistScope,
+          );
+        }
+      } catch (e) {
+        const baseErrorMessage = e instanceof Error ? e.message : String(e);
+        // Use parsed modelId for display to avoid showing raw selection key
+        // (which contains invisible \0 separator between modelId and baseUrl)
+        const displayModelId = isRuntime
+          ? effectiveModelId
+          : parseModelSelectionKey(selected).modelId;
+        const errorPrefix = isRuntime
+          ? 'Failed to switch to runtime model.'
+          : `Failed to switch model to '${displayModelId}'.`;
+        setErrorMessage(`${errorPrefix}\n\n${baseErrorMessage}`);
+        return false;
+      }
+
+      try {
+        handleModelSwitchSuccess({
+          config,
+          settings,
+          uiState,
+          after,
+          effectiveAuthType,
+          effectiveModelId,
+          // Persist the selected provider's baseUrl so the right provider is
+          // restored next launch when several share the same id. Pair it with the
+          // same resolved config that effectiveModelId comes from (`after`) so the
+          // persisted (model.name, model.baseUrl) stays consistent even if
+          // switchModel transforms the id; fall back to the picker entry's
+          // baseUrl. Runtime models are keyed by snapshot id, so no disambiguator.
+          effectiveBaseUrl: isRuntime
+            ? undefined
+            : (after?.baseUrl ?? selectedEntry?.model.baseUrl),
+          isRuntime,
+          persistScope,
+        });
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        setErrorMessage(
+          `${t('Model switched, but the selection could not be saved.')}\n\n${errorMessage}`,
+        );
+        return false;
+      }
+      closeLatchRef.current = true;
+      onClose();
+      return true;
+    },
+    [
+      authType,
+      config,
+      onClose,
+      settings,
+      uiState,
+      setErrorMessage,
+      availableModelEntries,
+      persistScope,
+    ],
+  );
+
+  // Whether the reasoning sub-screen can offer "Verify against provider" for
+  // the model it was opened for: needs a resolvable baseUrl and an API key
+  // present in the environment (mirrors handleReasoningVerify's own check).
+  const canVerifyReasoning = useMemo(() => {
+    if (!reasoningFor || !config) return false;
+    const resolved = config
+      .getModelsConfig()
+      .getResolvedModel(
+        reasoningFor.authType,
+        reasoningFor.modelId,
+        reasoningFor.baseUrl,
+      );
+    return Boolean(
+      resolved?.baseUrl && resolved.envKey && process.env[resolved.envKey],
+    );
+  }, [reasoningFor, config]);
+
+  // Live-probes the provider for which reasoning trials it actually accepts,
+  // storing per-trial badges. Fires only from the explicit Verify action —
+  // never on open/highlight/render.
+  const handleReasoningVerify = useCallback(async () => {
+    if (!reasoningFor || !config) return;
+    // Captured so a stale result — the user switched models (or closed the
+    // sub-screen and reopened it for another one) while the probe was still
+    // in flight — is detected and discarded below instead of being applied
+    // to the wrong model's badges.
+    const targetModelId = reasoningFor.modelId;
+    const resolved = config
+      .getModelsConfig()
+      .getResolvedModel(
+        reasoningFor.authType,
+        reasoningFor.modelId,
+        reasoningFor.baseUrl,
+      );
+    const baseUrl = resolved?.baseUrl;
+    const apiKey = resolved?.envKey ? process.env[resolved.envKey] : undefined;
+    if (!baseUrl || !apiKey) return; // canVerifyReasoning guards the UI too
+    reasoningAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    reasoningAbortControllerRef.current = controller;
+    setReasoningVerifying(true);
+    const badges = await probeReasoningSupport({
+      baseUrl,
+      apiKey,
+      model: reasoningFor.modelId,
+      trials: buildTrials(reasoningCandidates(reasoningFor.modelId)),
+      proxy: config.getProxy(),
+      noProxy: config.getNoProxy(),
+      caCertificates: config.getCaCertificates(),
+      signal: controller.signal,
+    });
+    if (reasoningAbortControllerRef.current === controller) {
+      reasoningAbortControllerRef.current = null;
+    }
+    if (reasoningFor?.modelId !== targetModelId) return;
+    setReasoningVerifying(false);
+    setReasoningBadges(badges);
+  }, [reasoningFor, config]);
+
+  // Persists the chosen reasoning knobs into the matched provider model's
+  // generationConfig.extra_body, then closes the sub-screen back to the list.
+  //
+  // Hub-discovered and runtime models are injected into the in-memory model
+  // registry (via reloadModelProvidersConfig) but are never written to
+  // settings.modelProviders until a switch/tier-assign upserts them (see
+  // persistSelectedModelDefinition above) — so an entry may not exist yet.
+  // When that happens, upsert a minimal definition here too (mirroring
+  // persistSelectedModelDefinition's resolved branch) so the reasoning
+  // choice is actually saved instead of silently discarded.
+  const handleReasoningSelect = useCallback(
+    (choice: ReasoningChoice) => {
+      if (!reasoningFor) return;
+      const scope = resolvePersistScope(settings, persistScope);
+      const merged =
+        (settings.merged?.['modelProviders'] as
+          | ModelProvidersConfig
+          | undefined) ?? {};
+      const providers: ModelProvidersConfig = { ...merged };
+      const list = [...(providers[reasoningFor.authType] ?? [])];
+      // Mirrors persistSelectedModelDefinition's disambiguation: duplicate
+      // ids across providers are told apart by baseUrl (buildModelSelectionKey
+      // appends it), so match on both. When reasoningFor has no baseUrl
+      // there's nothing to disambiguate, so id alone is enough.
+      const idx = list.findIndex((m) => {
+        if (m.id !== reasoningFor.modelId) return false;
+        if (reasoningFor.baseUrl === undefined) return true;
+        return m.baseUrl === reasoningFor.baseUrl;
+      });
+
+      let wrote = false;
+      if (idx >= 0) {
+        const model = { ...list[idx] };
+        model.generationConfig = {
+          ...(model.generationConfig ?? {}),
+          extra_body: mergeReasoningExtraBody(
+            model.generationConfig?.extra_body,
+            choice,
+          ),
+        };
+        list[idx] = model;
+        wrote = true;
+      } else {
+        const resolved = config
+          ?.getModelsConfig()
+          .getResolvedModel(
+            reasoningFor.authType,
+            reasoningFor.modelId,
+            reasoningFor.baseUrl,
+          );
+        if (resolved) {
+          const newModelConfig = buildModelConfigFromResolved(resolved);
+          newModelConfig.generationConfig = {
+            ...(newModelConfig.generationConfig ?? {}),
+            extra_body: mergeReasoningExtraBody(
+              resolved.generationConfig?.extra_body,
+              choice,
+            ),
+          };
+          list.push(newModelConfig);
+          wrote = true;
+        }
+      }
+
+      // A pending probe is now moot regardless of outcome below — the user
+      // has committed a choice, so any in-flight verify would only produce
+      // stale badges for a screen that's about to close.
+      reasoningAbortControllerRef.current?.abort();
+      reasoningAbortControllerRef.current = null;
+      setReasoningVerifying(false);
+
+      if (wrote) {
+        providers[reasoningFor.authType] = list;
+        settings.setValue(scope, 'modelProviders', providers);
+        // settings.setValue only persists to disk/merged settings — it does
+        // not touch the session's in-memory model registry that the live
+        // ContentGenerator is built from, so without this the new extra_body
+        // would silently not apply until the next CLI restart even though
+        // the toast below claims success.
+        config?.reloadModelProvidersConfig(providers);
+
+        uiState?.historyManager.addItem(
+          {
+            type: 'success',
+            text: `Reasoning updated for ${reasoningFor.modelId}`,
+          },
+          Date.now(),
+        );
+
+        // Reloading the registry is enough for the *next* model switch to
+        // pick up the new extra_body, but the model already active this
+        // turn was built from the old registry snapshot — if that's the one
+        // just edited, re-run the same switch path used to activate a model
+        // so it takes effect immediately instead of only after a restart.
+        const activeAuthType = config?.getAuthType();
+        const activeModelId = config?.getModel();
+        const activeBaseUrl = config
+          ?.getModelsConfig()
+          .getGenerationConfig()?.baseUrl;
+        const isActiveModel =
+          activeAuthType === reasoningFor.authType &&
+          activeModelId === reasoningFor.modelId &&
+          (activeBaseUrl || undefined) === (reasoningFor.baseUrl || undefined);
+
+        if (isActiveModel) {
+          const selectionKey = buildModelSelectionKey(
+            reasoningFor.authType,
+            reasoningFor.modelId,
+            reasoningFor.baseUrl,
+          );
+          setReasoningFor(undefined);
+          setReasoningBadges(null);
+          void performModelSwitch(selectionKey);
+          return;
+        }
+      } else {
+        uiState?.historyManager.addItem(
+          {
+            type: 'error',
+            text: `Could not resolve ${reasoningFor.modelId} to save its reasoning configuration.`,
+          },
+          Date.now(),
+        );
+      }
+      setReasoningFor(undefined);
+      setReasoningBadges(null);
+    },
+    [reasoningFor, settings, persistScope, uiState, config, performModelSwitch],
+  );
 
   const handleSelect = useCallback(
     async (selected: string) => {
@@ -943,47 +1487,6 @@ export function ModelDialog({
         reportAuxiliaryModelSelection({
           type: 'success',
           text: t('Advisor set to {{model}}', { model: advisorSelector }),
-        });
-        onClose();
-        return;
-      }
-
-      if (isVoiceModelMode) {
-        if (!selectedEntry) {
-          setErrorMessage(t('Selected voice model is unavailable.'));
-          return;
-        }
-
-        const voiceModel = selectedEntry.model.id;
-        if (!isSelectableVoiceModel(selectedEntry.model)) {
-          setErrorMessage(formatUnsupportedVoiceModelMessage(voiceModel));
-          return;
-        }
-
-        const matchingEntries = availableModelEntries.filter(
-          ({ model }) => model.id === voiceModel,
-        );
-        if (matchingEntries.length > 1) {
-          setErrorMessage(
-            t(
-              "Voice model '{{model}}' is configured more than once. Remove duplicate model ids before selecting it for voice transcription.",
-              { model: voiceModel },
-            ),
-          );
-          return;
-        }
-
-        const scope = resolvePersistScope(settings, persistScope);
-        settings.setValue(scope, 'voiceModel', voiceModel);
-        const scopeSuffix =
-          persistScope === 'workspace'
-            ? t(' (this project)')
-            : persistScope === 'user'
-              ? t(' (global)')
-              : '';
-        reportAuxiliaryModelSelection({
-          type: 'success',
-          text: `${t('Voice Model')}: ${voiceModel}${scopeSuffix}`,
         });
         onClose();
         return;
@@ -1129,145 +1632,23 @@ export function ModelDialog({
         return;
       }
 
-      // Block selection of discontinued qwen-oauth models
-      // (only block non-runtime OAuth; runtime OAuth models from existing
-      //  cached tokens are still allowed to work until the server rejects them)
-      const isQwenOAuthSelection =
-        selected.startsWith(`${AuthType.QWEN_OAUTH}::`) ||
-        (selected.startsWith('$runtime|') &&
-          selected.split('|')[1] === AuthType.QWEN_OAUTH);
-      const isRuntimeOAuthSelection = selected.startsWith(
-        `$runtime|${AuthType.QWEN_OAUTH}|`,
-      );
-      if (isQwenOAuthSelection && !isRuntimeOAuthSelection) {
-        setErrorMessage(
-          t(
-            'Qwen OAuth free tier was discontinued on 2026-04-15. Please select a model from another provider or run /auth to switch.',
-          ),
-        );
-        return;
-      }
-
-      let after: ContentGeneratorConfig | undefined;
-      let effectiveAuthType: AuthType | undefined;
-      let effectiveModelId = selected;
-      let isRuntime = false;
-
-      if (!config) {
-        onClose();
-        return;
-      }
-
-      try {
-        // Determine if this is a runtime model selection
-        // Runtime model format: $runtime|${authType}|${modelId}
-        isRuntime = selected.startsWith('$runtime|');
-
-        let selectedAuthType: AuthType;
-        let modelId: string;
-
-        let selectedBaseUrl: string | undefined;
-        if (isRuntime) {
-          // For runtime models, extract authType from the snapshot ID
-          // Format: $runtime|${authType}|${modelId}
-          const parts = selected.split('|');
-          if (parts.length >= 2 && parts[0] === '$runtime') {
-            selectedAuthType = parts[1] as AuthType;
-          } else {
-            selectedAuthType = authType as AuthType;
-          }
-          modelId = selected; // Pass the full snapshot ID to switchModel
-        } else {
-          const parsed = parseModelSelectionKey(selected);
-          selectedAuthType = (parsed.authType || authType) as AuthType;
-          modelId = parsed.modelId;
-          selectedBaseUrl = parsed.baseUrl;
-        }
-
-        selectionInFlightRef.current = true;
-        try {
-          await config.switchModel(selectedAuthType, modelId, {
-            ...(selectedAuthType !== authType &&
-            selectedAuthType === AuthType.QWEN_OAUTH
-              ? { requireCachedCredentials: true }
-              : {}),
-            baseUrl: selectedBaseUrl,
-          });
-          selectionCommittedRef.current = true;
-        } finally {
-          selectionInFlightRef.current = false;
-        }
-
-        if (!isRuntime) {
-          const event = new ModelSlashCommandEvent(modelId);
-          logModelSlashCommand(config, event);
-        }
-
-        after = config.getContentGeneratorConfig?.() as
-          | ContentGeneratorConfig
-          | undefined;
-        effectiveAuthType = after?.authType ?? selectedAuthType ?? authType;
-        effectiveModelId = after?.model ?? modelId;
-      } catch (e) {
-        const baseErrorMessage = e instanceof Error ? e.message : String(e);
-        // Use parsed modelId for display to avoid showing raw selection key
-        // (which contains invisible \0 separator between modelId and baseUrl)
-        const displayModelId = isRuntime
-          ? effectiveModelId
-          : parseModelSelectionKey(selected).modelId;
-        const errorPrefix = isRuntime
-          ? 'Failed to switch to runtime model.'
-          : `Failed to switch model to '${displayModelId}'.`;
-        setErrorMessage(`${errorPrefix}\n\n${baseErrorMessage}`);
-        return;
-      }
-
-      try {
-        handleModelSwitchSuccess({
-          config,
-          settings,
-          uiState,
-          after,
-          effectiveAuthType,
-          effectiveModelId,
-          // Persist the selected provider's baseUrl so the right provider is
-          // restored next launch when several share the same id. Pair it with the
-          // same resolved config that effectiveModelId comes from (`after`) so the
-          // persisted (model.name, model.baseUrl) stays consistent even if
-          // switchModel transforms the id; fall back to the picker entry's
-          // baseUrl. Runtime models are keyed by snapshot id, so no disambiguator.
-          effectiveBaseUrl: isRuntime
-            ? undefined
-            : (after?.baseUrl ?? selectedEntry?.model.baseUrl),
-          isRuntime,
-          persistScope,
-        });
-      } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : String(e);
-        setErrorMessage(
-          `${t('Model switched, but the selection could not be saved.')}\n\n${errorMessage}`,
-        );
-        return;
-      }
-      closeLatchRef.current = true;
-      onClose();
+      // Main model: switch to the selected model directly.
+      await performModelSwitch(selected);
     },
     [
-      authType,
       config,
       onClose,
       settings,
-      uiState,
       setErrorMessage,
       isFastModelMode,
       isAdvisorModelMode,
-      isVoiceModelMode,
       isVisionModelMode,
       isCompactionModelMode,
       isImageModelMode,
       availableModelEntries,
       persistScope,
       reportAuxiliaryModelSelection,
+      performModelSwitch,
     ],
   );
 
@@ -1282,8 +1663,8 @@ export function ModelDialog({
       width="100%"
     >
       <Text bold>
-        {(isVoiceModelMode
-          ? t('Select Voice Model')
+        {(reasoningFor
+          ? t('Configure Reasoning')
           : isVisionModelMode
             ? t('Select Vision Model')
             : isCompactionModelMode
@@ -1302,38 +1683,72 @@ export function ModelDialog({
               : '')}
       </Text>
 
-      {!hasModels ? (
-        <Box marginTop={1} flexDirection="column">
-          <Text color={theme.status.warning}>
-            {t(
-              'No models available for the current authentication type ({{authType}}).',
-              {
-                authType: authType ? String(authType) : t('(none)'),
-              },
-            )}
+      {reasoningFor ? (
+        <ReasoningConfigDialog
+          modelId={reasoningFor.modelId}
+          canVerify={canVerifyReasoning}
+          onVerify={handleReasoningVerify}
+          badges={reasoningBadges}
+          verifying={reasoningVerifying}
+          onSelect={handleReasoningSelect}
+        />
+      ) : discoveryState === 'loading' ? (
+        <Box marginTop={1}>
+          <Text color={theme.text.secondary}>
+            {t('Loading models from {{hub}}…', { hub: hubLabel })}
           </Text>
-          <Box marginTop={1}>
-            <Text color={theme.text.secondary}>
-              {t(
-                'Please configure models in settings.modelProviders or use environment variables.',
-              )}
-            </Text>
-          </Box>
+        </Box>
+      ) : discoveryState === 'auth_error' ? (
+        // Token/401 rejection: don't offer a stale model list behind an
+        // unreachable-looking note — show the token error + how to renew.
+        <Box marginTop={1} flexDirection="column">
+          <Text color={theme.status.error}>{AUTH_TOKEN_ERROR_HELP}</Text>
         </Box>
       ) : (
-        <Box marginTop={1}>
-          <DescriptiveRadioButtonSelect
-            items={MODEL_OPTIONS}
-            onSelect={handleSelect}
-            onHighlight={handleHighlight}
-            initialIndex={initialIndex}
-            showNumbers={true}
-            maxItemsToShow={maxModelItemsToShow}
-          />
-        </Box>
+        <>
+          {discoveryState === 'error' && (
+            <Box marginTop={1}>
+              <Text color={theme.text.secondary}>
+                {t("⚠ Couldn't reach {{hub}} — showing last known models", {
+                  hub: hubLabel,
+                })}
+              </Text>
+            </Box>
+          )}
+          {!hasModels ? (
+            <Box marginTop={1} flexDirection="column">
+              <Text color={theme.status.warning}>
+                {t(
+                  'No models available for the current authentication type ({{authType}}).',
+                  {
+                    authType: authType ? String(authType) : t('(none)'),
+                  },
+                )}
+              </Text>
+              <Box marginTop={1}>
+                <Text color={theme.text.secondary}>
+                  {t(
+                    'Please configure models in settings.modelProviders or use environment variables.',
+                  )}
+                </Text>
+              </Box>
+            </Box>
+          ) : (
+            <Box marginTop={1}>
+              <DescriptiveRadioButtonSelect
+                items={MODEL_OPTIONS}
+                onSelect={handleSelect}
+                onHighlight={handleHighlight}
+                initialIndex={initialIndex}
+                showNumbers={true}
+                maxItemsToShow={maxModelItemsToShow}
+              />
+            </Box>
+          )}
+        </>
       )}
 
-      {highlightedEntry && (
+      {!reasoningFor && highlightedEntry && (
         <Box marginTop={1} flexDirection="column">
           <Box
             borderStyle="single"
@@ -1343,14 +1758,6 @@ export function ModelDialog({
             borderRight={false}
             borderColor={theme.border.default}
           />
-          {highlightedEntry.authType === AuthType.QWEN_OAUTH &&
-            !highlightedEntry.isRuntime && (
-              <Box marginTop={1}>
-                <Text color={theme.status.warning}>
-                  ⚠ {t('Discontinued — switch to Coding Plan or API Key')}
-                </Text>
-              </Box>
-            )}
           <DetailRow
             label={t('Modality')}
             value={formatModalities(highlightedEntry.model.modalities)}
@@ -1361,18 +1768,14 @@ export function ModelDialog({
               highlightedEntry.model.contextWindowSize,
             )}
           />
-          {highlightedEntry.authType !== AuthType.QWEN_OAUTH && (
-            <>
-              <DetailRow
-                label="Base URL"
-                value={highlightedEntry.model.baseUrl ?? t('(default)')}
-              />
-              <DetailRow
-                label="API Key"
-                value={highlightedEntry.model.envKey ?? t('(not set)')}
-              />
-            </>
-          )}
+          <DetailRow
+            label="Base URL"
+            value={highlightedEntry.model.baseUrl ?? t('(default)')}
+          />
+          <DetailRow
+            label="API Key"
+            value={highlightedEntry.model.envKey ?? t('(not set)')}
+          />
         </Box>
       )}
 
@@ -1386,8 +1789,15 @@ export function ModelDialog({
 
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.text.secondary}>
-          {t('Enter to select, ↑↓ to navigate, Esc to close')}
+          {reasoningFor
+            ? t('Enter to select · Esc to go back')
+            : t('Enter to select, ↑↓ to navigate, Esc to close')}
         </Text>
+        {!reasoningFor && hasModels && (
+          <Text color={theme.text.secondary}>
+            {t('press r to configure reasoning')}
+          </Text>
+        )}
       </Box>
     </Box>
   );

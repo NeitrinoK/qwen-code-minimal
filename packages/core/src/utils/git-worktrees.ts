@@ -380,7 +380,10 @@ export async function dryRunGitWorktreePrune(
   const named: Array<string | null> = report
     .split('\n')
     .map((line) => /^Removing worktrees\/(.+): /.exec(line.trim())?.[1])
-    .filter((id): id is string => id !== undefined);
+    .filter((id): id is string => id !== undefined)
+    // git lists them in readdir order, which is sorted on APFS but hash
+    // order on ext4; sort so the result does not depend on the filesystem.
+    .sort();
   // git announces one registration per line and writes the admin directory's
   // name into it verbatim — and that name belongs to the repository, which
   // may put a newline in it. A line parser then loses the announcement

@@ -28,11 +28,15 @@ import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import process from 'node:process';
 
+// External dependencies
+import { setGlobalDispatcher } from 'undici';
+
 // Types
 import type {
   ContentGenerator,
   ContentGeneratorConfig,
   InputModalities,
+  AuthType,
 } from '../core/contentGenerator.js';
 import type { ContentGeneratorConfigSources } from '../core/contentGenerator.js';
 import {
@@ -66,12 +70,12 @@ import { LlmClient } from '../core/client.js';
 import { resolveInteractionMode } from '../core/prompts.js';
 import type { OutputStyleDefinition } from '../core/output-styles.js';
 import {
-  AuthType,
   createContentGenerator,
   resetPreloadedContentGenerator,
   resolveContentGeneratorConfigWithSources,
 } from '../core/contentGenerator.js';
 import { tokenLimit } from '../core/tokenLimits.js';
+import { shouldPreCompactOnSwitch } from '../core/overflowSelfHeal.js';
 import {
   getRuntimeContentGenerator,
   isTopLevelSession,
@@ -86,11 +90,6 @@ import {
   MANAGED_RUNTIME_TOOL_NAMES,
   ManagedRuntimeOutcomeUnknownError,
 } from '../services/execution-environment.js';
-import { isTieredEffortWireModel } from '../core/modalityDefaults.js';
-import {
-  DashScopeOpenAICompatibleProvider,
-  selectDashScopeThinkingKnob,
-} from '../core/openaiContentGenerator/provider/dashscope.js';
 
 // Services
 import { FileDiscoveryService } from '../services/fileDiscoveryService.js';
@@ -143,8 +142,8 @@ import type { InstructionLoadReason } from '../hooks/types.js';
 import { ApprovalMode } from './approval-mode.js';
 
 // Other modules
-import { ideContextStore } from '../ide/ideContext.js';
 import { InputFormat, OutputFormat } from '../output/types.js';
+import { type PlanGateState, createPlanGateState } from '../plan-gate/state.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { ResourceRegistry } from '../resources/resource-registry.js';
 import { SkillManager } from '../skills/skill-manager.js';
@@ -186,14 +185,7 @@ import { resolveStopHookBlockingCap } from '../hooks/stopHookCap.js';
 import { DEFAULT_MAX_TOOL_CALLS_PER_TURN } from '../services/loopDetectionService.js';
 import { buildContextUsage } from '../hooks/context-usage.js';
 import {
-  DEFAULT_OTLP_ENDPOINT,
-  DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH,
-  DEFAULT_TELEMETRY_TARGET,
-  SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT,
-  isValidSensitiveSpanAttributeMaxLength,
   isTelemetrySdkInitialized,
-  addDaemonRequestAttribute,
-  initializeTelemetry,
   shutdownTelemetry,
   refreshSessionContext,
   logStartSession,
@@ -203,7 +195,6 @@ import {
   goalStateEventFromSnapshot,
   RipgrepFallbackEvent,
   StartSessionEvent,
-  type TelemetryTarget,
 } from '../telemetry/index.js';
 import {
   ExtensionManager,
@@ -274,12 +265,10 @@ import { shouldDefaultToNodePty } from '../utils/shell-utils.js';
 import { WorkspaceContext } from '../utils/workspaceContext.js';
 import { type ToolName } from '../tools/tool-utils.js';
 import { FatalConfigError, getErrorMessage } from '../utils/errors.js';
-import { normalizeProxyUrl } from '../utils/proxyUtils.js';
 import {
-  loadUndici,
-  setResolvedProxyUrlForRuntimeFetch,
-  redactProxyError,
-} from '../utils/runtimeFetchOptions.js';
+  createHttpDispatcher,
+  normalizeProxyUrl,
+} from '../utils/proxyUtils.js';
 
 // Local config modules
 import type { FileFilteringOptions } from '../utils/file-filtering-options.js';
@@ -506,6 +495,8 @@ import {
 } from '../models/index.js';
 import { resolveModelId } from '../utils/modelId.js';
 import type { WebSearchSettings } from '../tools/web-search.js';
+import { HUB_LOAD_DEFAULTS } from '../hub/load-metrics.js';
+import type { HubLoadPillSettings } from '../providers/presets/openai-hub.js';
 import type { ClaudeMarketplaceConfig } from '../extension/claude-converter.js';
 
 export function parseVisionModelSetting(setting: string | undefined):
@@ -735,7 +726,7 @@ export interface ChatCompressionSettings {
    * When true, auto-compaction also fires once the number of
    * tool-returned images accumulated in history reaches
    * `screenshotTriggerThreshold`, independent of token usage. Aimed at
-   * computer-use sessions where frequent screenshots dilute model
+   * sessions where frequent tool-returned screenshots dilute model
    * attention without necessarily exceeding the token budget. Default true.
    * Env override: `QWEN_COMPACT_SCREENSHOT_TRIGGER` (`1`/`true`/`0`/`false`).
    */
@@ -772,63 +763,6 @@ export interface ClearContextOnIdleSettings {
    * Default 500000. Use -1 to disable.
    */
   toolResultsTotalCharsThreshold?: number;
-}
-
-export interface TelemetrySettings {
-  enabled?: boolean;
-  target?: TelemetryTarget;
-  otlpEndpoint?: string;
-  otlpProtocol?: 'grpc' | 'http';
-  /** Per-signal endpoint override for traces (HTTP only). Used as-is without path appending. */
-  otlpTracesEndpoint?: string;
-  /** Per-signal endpoint override for logs (HTTP only). Used as-is without path appending. */
-  otlpLogsEndpoint?: string;
-  /** Per-signal endpoint override for metrics (HTTP only). Used as-is without path appending. */
-  otlpMetricsEndpoint?: string;
-  logPrompts?: boolean;
-  /**
-   * Stable end-user identifier written to GenAI spans as `gen_ai.user.id`.
-   * This is an ARMS extension and may contain linkable personal data.
-   */
-  userId?: string;
-  includeSensitiveSpanAttributes?: boolean;
-  sensitiveSpanAttributeMaxLength?: number;
-  outfile?: string;
-  /**
-   * Static resource attributes attached to every span/log/metric the SDK
-   * exports (OTLP or file outfile — they share the same Resource).
-   * Merged with `OTEL_RESOURCE_ATTRIBUTES`; settings win on key conflict.
-   * Reserved keys (`service.version`, `session.id`) are dropped with a
-   * `diag.warn`.
-   */
-  resourceAttributes?: Record<string, string>;
-  /** Per-signal cardinality controls. */
-  metrics?: TelemetryMetricsSettings;
-  /**
-   * Human-readable diagnostics produced while resolving
-   * `resourceAttributes` (drops, coercions, reserved-key strips).
-   * Populated by `resolveTelemetrySettings()`; the SDK emits a one-time
-   * console summary at startup when this is non-empty so users notice
-   * silent drops without scanning the OTel debug log.
-   *
-   * Not a user-settable field — operators should leave it unset.
-   */
-  resourceAttributeWarnings?: string[];
-}
-
-export type ResolvedTelemetrySettings = TelemetrySettings & {
-  sensitiveSpanAttributeMaxLength: number;
-};
-
-export interface TelemetryMetricsSettings {
-  /**
-   * Include `session.id` on every metric data point. Default: false.
-   *
-   * WARNING: each CLI session creates a new value, causing unbounded
-   * metric time-series fan-out at the backend. Only enable for
-   * short-term debugging — spans and logs still carry session.id.
-   */
-  includeSessionId?: boolean;
 }
 
 /**
@@ -1034,6 +968,62 @@ export interface WorktreeSettings {
    * pre-existing destinations are silently skipped.
    */
   symlinkDirectories?: readonly string[];
+}
+
+/**
+ * Settings for the local full-text search index over memory files and
+ * session transcripts (`memory.searchIndex.*`). Owned and maintained by
+ * {@link MemoryManager} — see `MemoryManager.ensureSearchIndexReady()`.
+ */
+export interface MemorySearchIndexSettings {
+  /** Master switch. When false, MemoryManager.getSearchIndex() always returns null. Defaults to true. */
+  enabled?: boolean;
+  /** Also index recent session transcripts (redacted, retention-capped). Defaults to true. */
+  includeTranscripts?: boolean;
+  /** Retention cap: keep at most this many of the newest-mtime session transcripts. Defaults to 50. */
+  maxTranscriptSessions?: number;
+  /** Retention cap: drop session transcripts older than this many days. Defaults to 90. */
+  maxTranscriptAgeDays?: number;
+}
+
+/**
+ * Settings for tracking skill usage outcomes and self-improvement heuristics
+ * (`memory.skillOutcomes.*`).
+ */
+export interface SkillOutcomesSettings {
+  /** Master switch. When false, skill outcomes are not tracked. Defaults to true. */
+  enabled?: boolean;
+  /** Detect user corrections following skill use as a signal that the skill hurt. Defaults to true. */
+  useCorrectionHeuristic?: boolean;
+  /** Minimum number of recorded outcomes before a skill is considered for flagging. Defaults to 5. */
+  minSamples?: number;
+  /** Fraction of negative outcomes above which a skill is flagged as hurting more than helping. Defaults to 0.6. */
+  hurtRatio?: number;
+  /** Number of sessions without use after which a skill is flagged as unused. Defaults to 20. */
+  unusedSessions?: number;
+  /** Maximum number of evidence entries retained per skill for outcome tracking. Defaults to 5. */
+  maxEvidencePerSkill?: number;
+}
+
+/**
+ * Resolved settings for the hub load status-line pill (`hub.loadPill`), with
+ * defaults applied. See {@link Config.getHubLoadSettings}.
+ */
+export interface HubLoadSettings {
+  /** Base URL of the public Grafana dashboard. */
+  dashboardBaseUrl: string;
+  /** Public dashboard token used in the panel query URL. */
+  dashboardToken: string;
+  /** Panel id for the "active" metric. */
+  activePanelId: number;
+  /** Panel id for the "queue" metric. */
+  queuePanelId: number;
+  /** Poll interval in ms. */
+  refreshMs: number;
+  /** Age in ms after which a cached snapshot is considered stale. */
+  staleMs: number;
+  /** Queue depth above which the pill renders a warning state. */
+  queueWarn: number;
 }
 
 /** Settings shared across agents and multi-agent collaboration features. */
@@ -1280,15 +1270,8 @@ export interface ConfigParameters {
   contextFileName?: string | string[];
   accessibility?: AccessibilitySettings;
   showResponseTokensPerSecond?: boolean;
-  telemetry?: TelemetrySettings;
-  /**
-   * Delay SDK startup for interactive render paths. Telemetry settings still
-   * remain readable from Config; only the global SDK side effect is deferred.
-   */
-  deferTelemetryInitialization?: boolean;
   outboundCorrelation?: OutboundCorrelationSettings;
   gitCoAuthor?: GitCoAuthorParam;
-  usageStatisticsEnabled?: boolean;
   /**
    * If true, disables the per-session FileReadCache short-circuit
    * (file_unchanged placeholder). Useful for sessions that may undergo
@@ -1308,17 +1291,10 @@ export interface ConfigParameters {
   /** Directory where approved plan files are stored. Must resolve inside targetDir. */
   plansDirectory?: string;
   proxy?: string;
-  /**
-   * Whether construction installs the process-global undici proxy
-   * dispatcher (and the runtime-fetch proxy slot) when `proxy` resolves.
-   * Defaults to `true`. Throwaway Configs that exist only to route
-   * telemetry events must pass `false`: they still expose the proxy via
-   * `getProxy()` for the RUM logger's own agent, but must not rewrite the
-   * host process's global network state — in `qwen serve` one long-lived
-   * process hosts many workspaces, and nothing ever restores the
-   * dispatcher (#12770).
-   */
-  installProxyDispatcher?: boolean;
+  /** Hosts that bypass the proxy (already merged from settings + NO_PROXY env). */
+  noProxy?: string[];
+  /** Paths to extra PEM CA certificate files to trust for TLS. */
+  caCertificates?: string[];
   cwd: string;
   fileDiscoveryService?: FileDiscoveryService;
   includeDirectories?: string[];
@@ -1502,7 +1478,6 @@ export interface ConfigParameters {
   noBrowser?: boolean;
   folderTrustFeature?: boolean;
   folderTrust?: boolean;
-  ideMode?: boolean;
   authType?: AuthType;
   generationConfig?: Partial<ContentGeneratorConfig>;
   /** Exact initial model registry baseUrl; null selects an implicit route. */
@@ -1596,6 +1571,27 @@ export interface ConfigParameters {
   enableManagedAutoMemory?: boolean;
   /** Enable managed auto-dream consolidation separately from extraction. Defaults to true. */
   enableManagedAutoDream?: boolean;
+  /**
+   * Settings for the local full-text search index over memory files and
+   * session transcripts, owned by MemoryManager. See
+   * {@link MemorySearchIndexSettings}.
+   */
+  memorySearchIndex?: MemorySearchIndexSettings;
+  /**
+   * Settings for tracking skill usage outcomes and self-improvement
+   * heuristics. See {@link SkillOutcomesSettings}.
+   */
+  skillOutcomes?: SkillOutcomesSettings;
+  /**
+   * Whether to inject the skill-usage enforcement directive into the
+   * session-start `<available_skills>` snapshot. Defaults to true.
+   */
+  skillEnforceInvocation?: boolean;
+  planFirstGate?: boolean;
+  enforceAskQuestion?: boolean;
+  enforceWritingPlans?: boolean;
+  /** Hub load pill settings (`hub.loadPill`). See {@link HubLoadSettings}. */
+  hubLoadPill?: HubLoadPillSettings;
   /**
    * Enable the git-shared team memory tier. Defaults to false (opt-in).
    * Overridable at runtime by `QWEN_CODE_MEMORY_TEAM` ('0'/'1') via
@@ -2312,24 +2308,6 @@ let sessionEnvClaimed = false;
 let projectDirEnvClaimed = false;
 let modelEnvClaimed = false;
 
-function resolveSensitiveSpanAttributeMaxLength(
-  value: number | undefined,
-): number {
-  if (value === undefined) {
-    return DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH;
-  }
-
-  if (!isValidSensitiveSpanAttributeMaxLength(value)) {
-    throw new FatalConfigError(
-      `Invalid telemetry.sensitiveSpanAttributeMaxLength: must be a positive integer no greater than ${SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT}, got ${String(
-        value,
-      )}`,
-    );
-  }
-
-  return value;
-}
-
 /**
  * Resolves the recurring cron max age (in days) once at Config
  * construction — the setting declares `requiresRestart`, so re-reading
@@ -2416,15 +2394,6 @@ export interface CurrentSessionScheduledTaskCreateResult {
 export type CurrentSessionScheduledTaskCreator = (
   req: CurrentSessionScheduledTaskCreateRequest,
 ) => Promise<CurrentSessionScheduledTaskCreateResult>;
-
-/**
- * A higher-priority static DashScope thinking knob that shadows the global
- * reasoning-effort tier on the wire (see getReasoningEffortOverride).
- */
-export type ReasoningEffortOverride = {
-  source: 'extra_body' | 'samplingParams';
-  field: 'enable_thinking' | 'reasoning_effort' | 'thinking_budget';
-};
 
 class SessionWriterShutdownError extends SessionWriterUnavailableError {}
 
@@ -3003,6 +2972,8 @@ export class Config {
   private approvalMode: ApprovalMode;
   private prePlanMode?: ApprovalMode;
   private planExecutionMode?: ApprovalMode;
+  private planGateState?: PlanGateState;
+  private planGateEntryCounter = 0;
   private approvalModeRevision = 0;
   private manualPlanExitNoticeEventState: ManualPlanExitNoticeEventState = {
     version: 0,
@@ -3014,11 +2985,8 @@ export class Config {
   private autoModeDenialState: AutoModeDenialState = createDenialState();
   private readonly accessibility: AccessibilitySettings;
   private readonly showResponseTokensPerSecond: boolean;
-  private readonly telemetrySettings: ResolvedTelemetrySettings;
-  private readonly telemetryInitializationDeferred: boolean;
   private readonly outboundCorrelationSettings: OutboundCorrelationSettings;
   private readonly gitCoAuthor: GitCoAuthorSettings;
-  private readonly usageStatisticsEnabled: boolean;
   private readonly fileReadCacheDisabled: boolean;
   private activeTodoReminders = new Map<string, string>();
   private activeTodoWorkChainOwners = new Map<string, string>();
@@ -3069,6 +3037,8 @@ export class Config {
   private readonly toolResultBudget = { bytesWritten: 0 };
   private fileHistoryService: FileHistoryService | undefined;
   private readonly proxy: string | undefined;
+  private readonly noProxy: string[];
+  private readonly caCertificates: string[];
   private cwd: string;
   private readonly explicitIncludeDirectories: string[];
   private readonly bugCommand: BugCommandSettings | undefined;
@@ -3076,7 +3046,6 @@ export class Config {
   private readonly noBrowser: boolean;
   private readonly folderTrustFeature: boolean;
   private readonly folderTrust: boolean;
-  private ideMode: boolean;
 
   private readonly maxSessionTurns: number;
   private readonly goalTokenBudgetGrant: number;
@@ -3203,6 +3172,16 @@ export class Config {
   private teamContext: TeamContext | null = null;
   private readonly agentsSettings: AgentsCollabSettings;
   private readonly worktreeSettings: WorktreeSettings;
+  private readonly memorySearchIndexSettings: MemorySearchIndexSettings;
+  private readonly skillOutcomesSettings: SkillOutcomesSettings;
+  private readonly skillEnforceInvocation?: boolean;
+  private readonly planFirstGate?: boolean;
+  private readonly enforceAskQuestion?: boolean;
+  private readonly enforceWritingPlans?: boolean;
+  private readonly invokedSkills = new Set<string>();
+  private planGateOverride = false;
+  private planGateAutoRedirectCount = 0;
+  private readonly hubLoadPill: HubLoadPillSettings | undefined;
   private readonly skipLoopDetection: boolean;
   private readonly maxToolCallsPerTurn: number;
   private readonly maxToolCallsPerTurnExplicit: boolean;
@@ -3446,28 +3425,6 @@ export class Config {
     this.accessibility = params.accessibility ?? {};
     this.showResponseTokensPerSecond =
       params.showResponseTokensPerSecond ?? false;
-    this.telemetrySettings = {
-      enabled: params.telemetry?.enabled ?? false,
-      target: params.telemetry?.target ?? DEFAULT_TELEMETRY_TARGET,
-      otlpEndpoint: params.telemetry?.otlpEndpoint,
-      otlpProtocol: params.telemetry?.otlpProtocol,
-      otlpTracesEndpoint: params.telemetry?.otlpTracesEndpoint,
-      otlpLogsEndpoint: params.telemetry?.otlpLogsEndpoint,
-      otlpMetricsEndpoint: params.telemetry?.otlpMetricsEndpoint,
-      logPrompts: params.telemetry?.logPrompts ?? true,
-      userId: params.telemetry?.userId?.trim() || undefined,
-      includeSensitiveSpanAttributes:
-        params.telemetry?.includeSensitiveSpanAttributes ?? false,
-      sensitiveSpanAttributeMaxLength: resolveSensitiveSpanAttributeMaxLength(
-        params.telemetry?.sensitiveSpanAttributeMaxLength,
-      ),
-      outfile: params.telemetry?.outfile,
-      resourceAttributes: params.telemetry?.resourceAttributes,
-      metrics: params.telemetry?.metrics,
-      resourceAttributeWarnings: params.telemetry?.resourceAttributeWarnings,
-    };
-    this.telemetryInitializationDeferred =
-      params.deferTelemetryInitialization ?? false;
     this.outboundCorrelationSettings = {
       propagateTraceContext:
         params.outboundCorrelation?.propagateTraceContext ?? false,
@@ -3479,7 +3436,6 @@ export class Config {
       name: 'Qwen-Coder',
       email: 'qwen-coder@alibabacloud.com',
     };
-    this.usageStatisticsEnabled = params.usageStatisticsEnabled ?? true;
     // A Managed session reads in its Runtime worker, so this process could
     // neither elide a repeated read nor prove the read an edit requires.
     this.fileReadCacheDisabled =
@@ -3501,6 +3457,8 @@ export class Config {
       params.fileCheckpointingEnabled ??
       (!params.sdkMode && (params.interactive ?? false));
     this.proxy = params.proxy;
+    this.noProxy = params.noProxy ?? [];
+    this.caCertificates = params.caCertificates ?? [];
     this.cwd = params.cwd ?? process.cwd();
     this.fileDiscoveryService = params.fileDiscoveryService ?? null;
     this.bugCommand = params.bugCommand;
@@ -3612,7 +3570,6 @@ export class Config {
     this.noBrowser = params.noBrowser ?? false;
     this.folderTrustFeature = params.folderTrustFeature ?? false;
     this.folderTrust = params.folderTrust ?? false;
-    this.ideMode = params.ideMode ?? false;
     this.modelProvidersConfig = params.modelProvidersConfig;
     this.providerProtocolConfig = params.providerProtocolConfig;
     this.cliVersion = params.cliVersion;
@@ -3783,62 +3740,13 @@ export class Config {
     }
     this.publishModelEnv();
 
-    if (
-      this.telemetrySettings.enabled &&
-      !this.telemetryInitializationDeferred
-    ) {
-      // Fire-and-forget: the SDK module loads asynchronously (issue #4748),
-      // and spans/logs emitted before it settles are dropped by the
-      // isTelemetrySdkInitialized() gates — same as the deferred TUI path.
-      // Promise.resolve guards against auto-mocked initializeTelemetry
-      // returning undefined in tests.
-      void Promise.resolve(initializeTelemetry(this)).catch((error) => {
-        this.debugLogger.error('Failed to initialize telemetry:', error);
-      });
-    }
-
-    const proxyUrl = this.getProxy();
-    if (proxyUrl && (params.installProxyDispatcher ?? true)) {
-      // Use EnvHttpProxyAgent (not a bare ProxyAgent) so `NO_PROXY` is
-      // honored. A bare ProxyAgent tunnels EVERY request — including local
-      // MCP servers reached over `http://localhost:...` — through the proxy,
-      // which typically can't route back to localhost and fails with an
-      // opaque `fetch failed`. EnvHttpProxyAgent connects hosts listed in
-      // `NO_PROXY` (e.g. `localhost,127.0.0.1`) directly while still proxying
-      // everything else (LLM API calls, remote MCP). The explicit
-      // `--proxy` / `settings.proxy` value (resolved by `getProxy()`)
-      // overrides env `http(s)_proxy`; `NO_PROXY` continues to come from the
-      // environment. See issue #3696 (local MCP + corporate proxy).
-      //
-      // undici loads behind a dynamic import to keep it out of the eager
-      // startup closure (issue #7264); initialize() awaits this promise so
-      // the dispatcher is installed before any network activity.
-      this.proxyDispatcherReady = loadUndici()
-        .then(({ EnvHttpProxyAgent, setGlobalDispatcher }) => {
-          setGlobalDispatcher(
-            new EnvHttpProxyAgent({
-              httpProxy: proxyUrl,
-              httpsProxy: proxyUrl,
-            }),
-          );
-          // Paths that pin their own dispatcher off the global one (the MCP
-          // streamable HTTP fetch) read the explicit proxy back from here
-          // (#7195).
-          setResolvedProxyUrlForRuntimeFetch(proxyUrl);
-        })
-        .catch((error) => {
-          // Redact before logging: the error can embed the proxy URL with
-          // credentials. Rethrow so initialize() fails loudly, matching the
-          // old synchronous constructor behavior.
-          this.debugLogger.error(
-            'Failed to install proxy dispatcher:',
-            redactProxyError(error),
-          );
-          throw error;
-        });
-      // Swallow an early rejection so it cannot become an unhandledRejection
-      // before initialize() awaits (and surfaces) the stored promise.
-      this.proxyDispatcherReady.catch(() => {});
+    const dispatcher = createHttpDispatcher({
+      proxyUrl: this.getProxy(),
+      noProxy: this.getNoProxy(),
+      caCertificates: this.getCaCertificates(),
+    });
+    if (dispatcher) {
+      setGlobalDispatcher(dispatcher);
     }
     this.llmClient = new LlmClient(this);
     this.chatRecordingService = this.chatRecordingEnabled
@@ -3860,11 +3768,16 @@ export class Config {
       enabledExtensionOverrides: this.overrideExtensions,
       isWorkspaceTrusted: this.isTrustedFolder(),
       locale: params.locale,
-      usageStatisticsEnabled: this.usageStatisticsEnabled,
-      proxy: this.proxy,
     });
     this.enableManagedAutoMemory = params.enableManagedAutoMemory ?? true;
     this.enableManagedAutoDream = params.enableManagedAutoDream ?? true;
+    this.memorySearchIndexSettings = params.memorySearchIndex ?? {};
+    this.skillOutcomesSettings = params.skillOutcomes ?? {};
+    this.skillEnforceInvocation = params.skillEnforceInvocation;
+    this.planFirstGate = params.planFirstGate;
+    this.enforceAskQuestion = params.enforceAskQuestion;
+    this.enforceWritingPlans = params.enforceWritingPlans;
+    this.hubLoadPill = params.hubLoadPill;
     this.enableTeamMemory = params.enableTeamMemory ?? false;
     this.enableTeamMemorySync = params.enableTeamMemorySync ?? false;
     this.enableStructuredMemoryRecall =
@@ -5064,10 +4977,6 @@ export class Config {
       let authoritative: ResumedSessionData | undefined;
       let projection: SessionRestoreProjection | undefined;
       if (this.sessionRestoreProjectionSource) {
-        addDaemonRequestAttribute(
-          'qwen-code.daemon.session_restore.projection_acquisition',
-          'after_writer_lease',
-        );
         projection = await this.sessionRestoreProjectionSource();
         if (managed) {
           // Checked before the log is opened, which writes to it.
@@ -5749,6 +5658,48 @@ export class Config {
     );
     this.captureLatestReasoning();
     this.baseLlmClient?.clearPerModelGeneratorCache();
+    this.maybePreCompactAfterSwitch();
+  }
+
+  /**
+   * Best-effort: after a model switch, if the current context no longer fits
+   * the new model's window, force a compaction so the next send starts within
+   * budget. Fire-and-forget; never blocks or breaks the switch. The reactive
+   * size-aware overflow path is the correctness net if this is skipped.
+   */
+  private maybePreCompactAfterSwitch(): void {
+    try {
+      const newWindow =
+        this.getContentGeneratorConfig()?.contextWindowSize ?? 0;
+      const client = this.llmClient;
+      if (!client) return;
+      // getChat() throws when the chat is uninitialised; the outer try/catch
+      // and the optional chaining keep this strictly best-effort.
+      const estimatedContextTokens =
+        client.getChat?.()?.getLastPromptTokenCount?.() ?? 0;
+      if (
+        !shouldPreCompactOnSwitch({
+          estimatedContextTokens,
+          newContextWindow: newWindow,
+        })
+      ) {
+        return;
+      }
+      // Fire-and-forget: do not await; swallow errors to a debug log.
+      void client
+        .tryCompressChat('model-switch-precompact', true)
+        .catch((err: unknown) => {
+          this.getDebugLogger?.()?.debug(
+            'pre-compact-on-switch failed (best-effort):',
+            err,
+          );
+        });
+    } catch (err) {
+      this.getDebugLogger?.()?.debug(
+        'pre-compact-on-switch check failed (best-effort):',
+        err,
+      );
+    }
   }
 
   getReasoningSnapshot(): ReasoningSnapshot {
@@ -5772,7 +5723,6 @@ export class Config {
       );
       const configured = Object.entries(providers ?? {})
         .flatMap(([provider, entries]) =>
-          model.authType !== AuthType.QWEN_OAUTH &&
           resolveProviderProtocol(provider, protocols) === model.authType &&
           Array.isArray(entries)
             ? entries
@@ -5803,12 +5753,10 @@ export class Config {
     try {
       const next = captureReasoningSnapshot(models);
       for (const row of next) {
-        if (row.authType !== AuthType.QWEN_OAUTH || row.reasoning?.profile) {
-          validateReasoningCapabilities(
-            { model: row.id, authType: row.authType, baseUrl: row.baseUrl },
-            row.reasoning,
-          );
-        }
+        validateReasoningCapabilities(
+          { model: row.id, authType: row.authType, baseUrl: row.baseUrl },
+          row.reasoning,
+        );
       }
       const generation = this.getContentGeneratorConfig();
       if (generation)
@@ -7158,65 +7106,6 @@ export class Config {
   }
 
   /**
-   * Return a higher-priority static DashScope knob that shadows the current
-   * global effort on qwen3.8-max, so interactive callers can report the
-   * effective outcome instead of confirming a tier that will not reach the
-   * wire. The provider resolves extra_body before samplingParams before the
-   * unified reasoning setting; same-layer explicit effort still wins budget.
-   */
-  getReasoningEffortOverride(): ReasoningEffortOverride | undefined {
-    const cfg = this.getContentGeneratorConfig();
-    if (!cfg || !DashScopeOpenAICompatibleProvider.isDashScopeProvider(cfg)) {
-      return undefined;
-    }
-
-    const configuredReasoning = resolveReasoningForModel(this, cfg);
-    const tieredModel = isTieredEffortWireModel(cfg.model, configuredReasoning);
-    if (!tieredModel) return undefined;
-
-    const currentEffort = this.getReasoningEffort();
-    const selected = selectDashScopeThinkingKnob(
-      cfg.model,
-      cfg.extra_body,
-      cfg.samplingParams,
-      currentEffort,
-      tieredModel,
-    );
-    if (
-      !selected ||
-      selected.source === 'reasoning' ||
-      (selected.field === 'reasoning_effort' &&
-        selected.value === currentEffort)
-    ) {
-      return undefined;
-    }
-    if (selected.field === 'enable_thinking' && selected.value === true) {
-      // An on-switch never blocks the tier — the wire drops the switch and
-      // ships it — so only a request-level effort override can still shadow
-      // the current tier from under it.
-      if (selected.source !== 'extra_body') {
-        return undefined;
-      }
-      const below = selectDashScopeThinkingKnob(
-        cfg.model,
-        undefined,
-        cfg.samplingParams,
-        currentEffort,
-        tieredModel,
-      );
-      if (
-        below?.source === 'samplingParams' &&
-        below.field === 'reasoning_effort' &&
-        below.value !== currentEffort
-      ) {
-        return { source: below.source, field: below.field };
-      }
-      return undefined;
-    }
-    return { source: selected.source, field: selected.field };
-  }
-
-  /**
    * Update the reasoning-effort tier at runtime (e.g. `/effort high`). The
    * request pipeline reads `reasoning.effort` per request, so mutating the live
    * config in place takes effect on the next turn without an auth refresh.
@@ -7399,7 +7288,7 @@ export class Config {
    */
   private async handleModelChange(
     authType: AuthType,
-    requiresRefresh: boolean,
+    _requiresRefresh: boolean,
   ): Promise<void> {
     this.initialResolvedAuthType = undefined;
     if (!this.contentGeneratorConfig) {
@@ -7416,106 +7305,11 @@ export class Config {
     // Keep full history (including thought parts) on model switch.
     // Some OpenAI-compatible reasoning models (e.g. DeepSeek) require
     // reasoning_content to be preserved across turns.
-
-    // Hot update path: only supported for qwen-oauth.
-    // For other auth types we always refresh to recreate the ContentGenerator.
     //
-    // Rationale:
-    // - Non-qwen providers may need to re-validate credentials / baseUrl / envKey.
+    // We always refresh to recreate the ContentGenerator:
+    // - Providers may need to re-validate credentials / baseUrl / envKey.
     // - ModelsConfig.applyResolvedModelDefaults can clear or change credentials sources.
     // - Refresh keeps runtime behavior consistent and centralized.
-    if (authType === AuthType.QWEN_OAUTH && !requiresRefresh) {
-      const { config, sources } = resolveContentGeneratorConfigWithSources(
-        this,
-        authType,
-        this.modelsConfig.getGenerationConfig(),
-        this.modelsConfig.getGenerationConfigSources(),
-        {
-          strictModelProvider:
-            this.modelsConfig.isStrictModelProviderSelection(),
-        },
-      );
-
-      // Hot-update fields (qwen-oauth models share the same auth + client).
-      // Deliberately does NOT copy `reasoning`: it is a global, model-independent
-      // preference captured in `priorReasoningEffort` above and re-applied via
-      // setReasoningEffort() below. Do not add `reasoning` here — that would
-      // overwrite the live tier with the new model's default and make the
-      // restore a no-op.
-      this.contentGeneratorConfig.reasoningRouteBaseUrl =
-        config.reasoningRouteBaseUrl;
-      this.contentGeneratorConfig.model = config.model;
-      this.contentGeneratorConfig.samplingParams = config.samplingParams;
-      this.contentGeneratorConfig.contextWindowSize = config.contextWindowSize;
-      this.contentGeneratorConfig.enableCacheControl =
-        config.enableCacheControl;
-      // Read by the DashScope metadata gate off this same object, so a
-      // per-model override has to travel with the switch like the cache flags.
-      this.contentGeneratorConfig.enableRequestMetadata =
-        config.enableRequestMetadata;
-      this.contentGeneratorConfig.forceGlobalCacheScope =
-        config.forceGlobalCacheScope;
-      this.contentGeneratorConfig.cacheRetention = config.cacheRetention;
-      this.contentGeneratorConfig.cacheRetentionByBlock =
-        config.cacheRetentionByBlock;
-      this.contentGeneratorConfig.splitToolMedia = config.splitToolMedia;
-      this.contentGeneratorConfig.toolResultContentFormat =
-        config.toolResultContentFormat;
-      // Modalities are model-derived: a hot switch between oauth models with
-      // different image support must update them, or the vision-bridge gate and
-      // image-stripping read the previous model's modalities.
-      this.contentGeneratorConfig.modalities = config.modalities;
-
-      if ('model' in sources) {
-        this.contentGeneratorConfigSources['model'] = sources['model'];
-      }
-      if ('modalities' in sources) {
-        this.contentGeneratorConfigSources['modalities'] =
-          sources['modalities'];
-      }
-      if ('samplingParams' in sources) {
-        this.contentGeneratorConfigSources['samplingParams'] =
-          sources['samplingParams'];
-      }
-      if ('enableCacheControl' in sources) {
-        this.contentGeneratorConfigSources['enableCacheControl'] =
-          sources['enableCacheControl'];
-      }
-      if ('enableRequestMetadata' in sources) {
-        this.contentGeneratorConfigSources['enableRequestMetadata'] =
-          sources['enableRequestMetadata'];
-      }
-      if ('forceGlobalCacheScope' in sources) {
-        this.contentGeneratorConfigSources['forceGlobalCacheScope'] =
-          sources['forceGlobalCacheScope'];
-      }
-      if ('cacheRetention' in sources) {
-        this.contentGeneratorConfigSources['cacheRetention'] =
-          sources['cacheRetention'];
-      }
-      if ('cacheRetentionByBlock' in sources) {
-        this.contentGeneratorConfigSources['cacheRetentionByBlock'] =
-          sources['cacheRetentionByBlock'];
-      }
-      if ('contextWindowSize' in sources) {
-        this.contentGeneratorConfigSources['contextWindowSize'] =
-          sources['contextWindowSize'];
-      }
-      if ('splitToolMedia' in sources) {
-        this.contentGeneratorConfigSources['splitToolMedia'] =
-          sources['splitToolMedia'];
-      }
-      if ('toolResultContentFormat' in sources) {
-        this.contentGeneratorConfigSources['toolResultContentFormat'] =
-          sources['toolResultContentFormat'];
-      }
-      if (priorReasoningEffort) {
-        this.setReasoningEffort(priorReasoningEffort);
-      }
-      resetPreloadedContentGenerator(this.contentGenerator);
-      return;
-    }
-
     // Full refresh path. `refreshAuth` re-applies the reasoning effort it
     // captures, but on a model *switch* that capture is already stale: the
     // preceding switchModel() ran applyResolvedModelDefaults(), which overwrote
@@ -7582,7 +7376,6 @@ export class Config {
    *
    * For runtime models, the modelId should be in format `$runtime|${authType}|${modelId}`.
    * This triggers a refresh of the ContentGenerator when required (always on authType changes).
-   * For qwen-oauth model switches that are hot-update safe, this may update in place.
    *
    * @param authType - Target authentication type
    * @param modelId - Target model ID (or `$runtime|${authType}|${modelId}` for runtime models)
@@ -9442,6 +9235,15 @@ export class Config {
     return this.manualPlanExitNoticeCursorState;
   }
 
+  /**
+   * Returns the Plan Approval Gate state for the current Plan Mode Entry, or
+   * undefined when not in plan mode. The returned object is mutable; callers
+   * may update its fields directly (e.g. review count, gate mode).
+   */
+  getPlanGateState(): PlanGateState | undefined {
+    return this.planGateState;
+  }
+
   setApprovalMode(
     mode: ApprovalMode,
     options?: {
@@ -9516,6 +9318,14 @@ export class Config {
       this.prePlanMode = fromMode;
       noticeEvent.version++;
       noticeEvent.kind = 'clear';
+      // Begin a fresh Plan Mode Entry for the Plan Approval Gate. Only the
+      // model's enter_plan_mode tool marks the entry as model-initiated; every
+      // user-driven entry (Shift+Tab, /plan, dialog) defaults to false so the
+      // user always gets the confirmation dialog on exit (issue #5574).
+      this.planGateState = createPlanGateState(
+        ++this.planGateEntryCounter,
+        options?.enteredByModel ?? false,
+      );
     } else if (mode !== ApprovalMode.PLAN && fromMode === ApprovalMode.PLAN) {
       this.prePlanMode = undefined;
       noticeEvent.version++;
@@ -9529,6 +9339,9 @@ export class Config {
       ) {
         this.approveSessionWorkflowPlanRevision();
       }
+      // Successfully leaving PLAN clears all gate state (including any
+      // user_takeover marker, which only lives for the duration of PLAN).
+      this.planGateState = undefined;
     }
     // Any deliberate mode change invalidates the AUTO denialTracking signal.
     if (fromMode !== mode) {
@@ -9817,66 +9630,6 @@ export class Config {
     return this.showResponseTokensPerSecond;
   }
 
-  getTelemetryEnabled(): boolean {
-    return this.telemetrySettings.enabled ?? false;
-  }
-
-  isTelemetryInitializationDeferred(): boolean {
-    return this.telemetryInitializationDeferred;
-  }
-
-  getTelemetryLogPromptsEnabled(): boolean {
-    return this.telemetrySettings.logPrompts ?? true;
-  }
-
-  getTelemetryUserId(): string | undefined {
-    return this.telemetrySettings.userId;
-  }
-
-  getTelemetryIncludeSensitiveSpanAttributes(): boolean {
-    return this.telemetrySettings.includeSensitiveSpanAttributes ?? false;
-  }
-
-  getTelemetrySensitiveSpanAttributeMaxLength(): number {
-    return this.telemetrySettings.sensitiveSpanAttributeMaxLength;
-  }
-
-  getTelemetryOtlpEndpoint(): string | undefined {
-    return this.telemetrySettings.otlpEndpoint ?? DEFAULT_OTLP_ENDPOINT;
-  }
-
-  getTelemetryOtlpProtocol(): 'grpc' | 'http' {
-    return this.telemetrySettings.otlpProtocol ?? 'grpc';
-  }
-
-  getTelemetryOtlpTracesEndpoint(): string | undefined {
-    return this.telemetrySettings.otlpTracesEndpoint;
-  }
-
-  getTelemetryOtlpLogsEndpoint(): string | undefined {
-    return this.telemetrySettings.otlpLogsEndpoint;
-  }
-
-  getTelemetryOtlpMetricsEndpoint(): string | undefined {
-    return this.telemetrySettings.otlpMetricsEndpoint;
-  }
-
-  getTelemetryTarget(): TelemetryTarget {
-    return this.telemetrySettings.target ?? DEFAULT_TELEMETRY_TARGET;
-  }
-
-  getTelemetryResourceAttributes(): Record<string, string> {
-    return this.telemetrySettings.resourceAttributes ?? {};
-  }
-
-  getTelemetryMetricsIncludeSessionId(): boolean {
-    return this.telemetrySettings.metrics?.includeSessionId ?? false;
-  }
-
-  getTelemetryResourceAttributeWarnings(): readonly string[] {
-    return this.telemetrySettings.resourceAttributeWarnings ?? [];
-  }
-
   /**
    * Whether to inject W3C `traceparent` on outbound `fetch` requests
    * (LLM SDKs, MCP, WebFetch, etc.). Default false — see
@@ -9893,10 +9646,6 @@ export class Config {
    */
   getOutboundAllowDynamicHeaderValues(): boolean {
     return this.outboundCorrelationSettings.allowDynamicHeaderValues ?? false;
-  }
-
-  getTelemetryOutfile(): string | undefined {
-    return this.telemetrySettings.outfile;
   }
 
   getGitCoAuthor(): GitCoAuthorSettings {
@@ -10842,6 +10591,16 @@ export class Config {
     return normalizeProxyUrl(this.proxy);
   }
 
+  /** Hosts that bypass the proxy and connect directly. */
+  getNoProxy(): string[] {
+    return this.noProxy;
+  }
+
+  /** Paths to extra PEM CA certificate files trusted for TLS. */
+  getCaCertificates(): string[] {
+    return this.caCertificates;
+  }
+
   getWorkingDir(): string {
     return this.cwd;
   }
@@ -10858,10 +10617,6 @@ export class Config {
       );
     }
     return this.fileDiscoveryService;
-  }
-
-  getUsageStatisticsEnabled(): boolean {
-    return this.usageStatisticsEnabled;
   }
 
   /**
@@ -11064,6 +10819,112 @@ export class Config {
    */
   setAutoSkillEnabled(enabled: boolean): void {
     this.enableAutoSkill = enabled;
+  }
+
+  /**
+   * Resolved `memory.searchIndex.*` settings with defaults applied. Also
+   * folds bare-mode/safe-mode gating into `enabled`, mirroring
+   * {@link getManagedAutoMemoryEnabled} — those modes disable
+   * customizations project-wide, so the search index (which reads memory
+   * and transcript files off disk) should not run either.
+   */
+  getMemorySearchIndexSettings(): Required<MemorySearchIndexSettings> {
+    return {
+      enabled:
+        (this.memorySearchIndexSettings.enabled ?? true) &&
+        !this.getBareMode() &&
+        !this.isSafeMode(),
+      includeTranscripts:
+        this.memorySearchIndexSettings.includeTranscripts ?? true,
+      maxTranscriptSessions:
+        this.memorySearchIndexSettings.maxTranscriptSessions ?? 50,
+      maxTranscriptAgeDays:
+        this.memorySearchIndexSettings.maxTranscriptAgeDays ?? 90,
+    };
+  }
+
+  /**
+   * Resolved `memory.skillOutcomes.*` settings with defaults applied. Also
+   * folds bare-mode/safe-mode gating into `enabled`, mirroring
+   * {@link getMemorySearchIndexSettings} — those modes disable
+   * customizations project-wide, so skill outcome tracking should not run
+   * either.
+   */
+  getSkillOutcomesSettings(): Required<SkillOutcomesSettings> {
+    return {
+      enabled:
+        (this.skillOutcomesSettings.enabled ?? true) &&
+        !this.getBareMode() &&
+        !this.isSafeMode(),
+      useCorrectionHeuristic:
+        this.skillOutcomesSettings.useCorrectionHeuristic ?? true,
+      minSamples: this.skillOutcomesSettings.minSamples ?? 5,
+      hurtRatio: this.skillOutcomesSettings.hurtRatio ?? 0.6,
+      unusedSessions: this.skillOutcomesSettings.unusedSessions ?? 20,
+      maxEvidencePerSkill: this.skillOutcomesSettings.maxEvidencePerSkill ?? 5,
+    };
+  }
+
+  /**
+   * Whether to inject the skill-usage enforcement directive into the
+   * session-start `<available_skills>` snapshot. Defaults to true.
+   */
+  getSkillEnforcementEnabled(): boolean {
+    return this.skillEnforceInvocation ?? true;
+  }
+
+  getPlanFirstGateEnabled(): boolean {
+    return this.planFirstGate ?? true;
+  }
+
+  getAskQuestionMenuEnforced(): boolean {
+    return this.enforceAskQuestion ?? true;
+  }
+
+  getWritingPlansEnforced(): boolean {
+    return this.enforceWritingPlans ?? true;
+  }
+
+  markSkillInvoked(name: string): void {
+    this.invokedSkills.add(name);
+  }
+
+  hasInvokedSkill(name: string): boolean {
+    return this.invokedSkills.has(name);
+  }
+
+  setPlanGateOverride(value: boolean): void {
+    this.planGateOverride = value;
+  }
+
+  getPlanGateOverride(): boolean {
+    return this.planGateOverride;
+  }
+
+  markPlanGateAutoRedirect(): void {
+    this.planGateAutoRedirectCount++;
+  }
+
+  getPlanGateAutoRedirectCount(): number {
+    return this.planGateAutoRedirectCount;
+  }
+
+  /**
+   * Resolved `hub.loadPill` settings with defaults applied, or `undefined`
+   * when the pill is not configured (missing dashboard URL or token).
+   */
+  getHubLoadSettings(): HubLoadSettings | undefined {
+    const s = this.hubLoadPill;
+    if (!s?.dashboardBaseUrl || !s.dashboardToken) return undefined;
+    return {
+      dashboardBaseUrl: s.dashboardBaseUrl,
+      dashboardToken: s.dashboardToken,
+      activePanelId: s.activePanelId ?? HUB_LOAD_DEFAULTS.activePanelId,
+      queuePanelId: s.queuePanelId ?? HUB_LOAD_DEFAULTS.queuePanelId,
+      refreshMs: s.refreshMs ?? HUB_LOAD_DEFAULTS.refreshMs,
+      staleMs: s.staleMs ?? HUB_LOAD_DEFAULTS.staleMs,
+      queueWarn: s.queueWarn ?? HUB_LOAD_DEFAULTS.queueWarn,
+    };
   }
 
   getAutoSkillConfirmEnabled(): boolean {
@@ -11310,10 +11171,6 @@ export class Config {
     return this.getNoBrowser() || !shouldAttemptBrowserLaunch();
   }
 
-  getIdeMode(): boolean {
-    return !this.shellExecutionSandbox && this.ideMode;
-  }
-
   getFolderTrustFeature(): boolean {
     return this.folderTrustFeature;
   }
@@ -11347,20 +11204,9 @@ export class Config {
   }
 
   isTrustedFolder(): boolean {
-    const context = ideContextStore.get();
-    if (context?.workspaceState?.isTrusted !== undefined) {
-      return context.workspaceState.isTrusted;
-    }
-
+    // No explicit trust answer: trusted only when the folder-trust feature is
+    // off. With the feature on, an unanswered folder stays untrusted.
     return this.trustedFolder ?? !this.folderTrust;
-  }
-
-  setIdeMode(value: boolean): void {
-    if (this.shellExecutionSandbox && value)
-      throw new Error(
-        'Tool execution sandbox does not support IDE integration.',
-      );
-    this.ideMode = value;
   }
 
   getAuthType(): AuthType | undefined {

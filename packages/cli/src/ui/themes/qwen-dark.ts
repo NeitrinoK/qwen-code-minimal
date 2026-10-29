@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { CSSProperties } from 'react';
 import { type ColorsTheme, Theme } from './theme.js';
 import { darkSemanticColors } from './semantic-tokens.js';
 
-const qwenDarkColors: ColorsTheme = {
+export const qwenDarkColors: ColorsTheme = {
   type: 'dark',
   Background: '#0b0e14',
   Foreground: '#bfbdb6',
@@ -27,89 +28,91 @@ const qwenDarkColors: ColorsTheme = {
   GradientColors: ['#FFD700', '#da7959'],
 };
 
+export const qwenDarkSyntaxStyles: Record<string, CSSProperties> = {
+  hljs: {
+    display: 'block',
+    overflowX: 'auto',
+    padding: '0.5em',
+    background: qwenDarkColors.Background,
+    color: qwenDarkColors.Foreground,
+  },
+  'hljs-keyword': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-literal': {
+    color: qwenDarkColors.AccentPurple,
+  },
+  'hljs-symbol': {
+    color: qwenDarkColors.AccentCyan,
+  },
+  'hljs-name': {
+    color: qwenDarkColors.LightBlue,
+  },
+  'hljs-link': {
+    color: qwenDarkColors.AccentBlue,
+  },
+  'hljs-function .hljs-keyword': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-subst': {
+    color: qwenDarkColors.Foreground,
+  },
+  'hljs-string': {
+    color: qwenDarkColors.AccentGreen,
+  },
+  'hljs-title': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-type': {
+    color: qwenDarkColors.AccentBlue,
+  },
+  'hljs-attribute': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-bullet': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-addition': {
+    color: qwenDarkColors.AccentGreen,
+  },
+  'hljs-variable': {
+    color: qwenDarkColors.Foreground,
+  },
+  'hljs-template-tag': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-template-variable': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-comment': {
+    color: qwenDarkColors.Comment,
+    fontStyle: 'italic',
+  },
+  'hljs-quote': {
+    color: qwenDarkColors.AccentCyan,
+    fontStyle: 'italic',
+  },
+  'hljs-deletion': {
+    color: qwenDarkColors.AccentRed,
+  },
+  'hljs-meta': {
+    color: qwenDarkColors.AccentYellow,
+  },
+  'hljs-doctag': {
+    fontWeight: 'bold',
+  },
+  'hljs-strong': {
+    fontWeight: 'bold',
+  },
+  'hljs-emphasis': {
+    fontStyle: 'italic',
+  },
+};
+
 export const QwenDark: Theme = new Theme(
   'Qwen Dark',
   'dark',
-  {
-    hljs: {
-      display: 'block',
-      overflowX: 'auto',
-      padding: '0.5em',
-      background: qwenDarkColors.Background,
-      color: qwenDarkColors.Foreground,
-    },
-    'hljs-keyword': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-literal': {
-      color: qwenDarkColors.AccentPurple,
-    },
-    'hljs-symbol': {
-      color: qwenDarkColors.AccentCyan,
-    },
-    'hljs-name': {
-      color: qwenDarkColors.LightBlue,
-    },
-    'hljs-link': {
-      color: qwenDarkColors.AccentBlue,
-    },
-    'hljs-function .hljs-keyword': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-subst': {
-      color: qwenDarkColors.Foreground,
-    },
-    'hljs-string': {
-      color: qwenDarkColors.AccentGreen,
-    },
-    'hljs-title': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-type': {
-      color: qwenDarkColors.AccentBlue,
-    },
-    'hljs-attribute': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-bullet': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-addition': {
-      color: qwenDarkColors.AccentGreen,
-    },
-    'hljs-variable': {
-      color: qwenDarkColors.Foreground,
-    },
-    'hljs-template-tag': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-template-variable': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-comment': {
-      color: qwenDarkColors.Comment,
-      fontStyle: 'italic',
-    },
-    'hljs-quote': {
-      color: qwenDarkColors.AccentCyan,
-      fontStyle: 'italic',
-    },
-    'hljs-deletion': {
-      color: qwenDarkColors.AccentRed,
-    },
-    'hljs-meta': {
-      color: qwenDarkColors.AccentYellow,
-    },
-    'hljs-doctag': {
-      fontWeight: 'bold',
-    },
-    'hljs-strong': {
-      fontWeight: 'bold',
-    },
-    'hljs-emphasis': {
-      fontStyle: 'italic',
-    },
-  },
+  qwenDarkSyntaxStyles,
   qwenDarkColors,
   darkSemanticColors,
 );

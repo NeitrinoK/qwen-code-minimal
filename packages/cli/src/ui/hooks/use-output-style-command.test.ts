@@ -5,7 +5,7 @@
  */
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import type { Config, OutputStyleDefinition } from '@qwen-code/qwen-code-core';
 import {
@@ -14,6 +14,11 @@ import {
 } from '@qwen-code/qwen-code-core';
 import type { LoadedSettings } from '../../config/settings.js';
 import { useOutputStyleCommand } from './use-output-style-command.js';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   const actual =
@@ -31,11 +36,11 @@ const CUSTOM_STYLE: OutputStyleDefinition = {
 };
 
 describe('useOutputStyleCommand', () => {
-  let setOutputStyle: ReturnType<typeof vi.fn>;
-  let refreshSystemInstruction: ReturnType<typeof vi.fn>;
-  let setValue: ReturnType<typeof vi.fn>;
-  let addItem: ReturnType<typeof vi.fn>;
-  let recordSlashCommand: ReturnType<typeof vi.fn>;
+  let setOutputStyle: MockAny;
+  let refreshSystemInstruction: MockAny;
+  let setValue: MockAny;
+  let addItem: MockAny;
+  let recordSlashCommand: MockAny;
   let config: Config;
   let settings: LoadedSettings;
 

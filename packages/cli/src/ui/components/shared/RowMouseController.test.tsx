@@ -63,15 +63,15 @@ describe('RowMouseController', () => {
     { tag: 'i2' },
   ] as unknown as DOMElement[];
 
-  let onHoverIndex: ReturnType<typeof vi.fn>;
-  let onSelectIndex: ReturnType<typeof vi.fn>;
+  let onHoverIndex: ReturnType<typeof vi.fn<(index: number) => void>>;
+  let onSelectIndex: ReturnType<typeof vi.fn<(index: number) => void>>;
 
   // Frame exactly fills the terminal here → anchor 0 → layoutRow = event.row - 1.
   // Each item is one row tall, stacked from the top, so item i sits at row i.
   beforeEach(() => {
     vi.clearAllMocks();
-    onHoverIndex = vi.fn();
-    onSelectIndex = vi.fn();
+    onHoverIndex = vi.fn<(index: number) => void>();
+    onSelectIndex = vi.fn<(index: number) => void>();
 
     vi.mocked(useTerminalSize).mockReturnValue({ rows: 40, columns: 80 });
     mockLayoutRowForEvent(40); // frame fills the terminal → anchor 0

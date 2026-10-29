@@ -252,8 +252,8 @@ Two surfaces have to redact, and both share the same placeholder
 constant
 [`STRUCTURED_OUTPUT_REDACTED_ARGS`](../../../packages/core/src/tools/syntheticOutput.ts):
 
-- `ToolCallEvent.function_args` (telemetry) — covers OTLP exports,
-  QwenLogger, ui-telemetry, and the chat-recording UI event mirror.
+- `ToolCallEvent.function_args` (telemetry) — covers the in-memory
+  ui-telemetry stream and the chat-recording UI event mirror.
 - `redactStructuredOutputArgsForRecording` (used by
   `recordAssistantTurn` in `geminiChat.ts`) — covers the on-disk
   chat-recording JSONL at

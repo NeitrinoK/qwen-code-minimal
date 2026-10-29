@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import path from 'node:path';
 
 export default defineConfig({
@@ -24,6 +24,10 @@ export default defineConfig({
     maxWorkers: process.env['RUNNER_NAME']?.startsWith('ecs-qwen-')
       ? '25%'
       : undefined,
+    // vitest 4 no longer excludes build output by default; keep the compiled
+    // dist/ (which contains *.test.js copies) out of test discovery so
+    // `build` followed by `test` doesn't run stale duplicates.
+    exclude: [...configDefaults.exclude, '**/dist/**'],
     reporters: ['default', 'junit'],
     silent: true,
     // Fail fast with an actionable message when the workspace dist/ output

@@ -242,6 +242,8 @@ export class DashScopeWebSearchBackend implements WebSearchBackend {
     const runtimeOptions = buildRuntimeFetchOptions(
       'openai',
       this.config.getProxy(),
+      this.config.getNoProxy?.() ?? [],
+      this.config.getCaCertificates?.() ?? [],
     );
     const client = new OpenAI({
       apiKey,
@@ -259,7 +261,7 @@ export class DashScopeWebSearchBackend implements WebSearchBackend {
         this.config,
         backend.customHeaders,
       ),
-    });
+    } as ConstructorParameters<typeof OpenAI>[0]);
 
     // One total timeout across both attempts, combined with the caller's
     // cancellation signal and our stream-size cap. The timeout signal is

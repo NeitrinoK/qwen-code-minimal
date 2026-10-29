@@ -247,6 +247,12 @@ async function collectAvailableSkillEntriesUncached(
     })),
   ];
 
+  // Record what this build actually produced so a synchronous reader (the
+  // footer's overhead pill) reports the catalog the model received rather
+  // than re-scanning and possibly disagreeing with it.
+  // Optional-call: a display counter must never break the catalog build.
+  skillManager.recordCatalogSize?.(entries.length);
+
   return {
     availableSkills,
     pendingConditionalSkillNames,
@@ -536,4 +542,43 @@ export function clearLoadedSkillTracking(
       `[SKILL_TRACKING] conservatively cleared loaded-skill tracking after ${logTag}`,
     );
   }
+}
+
+/**
+ * The session-start skill-usage policy. Prepended to the `<available_skills>`
+ * snapshot (see buildAvailableSkillsReminder) when skill enforcement is enabled
+ * and at least one skill exists. Forces the model to invoke a relevant skill —
+ * process skills first — before responding. Pure; no inputs, no I/O.
+ */
+export function renderSkillEnforcementDirective(): string {
+  return [
+    '<skill-usage-policy>',
+    'CRITICAL — read before responding. If there is even a 1% chance a skill in',
+    '<available_skills> applies, you MUST invoke it (via the Skill tool) BEFORE',
+    'anything else — before clarifying questions, before exploring files, before code.',
+    '',
+    '"Invoke" means CALL THE SKILL TOOL with the skill\'s exact name so its full',
+    'instructions load and run. Imitating the skill from memory, paraphrasing its',
+    'steps, or merely "following its idea" (e.g. asking a couple of questions',
+    'yourself) does NOT count and is a violation — you must actually call the tool',
+    'and then follow the instructions it returns, step by step.',
+    '',
+    'Priority — process skills first:',
+    '- "build / add / implement X" → invoke the design/brainstorming skill before coding.',
+    '- "fix this bug / it\'s broken" → invoke the systematic-debugging skill before fixing.',
+    'Implementation skills come only after the process skill has run.',
+    '',
+    'HARD GATE for build/implement tasks: you MUST NOT write or edit ANY file',
+    '(no write_file, no replace, no edit) until superpowers:brainstorming has —',
+    'invoked via the Skill tool — produced a design/plan the user EXPLICITLY',
+    'approved, and writing-plans has produced the plan. Asking questions is NOT',
+    'approval; calling AskUserQuestion is NOT the same as running the skill.',
+    '',
+    'These thoughts mean STOP — you are rationalizing; invoke the skill instead:',
+    '- "too simple / small to need a skill"   - "I\'ll just look/answer first"',
+    '- "I already know how to do this"          - "the skill is overkill"',
+    '- "I\'ll just do what the skill would do"  - "no need to actually call the tool"',
+    'Knowing the concept ≠ running the skill. Call the Skill tool.',
+    '</skill-usage-policy>',
+  ].join('\n');
 }

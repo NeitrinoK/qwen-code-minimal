@@ -21,7 +21,7 @@ Get started with Qwen Code CLI in your repository in just a few minutes:
 
 ### 1. Get a Qwen API Key
 
-Obtain your API key from [DashScope](https://help.aliyun.com/zh/model-studio/qwen-code) (Alibaba Cloud's AI platform)
+Obtain your API key from your OpenAI-compatible provider (e.g. `https://api.openai.com/v1`).
 
 ### 2. Add it as a GitHub Secret
 
@@ -173,10 +173,10 @@ For details about repository variables, refer to the [GitHub documentation on va
 
 You can set the following secrets in your repository:
 
-| Name              | Description                                   | Required | When Required                              |
-| ----------------- | --------------------------------------------- | -------- | ------------------------------------------ |
-| `QWEN_API_KEY`    | Your Qwen API key from DashScope.             | Yes      | Required for all workflows that call Qwen. |
-| `APP_PRIVATE_KEY` | Private key for your GitHub App (PEM format). | No       | Using a custom GitHub App.                 |
+| Name              | Description                                        | Required | When Required                              |
+| ----------------- | -------------------------------------------------- | -------- | ------------------------------------------ |
+| `QWEN_API_KEY`    | Your API key from your OpenAI-compatible provider. | Yes      | Required for all workflows that call Qwen. |
+| `APP_PRIVATE_KEY` | Private key for your GitHub App (PEM format).      | No       | Using a custom GitHub App.                 |
 
 To add a secret:
 
@@ -234,7 +234,6 @@ Contributions are welcome! Check out the Qwen Code CLI **Contributing Guide** fo
 
 [secrets]: https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions
 [Qwen Code]: https://github.com/QwenLM/qwen-code
-[DashScope]: https://dashscope.console.aliyun.com/apiKey
 [Qwen Code CLI]: https://github.com/QwenLM/qwen-code-action/
 [variables]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables#creating-configuration-variables-for-a-repository
 [GitHub CLI]: https://docs.github.com/en/github-cli/github-cli

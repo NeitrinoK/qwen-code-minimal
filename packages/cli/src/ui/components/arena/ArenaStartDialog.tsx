@@ -8,7 +8,6 @@ import type React from 'react';
 import { useMemo, useState } from 'react';
 import { Box, Text } from 'ink';
 import Link from 'ink-link';
-import { AuthType } from '@qwen-code/qwen-code-core';
 import { useConfig } from '../../contexts/ConfigContext.js';
 import { theme } from '../../semantic-colors.js';
 import { useKeypress } from '../../hooks/useKeypress.js';
@@ -39,19 +38,14 @@ export function ArenaStartDialog({
 
     return selectableModels.map((model) => {
       const token = `${model.authType}:${model.id}`;
-      const isQwenOauth = model.authType === AuthType.QWEN_OAUTH;
       return {
         key: token,
         value: token,
         label: `[${model.authType}] ${model.label}`,
-        disabled: isQwenOauth,
       };
     });
   }, [config]);
-  const hasDisabledQwenOauth = modelItems.some((item) => item.disabled);
-  const selectableModelCount = modelItems.filter(
-    (item) => !item.disabled,
-  ).length;
+  const selectableModelCount = modelItems.length;
   const needsMoreModels = selectableModelCount < 2;
   const shouldShowMoreModelsHint =
     selectableModelCount >= 2 && selectableModelCount < 3;
@@ -114,13 +108,8 @@ export function ArenaStartDialog({
         </Box>
       )}
 
-      {(hasDisabledQwenOauth || needsMoreModels) && (
+      {needsMoreModels && (
         <Box marginTop={1} flexDirection="column">
-          {hasDisabledQwenOauth && (
-            <Text color={theme.status.warning}>
-              {t('Note: qwen-oauth models are not supported in Arena.')}
-            </Text>
-          )}
           {needsMoreModels && (
             <>
               <Text color={theme.status.warning}>
@@ -128,7 +117,7 @@ export function ArenaStartDialog({
               </Text>
               <Text color={theme.status.warning}>
                 {t(
-                  '  - Run /auth to set up a Coding Plan (includes multiple models)',
+                  '  - Run /auth to set up a Token Plan (includes multiple models)',
                 )}
               </Text>
               <Text color={theme.status.warning}>

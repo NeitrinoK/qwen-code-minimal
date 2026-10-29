@@ -26,13 +26,6 @@ export {
   isTelemetrySdkInitialized,
 } from './sdk.js';
 export {
-  resolveTelemetrySettings,
-  parseBooleanEnvFlag,
-  parseTelemetryTargetValue,
-  resolveUsageStatisticsEnabled,
-  resolveExtensionTelemetryProxy,
-} from './config.js';
-export {
   logStartSession,
   logSessionEnd,
   logUserPrompt,
@@ -61,7 +54,6 @@ export {
   logAuth,
   logSkillLaunch,
   recordSkillInvocation,
-  logUserFeedback,
   logArenaSessionStarted,
   logArenaAgentCompleted,
   logArenaSessionEnded,
@@ -99,8 +91,6 @@ export {
   NextSpeakerCheckEvent,
   AuthEvent,
   SkillLaunchEvent,
-  UserFeedbackEvent,
-  UserFeedbackRating,
   makeArenaSessionStartedEvent,
   makeArenaAgentCompletedEvent,
   makeArenaSessionEndedEvent,
@@ -178,11 +168,11 @@ export {
   ApiRequestPhase,
   FileOperation,
 } from './metrics.js';
-export { QwenLogger } from './qwen-logger/qwen-logger.js';
 export { sanitizeHookName } from './sanitize.js';
 export {
   startInteractionSpan,
   endInteractionSpan,
+  updateInteractionSpanModel,
   withInteractionSpan,
   startLLMRequestSpan,
   endLLMRequestSpan,
@@ -199,7 +189,6 @@ export {
   endSubagentSpan,
   runInSubagentSpanContext,
   getActiveInteractionSpan,
-  recordInteractionActivity,
   truncateSpanError,
 } from './session-tracing.js';
 export type {
@@ -219,7 +208,6 @@ export type {
   StartSubagentSpanOptions,
   SubagentSpanMetadata,
 } from './session-tracing.js';
-export type { TelemetryRuntimeConfig } from './runtime-config.js';
 export {
   DAEMON_TRACEPARENT_META_KEY,
   DAEMON_TRACESTATE_META_KEY,
@@ -270,7 +258,6 @@ export {
 export {
   addAgentInputMessageAttributes,
   addAgentOutputMessageAttributes,
-  AgentOutputMessageCapture,
   addUserPromptAttributes,
   addSystemPromptAttributes,
   addToolSchemaAttributes,

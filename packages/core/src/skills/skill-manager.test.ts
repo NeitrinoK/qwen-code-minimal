@@ -469,6 +469,47 @@ describe('SkillManager', () => {
 
       expect(await manager.loadSkillForRuntime('nonexistent')).toBeNull();
     });
+
+    it('counts a distinct invoked skill once however often it is invoked', async () => {
+      vi.mocked(fs.readdir).mockResolvedValue([
+        {
+          name: 'test-skill',
+          isDirectory: () => true,
+          isFile: () => false,
+          isSymbolicLink: () => false,
+        },
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      vi.mocked(fs.readFile).mockResolvedValue(validMarkdown);
+
+      expect(manager.getInvokedSkillCount()).toBe(0);
+
+      await manager.loadSkillForRuntime('test-skill');
+      await manager.loadSkillForRuntime('test-skill');
+
+      // Re-invoking a skill does not add to the prompt again, so counting it
+      // twice would overstate what the session actually dragged in.
+      expect(manager.getInvokedSkillCount()).toBe(1);
+    });
+
+    it('reports the catalog size that was actually injected', () => {
+      // The catalog is rebuilt per request; the manager records what the last
+      // build produced so a synchronous reader (the footer) reports the number
+      // of entries the model actually received, not a re-derived guess.
+      expect(manager.getCatalogSkillCount()).toBe(0);
+
+      manager.recordCatalogSize(85);
+
+      expect(manager.getCatalogSkillCount()).toBe(85);
+    });
+
+    it('does not count a skill that failed to load', async () => {
+      vi.mocked(fs.readdir).mockRejectedValue(new Error('Directory not found'));
+
+      await manager.loadSkillForRuntime('nonexistent');
+
+      expect(manager.getInvokedSkillCount()).toBe(0);
+    });
   });
 
   describe('listSkills', () => {

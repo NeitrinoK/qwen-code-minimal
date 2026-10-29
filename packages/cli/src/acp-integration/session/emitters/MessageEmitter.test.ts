@@ -12,18 +12,20 @@ import {
   type Config,
   type GoalSnapshotV2,
 } from '@qwen-code/qwen-code-core';
+import type { SessionUpdate } from '@agentclientprotocol/sdk';
 
 describe('MessageEmitter', () => {
   let mockContext: SessionContext;
-  let sendUpdateSpy: ReturnType<typeof vi.fn>;
+  let sendUpdateSpy: ReturnType<
+    typeof vi.fn<(update: SessionUpdate) => Promise<void>>
+  >;
   let emitter: MessageEmitter;
 
   beforeEach(() => {
-    // emitUsageMetadata drains the process-global API-activity tracker onto a
-    // live frame's `_meta`; zero it so a nonzero count from another test can't
-    // inject apiErrors/apiRetries keys into these exact-`_meta` assertions.
     apiActivityTracker.drain();
-    sendUpdateSpy = vi.fn().mockResolvedValue(undefined);
+    sendUpdateSpy = vi
+      .fn<(update: SessionUpdate) => Promise<void>>()
+      .mockResolvedValue(undefined);
     mockContext = {
       sessionId: 'test-session-id',
       config: {
@@ -63,21 +65,6 @@ describe('MessageEmitter', () => {
       expect(sendUpdateSpy).toHaveBeenCalledWith({
         sessionUpdate: 'user_message_chunk',
         content: { type: 'text', text: multilineText },
-      });
-    });
-
-    it('should include source metadata when provided', async () => {
-      await emitter.emitUserMessage('scheduled prompt', 1_700_000_000_000, {
-        source: 'cron',
-      });
-
-      expect(sendUpdateSpy).toHaveBeenCalledWith({
-        sessionUpdate: 'user_message_chunk',
-        content: { type: 'text', text: 'scheduled prompt' },
-        _meta: {
-          timestamp: 1_700_000_000_000,
-          source: 'cron',
-        },
       });
     });
   });
@@ -179,6 +166,29 @@ describe('MessageEmitter', () => {
         _meta: {
           contextCompression: { phase: 'progress' },
           source: 'slash_command',
+        },
+      });
+    });
+  });
+
+  describe('emitGoalTerminal', () => {
+    it('should send a goal terminal update in metadata', async () => {
+      const event = {
+        kind: 'achieved' as const,
+        condition: 'ship goal support',
+        iterations: 2,
+        durationMs: 1234,
+        lastReason: 'The requested support is complete.',
+      };
+
+      await emitter.emitGoalTerminal(event);
+
+      expect(sendUpdateSpy).toHaveBeenCalledTimes(1);
+      expect(sendUpdateSpy).toHaveBeenCalledWith({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '' },
+        _meta: {
+          goalTerminal: event,
         },
       });
     });
@@ -537,7 +547,7 @@ describe('MessageEmitter', () => {
         .filter(
           (update) =>
             update.sessionUpdate === 'agent_message_chunk' &&
-            update._meta?.usage,
+            update._meta?.['usage'],
         );
       const secondMeta = privateUsageUpdates.at(-1)?._meta;
       expect(secondMeta).not.toHaveProperty('apiErrors');

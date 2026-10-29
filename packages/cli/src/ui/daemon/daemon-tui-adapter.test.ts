@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import type {
   ContentBlock,
   RequestPermissionRequest,
@@ -83,11 +83,11 @@ class EventQueue implements AsyncGenerator<DaemonTuiEvent> {
 }
 
 interface FakeSession extends DaemonTuiSessionClient {
-  prompt: ReturnType<typeof vi.fn>;
-  events: ReturnType<typeof vi.fn>;
-  cancel: ReturnType<typeof vi.fn>;
-  setModel: ReturnType<typeof vi.fn>;
-  respondToPermission: ReturnType<typeof vi.fn>;
+  prompt: Mock<DaemonTuiSessionClient['prompt']>;
+  events: Mock<DaemonTuiSessionClient['events']>;
+  cancel: Mock<DaemonTuiSessionClient['cancel']>;
+  setModel: Mock<DaemonTuiSessionClient['setModel']>;
+  respondToPermission: Mock<DaemonTuiSessionClient['respondToPermission']>;
 }
 
 function createFakeSession(events: EventQueue): FakeSession {
@@ -95,16 +95,22 @@ function createFakeSession(events: EventQueue): FakeSession {
     sessionId: 'session-1',
     workspaceCwd: '/repo',
     lastEventId: undefined,
-    prompt: vi.fn().mockResolvedValue({ stopReason: 'end_turn' }),
-    events: vi.fn((opts?: { signal?: AbortSignal }) => {
+    prompt: vi
+      .fn<DaemonTuiSessionClient['prompt']>()
+      .mockResolvedValue({ stopReason: 'end_turn' }),
+    events: vi.fn<DaemonTuiSessionClient['events']>((opts) => {
       opts?.signal?.addEventListener('abort', () => events.close(), {
         once: true,
       });
       return events;
     }),
-    cancel: vi.fn().mockResolvedValue(undefined),
-    setModel: vi.fn().mockResolvedValue({}),
-    respondToPermission: vi.fn().mockResolvedValue(true),
+    cancel: vi
+      .fn<DaemonTuiSessionClient['cancel']>()
+      .mockResolvedValue(undefined),
+    setModel: vi.fn<DaemonTuiSessionClient['setModel']>().mockResolvedValue({}),
+    respondToPermission: vi
+      .fn<DaemonTuiSessionClient['respondToPermission']>()
+      .mockResolvedValue(true),
   };
 }
 

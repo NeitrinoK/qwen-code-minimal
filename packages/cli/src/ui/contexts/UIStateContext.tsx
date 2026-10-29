@@ -23,9 +23,7 @@ import type { CommandContext, SlashCommand } from '../commands/types.js';
 import type { RecentSlashCommands } from '../hooks/useSlashCompletion.js';
 import type { TextBuffer } from '../components/shared/text-buffer.js';
 import type {
-  IdeContext,
   ApprovalMode,
-  IdeInfo,
   OutputStyleDefinition,
   SessionListItem,
 } from '@qwen-code/qwen-code-core';
@@ -33,22 +31,18 @@ import type { DOMElement } from 'ink';
 import type { SessionStatsState } from '../contexts/SessionContext.js';
 import type { PendingMcpServer } from '../hooks/useMcpApproval.js';
 import type { ExtensionUpdateState } from '../state/extensions.js';
-import type { UpdateObject } from '../utils/updateCheck.js';
 
 import { type UseHistoryManagerReturn } from '../hooks/useHistoryManager.js';
 import { type HelpTab } from './UIActionsContext.js';
-import { type RestartReason } from '../hooks/useIdeTrustListener.js';
 import { type ProviderUpdateRequest } from '../hooks/useProviderUpdates.js';
 import { type ArenaDialogType } from '../hooks/useArenaCommand.js';
-import type { MicrophonePermission } from '../hooks/use-voice-input.js';
 import type { StatusLinePresetConfig } from '../statusLinePresets.js';
-import type { StartupIdeConnectionStatus } from '../../utils/events.js';
 
 export interface PendingSkillView {
   name: string;
   description: string;
-  /** Absolute path of the staged SKILL.md, for inline preview / open-in-editor. */
-  stagedManifestPath: string;
+  /** Path to the staged SKILL.md manifest, used to render a preview. */
+  stagedManifestPath?: string;
 }
 
 export interface UIState {
@@ -73,7 +67,6 @@ export interface UIState {
   isModelDialogOpen: boolean;
   isFastModelMode: boolean;
   isAdvisorModelMode: boolean;
-  isVoiceModelMode: boolean;
   isVisionModelMode: boolean;
   isCompactionModelMode: boolean;
   isImageModelMode: boolean;
@@ -112,7 +105,6 @@ export interface UIState {
   inputWidth: number;
   suggestionsWidth: number;
   isInputActive: boolean;
-  shouldShowIdePrompt: boolean;
   shouldShowCommandMigrationNudge: boolean;
   commandMigrationTomlFiles: string[];
   isFolderTrustDialogOpen: boolean;
@@ -122,7 +114,7 @@ export interface UIState {
   mcpApprovalRemaining: number;
   isTrustedFolder: boolean | undefined;
   constrainHeight: boolean;
-  ideContextState: IdeContext | undefined;
+  showScrollbar?: boolean;
   showToolDescriptions: boolean;
   ctrlCPressedOnce: boolean;
   ctrlDPressedOnce: boolean;
@@ -137,8 +129,6 @@ export interface UIState {
   contextFileNames: string[];
   availableTerminalHeight: number | undefined;
   useTerminalBuffer: boolean;
-  /** Whether the VP scrollbar is shown (auto-hides while idle). */
-  showScrollbar?: boolean;
   mainAreaWidth: number;
   staticAreaMaxItemHeight: number;
   staticExtraHeight: number;
@@ -176,12 +166,6 @@ export interface UIState {
   terminalWidth: number;
   terminalHeight: number;
   mainControlsRef: React.MutableRefObject<DOMElement | null>;
-  voiceMicWarnedStatusRef: React.MutableRefObject<MicrophonePermission | null>;
-  currentIDE: IdeInfo | null;
-  startupIdeConnectionStatus: StartupIdeConnectionStatus;
-  updateInfo: UpdateObject | null;
-  showIdeRestartPrompt: boolean;
-  ideTrustRestartReason: RestartReason;
   isRestarting: boolean;
   extensionsUpdateState: Map<string, ExtensionUpdateState>;
   activePtyId: number | undefined;
@@ -205,8 +189,6 @@ export interface UIState {
   // Hooks dialog
   isHooksDialogOpen: boolean;
   isStatsDialogOpen: boolean;
-  // Feedback dialog
-  isFeedbackDialogOpen: boolean;
   // Per-task token tracking
   taskStartTokens: number;
   taskStartStreamingChars: number;

@@ -142,14 +142,8 @@ that landed last week is the fastest way to lose a reviewer for good.
 **3 — Published-surface escape.** Is the surface reachable from outside the
 repo? SKILL.md § Territory is the authoritative list; keep the two in step.
 Everything under `packages/core/src` is, via that package's `"./src/*"`
-export plus ~179 `export * from` lines in its `index.ts`; everything under
-`packages/audio-capture` and `packages/channels` is too — the release
-workflow npm-publishes all eight packages with `--access public`. So is
-everything under `packages/sdk-*` and `packages/acp-bridge`:
-`release-sdk.yml:297` npm-publishes `packages/sdk-typescript` with
-`--access public`, `release-sdk-python.yml:346` ships the Python SDK to PyPI,
-`release-sdk-java.yml:206` deploys the Java SDK to Maven, and SDK consumers
-import from the registry, never from this repo.
+export plus ~179 `export * from` lines in its `index.ts`. So is everything
+under `packages/acp-bridge`, which consumers import from the registry.
 
 Reachability is not only an import. `packages/vscode-ide-companion`,
 `packages/chrome-extension` and `packages/zed-extension` are consumed as
@@ -248,7 +242,7 @@ Run the rows that apply to the candidate's shape; record their ids.
 | `build-graph` | Is the file reached only by a build script? `esbuild.config.js`, `scripts/copy_bundle_assets.js`, `patches/`, and package `exports`/`files` entries reach code no import mentions                                                 |
 | `generated`   | Does a committed artifact mirror it? `packages/vscode-ide-companion/schemas/settings.schema.json` is generated from `settingsSchema.ts` and CI fails when it is stale — a failure invisible to build, typecheck, lint, and vitest |
 | `vi-mock`     | `"$RG" -n '<Symbol>' -g '*.test.*'` — a `vi.mock` factory referencing a symbol is a consumer that breaks loudly and confusingly                                                                                                   |
-| `mirrors`     | Do `packages/sdk-python`, `sdk-java`, `acp-bridge`, or the VS Code / Zed / Chrome extensions hand-mirror this shape? They consume over a protocol, not by import                                                                  |
+| `mirrors`     | Does `acp-bridge` hand-mirror this shape? It consumes over a protocol, not by import                                                                                                                                              |
 | `dyn-import`  | Dynamic `import()`, `Object.entries`-driven dispatch, glob-based discovery, resolver aliases in `vitest.config.ts` / `tsconfig.json`                                                                                              |
 | `cli-flags`   | `packages/cli/src/config/config.ts` calls `.strict()`, so deleting even an inert flag turns a silent no-op into a hard "Unknown argument" failure for anyone whose script still passes it                                         |
 | `assets`      | Files shipped by path rather than imported — `packages/core/src/skills/bundled/**`, prompts, templates, vendored binaries                                                                                                         |

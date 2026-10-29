@@ -61,6 +61,7 @@ class MockStdin extends EventEmitter {
   override removeListener = super.removeListener;
   write = vi.fn();
   resume = vi.fn();
+  pause = vi.fn();
 
   private isLegacy = false;
 

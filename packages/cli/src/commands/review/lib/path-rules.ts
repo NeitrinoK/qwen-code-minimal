@@ -196,9 +196,7 @@ A finding that a method "can no longer be inlined" needs the **dynamic** tier â€
  * directory and a flat-layout RFC through.
  *
  * `releases?` is here for the same reason `changelogs?` is: per-version history,
- * not a contract. This repository ships one (`packages/sdk-java/qwencode/RELEASE.md`)
- * inside a governed location, so the member has a live trigger, not a
- * hypothetical one.
+ * not a contract.
  */
 const NON_CONTRACT_GENRE =
   'designs?|plans?|rfcs?|proposals?|adrs?|changelogs?|releases?';

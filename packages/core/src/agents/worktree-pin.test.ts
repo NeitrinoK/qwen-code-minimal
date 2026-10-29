@@ -29,9 +29,9 @@ vi.mock('../services/gitWorktreeService.js', async (importOriginal) => {
     await importOriginal<typeof import('../services/gitWorktreeService.js')>();
   return {
     ...actual,
-    GitWorktreeService: vi
-      .fn()
-      .mockImplementation(() => stubs.current as unknown),
+    GitWorktreeService: vi.fn().mockImplementation(function () {
+      return stubs.current as unknown;
+    }),
   };
 });
 

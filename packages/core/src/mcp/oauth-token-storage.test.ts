@@ -65,7 +65,9 @@ const mockHybridTokenStorage = {
   getAllCredentials: vi.fn(),
 };
 vi.mock('./token-storage/hybrid-token-storage.js', () => ({
-  HybridTokenStorage: vi.fn(() => mockHybridTokenStorage),
+  HybridTokenStorage: vi.fn(function () {
+    return mockHybridTokenStorage;
+  }),
 }));
 
 const ONE_HR_MS = 3600000;

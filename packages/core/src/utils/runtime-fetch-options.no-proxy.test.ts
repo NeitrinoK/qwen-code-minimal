@@ -79,12 +79,17 @@ describe('shared proxy dispatcher NO_PROXY behavior', () => {
 
       const originPort = (origin.address() as AddressInfo).port;
       const proxyPort = (proxy.address() as AddressInfo).port;
+      // The dispatcher takes the NO_PROXY list as an explicit argument (Config
+      // merges settings + the NO_PROXY/no_proxy env var into it); it does not
+      // read process.env itself. Set the env var for parity and pass the same
+      // value through so a matching entry bypasses the proxy.
       process.env[noProxyKey] = '127.0.0.1';
       let dispatcher: Dispatcher | undefined;
 
       try {
         dispatcher = getOrCreateSharedDispatcher(
           `http://127.0.0.1:${proxyPort}`,
+          [process.env[noProxyKey] as string],
         );
         const response = await undiciFetch(
           `http://127.0.0.1:${originPort}/v1/chat/completions`,

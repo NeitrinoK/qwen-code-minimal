@@ -18,9 +18,11 @@ vi.mock('google-auth-library', async (importOriginal) => {
   const actual = await importOriginal<typeof import('google-auth-library')>();
   return {
     ...actual,
-    GoogleAuth: vi.fn().mockImplementation(() => ({
-      getClient: mockGetClient,
-    })),
+    GoogleAuth: vi.fn().mockImplementation(function () {
+      return {
+        getClient: mockGetClient,
+      };
+    }),
   };
 });
 

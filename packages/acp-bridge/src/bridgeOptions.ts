@@ -848,8 +848,7 @@ export type LiveSpeakToUserHandler = (
   info: LiveSpeakToUserInfo,
 ) => Promise<void | boolean>;
 
-// Canonical set — cli channel-delivery-ipc.ts and bridgeClient.ts import this;
-// sdk-typescript events.ts carries an independent copy with a cross-check test.
+// Canonical set — cli channel-delivery-ipc.ts and bridgeClient.ts import this.
 export type ChannelDeliveryErrorCode =
   | 'channel_worker_unavailable'
   | 'channel_delivery_timeout'

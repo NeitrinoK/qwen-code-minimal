@@ -20,7 +20,15 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   };
 });
 
-vi.mock('node:fs/promises', { spy: true });
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const realpath = vi.fn(actual.realpath);
+  return {
+    ...actual,
+    default: { ...(actual as { default?: object }).default, realpath },
+    realpath,
+  };
+});
 
 import type { FileSystemService } from '@qwen-code/qwen-code-core';
 import { AcpFileSystemService } from './filesystem.js';

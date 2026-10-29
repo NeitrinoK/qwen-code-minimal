@@ -1,135 +1,135 @@
-# AutoSkill：自动技能提炼系统设计文档
+# AutoSkill: Automatic Skill Extraction System Design Document
 
-## 概述
+## Overview
 
-本文档描述在 QwenCode 现有 Memory-Dream 架构基础上，增加 **AutoSkill** 能力的设计方案。
+This document describes the design for adding an **AutoSkill** capability on top of QwenCode's existing Memory-Dream architecture.
 
-AutoSkill 是一种**程序性记忆自动提炼机制**：当 agent 完成了一个工具调用密集型任务后，系统在后台悄悄评估本次对话中是否存在值得复用的操作流程，并将其自动保存为项目级 skill。
+AutoSkill is a **procedural-memory auto-extraction mechanism**: after the agent completes a tool-call-intensive task, the system quietly evaluates in the background whether the current conversation contains a reusable workflow, and automatically saves it as a project-level skill.
 
-### 与 Memory Extract 的定位差异
+### How It Differs in Scope from Memory Extract
 
-| 维度         | Memory Extract                   | AutoSkill                      |
-| ------------ | -------------------------------- | ------------------------------ |
-| **记忆类型** | 陈述性记忆（用户是谁、项目背景） | 程序性记忆（如何做某类任务）   |
-| **触发时机** | 每次会话结束后                   | 会话内工具调用达到阈值         |
-| **写入目标** | `${projectRoot}/.qwen/memory/`   | `${projectRoot}/.qwen/skills/` |
-| **内容性质** | 用户偏好、项目上下文、反馈规则   | 可复用的操作步骤、最佳实践     |
-| **生命周期** | Dream 定期整合/修剪              | 按需更新，由 review agent 维护 |
-
----
-
-## 核心设计原则
-
-1. **无专用写入工具**：skill review agent 直接使用通用的 `read_file`、`write_file`、`edit` 工具操作 `.qwen/skills/`，不引入 `skill_manage` 专用工具。主会话同理——用户若要手动维护 skill，也使用相同的通用工具。
-2. **技能变动检测代替工具计数重置**：参照 memory extract 检测 `memory_tool` 调用的方式，系统检测主会话中是否有任何写操作落在 `.qwen/skills/` 目录下。若有，说明用户本轮已主动操作 skill，session 结束时跳过自动 skill review。
-3. **`auto-skill` 标识保护用户创建的 skill**：review agent 创建的 skill 在 YAML frontmatter 中必须包含 `source: auto-skill` 标记。skill review agent 只能修改带有此标记的 skill，不得触碰用户手工创建的 skill。
-4. **工具调用密度触发**：仅当本次会话内工具调用累计 ≥ 20 次才触发，确保只在真正复杂的任务后提炼。
-5. **写保护边界明确**：review agent 的权限管理器将 `write_file`、`edit` 限制在 `${projectRoot}/.qwen/skills/` 内，不能触碰 user / extension / bundled 层。
-6. **最大保留 Hermes 核心 prompt**：review agent 使用的提示语直接移植自 Hermes `_SKILL_REVIEW_PROMPT`，只做最小化适配。
+| Dimension          | Memory Extract                                           | AutoSkill                                           |
+| ------------------ | -------------------------------------------------------- | --------------------------------------------------- |
+| **Memory type**    | Declarative memory (who the user is, project background) | Procedural memory (how to perform a class of tasks) |
+| **Trigger timing** | After every session ends                                 | When in-session tool calls reach a threshold        |
+| **Write target**   | `${projectRoot}/.qwen/memory/`                           | `${projectRoot}/.qwen/skills/`                      |
+| **Content nature** | User preferences, project context, feedback rules        | Reusable operational steps, best practices          |
+| **Lifecycle**      | Periodically consolidated/pruned by Dream                | Updated on demand, maintained by the review agent   |
 
 ---
 
-## 架构变更
+## Core Design Principles
 
-### 1. 计数器：`toolCallCount` 与技能变动检测
+1. **No dedicated write tool**: the skill review agent directly uses the generic `read_file`, `write_file`, and `edit` tools to operate on `.qwen/skills/`, without introducing a dedicated `skill_manage` tool. The same applies to the main session—if the user wants to manually maintain skills, they also use the same generic tools.
+2. **Skill-change detection instead of tool-count reset**: following the way memory extract detects `memory_tool` calls, the system detects whether any write operation in the main session lands under the `.qwen/skills/` directory. If so, it means the user has already actively operated on skills this round, and the automatic skill review is skipped when the session ends.
+3. **`auto-skill` marker protects user-created skills**: skills created by the review agent must include a `source: auto-skill` marker in their YAML frontmatter. The skill review agent may only modify skills carrying this marker, and must not touch user-handcrafted skills.
+4. **Triggered by tool-call density**: triggered only when the cumulative tool calls within the session reach ≥ 20, ensuring extraction happens only after genuinely complex tasks.
+5. **Clear write-protection boundary**: the review agent's permission manager confines `write_file` and `edit` to within `${projectRoot}/.qwen/skills/`, and cannot touch the user / extension / bundled layers.
+6. **Preserve the Hermes core prompt as much as possible**: the prompt used by the review agent is ported directly from Hermes's `_SKILL_REVIEW_PROMPT`, with only minimal adaptation.
 
-在会话状态中维护两个并行追踪量：
+---
 
-**工具调用计数器**（决定是否触发 skill review）：
+## Architecture Changes
+
+### 1. Counter: `toolCallCount` and Skill-Change Detection
+
+Maintain two parallel tracking quantities in the session state:
+
+**Tool-call counter** (decides whether to trigger skill review):
 
 ```
-会话启动
+session start
   toolCallCount = 0
 
-每次工具调用完成
+each tool call completes
   toolCallCount += 1
 
-会话结束
-  if (toolCallCount >= AUTO_SKILL_THRESHOLD):  // 默认 20
-    检查 skillsModifiedInSession
-    ├─ true  → skip（本轮已手动操作 skill，无需自动 review）
+session end
+  if (toolCallCount >= AUTO_SKILL_THRESHOLD):  // default 20
+    check skillsModifiedInSession
+    ├─ true  → skip (skill already manually operated this round, no auto review needed)
     └─ false → scheduleSkillReview()
 ```
 
-**技能变动检测**（代替原来的 `skill_manage` 调用重置）：
+**Skill-change detection** (replaces the old `skill_manage` call reset):
 
 ```
-每次工具调用完成
-  if (工具调用的目标路径在 ${projectRoot}/.qwen/skills/ 下):
+each tool call completes
+  if (the tool call's target path is under ${projectRoot}/.qwen/skills/):
     skillsModifiedInSession = true
 ```
 
-检测逻辑：扫描工具调用结果中涉及的文件路径，判断是否落在 skills 目录下。具体实现参照 `historyCallsSkillManage()` 的模式——遍历 `history` 中的 tool result，提取 `write_file`、`edit` 等写操作的目标路径进行前缀匹配。
+Detection logic: scan the file paths involved in the tool-call results and determine whether they land under the skills directory. The concrete implementation follows the pattern of `historyCallsSkillManage()`—iterate over the tool results in `history`, extract the target paths of write operations such as `write_file` and `edit`, and perform prefix matching.
 
-> **为何用技能变动检测而非工具名检测？**
-> 不再有专用的 `skill_manage` 工具，主会话和 review agent 都使用通用的 `write_file`/`edit`。因此检测维度从"是否调用了某个专用工具"转为"是否有写操作落在 `.qwen/skills/` 目录"，语义更准确：只要用户本轮已主动操作过 skill 文件，就跳过自动 review。
+> **Why skill-change detection instead of tool-name detection?**
+> There is no longer a dedicated `skill_manage` tool; both the main session and the review agent use the generic `write_file`/`edit`. Therefore the detection dimension shifts from "was a particular dedicated tool called" to "is there a write operation landing in the `.qwen/skills/` directory", which is semantically more accurate: as long as the user has already actively operated on skill files this round, the automatic review is skipped.
 
-> **为何用工具调用次数而非对话轮次？**
-> 工具调用次数反映任务复杂度——一个用户消息可能触发 1 次或 30 次工具调用。高工具密度意味着试错、调整策略等行为更多，产生可复用经验的概率也更高。阈值 20 比 Hermes 的 10 更保守，原因是 QwenCode 工具调用粒度通常更细（如逐行 edit）。
+> **Why tool-call count instead of conversation turns?**
+> Tool-call count reflects task complexity—a single user message may trigger 1 or 30 tool calls. High tool density means more behaviors such as trial-and-error and strategy adjustment, and a higher probability of producing reusable experience. The threshold of 20 is more conservative than Hermes's 10, because QwenCode's tool-call granularity is usually finer (e.g., line-by-line `edit`).
 
-### 2. 调度点
+### 2. Scheduling Point
 
-现有的 `MemoryManager` 调用点（会话结束）作为统一调度入口，扩展为可同时调度 skill review。
+The existing `MemoryManager` call point (session end) serves as the unified scheduling entry, extended to also schedule skill review simultaneously.
 
 ```
-会话结束
-  ├─ scheduleExtract(params)           // 现有逻辑不变
-  └─ scheduleSkillReview(params)       // 新增
-       条件：toolCallCount >= AUTO_SKILL_THRESHOLD
+session end
+  ├─ scheduleExtract(params)           // existing logic unchanged
+  └─ scheduleSkillReview(params)       // new
+       condition: toolCallCount >= AUTO_SKILL_THRESHOLD
              && !skillsModifiedInSession
 ```
 
-extract 和 skill review 各自独立调度，通过 `MemoryManager.track()` 并行执行，互不阻塞。
+extract and skill review are scheduled independently and run in parallel via `MemoryManager.track()`, without blocking each other.
 
-### 3. Skill Review Agent 的工具访问权限
+### 3. Tool Access Permissions of the Skill Review Agent
 
-skill review agent **不使用** `skill_manage` 专用工具，而是直接使用通用文件工具：
+The skill review agent **does not use** the dedicated `skill_manage` tool, but instead directly uses the generic file tools:
 
-| 工具         | 用途                                  | 范围限制                                                                    |
-| ------------ | ------------------------------------- | --------------------------------------------------------------------------- |
-| `read_file`  | 读取现有 skill 内容，检查 frontmatter | 无限制                                                                      |
-| `ls`         | 扫描 `.qwen/skills/` 目录结构         | 无限制                                                                      |
-| `write_file` | 创建新 skill 文件                     | 仅限 `${projectRoot}/.qwen/skills/` 内                                      |
-| `edit`       | 修改已有 skill 内容                   | 仅限 `${projectRoot}/.qwen/skills/` 内，且目标文件须含 `source: auto-skill` |
-| `shell`      | 只读命令（如 `cat`、`find`）          | 仅允许只读命令（Shell AST 静态分析）                                        |
+| Tool         | Purpose                                        | Scope restriction                                                                                       |
+| ------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `read_file`  | Read existing skill content, check frontmatter | None                                                                                                    |
+| `ls`         | Scan the `.qwen/skills/` directory structure   | None                                                                                                    |
+| `write_file` | Create new skill files                         | Limited to within `${projectRoot}/.qwen/skills/`                                                        |
+| `edit`       | Modify existing skill content                  | Limited to within `${projectRoot}/.qwen/skills/`, and the target file must contain `source: auto-skill` |
+| `shell`      | Read-only commands (e.g., `cat`, `find`)       | Only read-only commands allowed (Shell AST static analysis)                                             |
 
-**对 `edit` 的额外约束（`auto-skill` 保护）**：
+**Additional constraint on `edit` (`auto-skill` protection)**:
 
-skill review agent 的权限管理器在执行 `edit` 或 `write_file`（对已有文件的覆盖写）前，读取目标文件的 YAML frontmatter，检查 `source: auto-skill` 字段。若该字段不存在，拒绝写入并返回错误：
+Before executing `edit` or `write_file` (overwriting an existing file), the skill review agent's permission manager reads the target file's YAML frontmatter and checks the `source: auto-skill` field. If this field is absent, it rejects the write and returns an error:
 
 ```
 skill_review_agent: edit is only allowed on skills with 'source: auto-skill' in frontmatter.
 This skill appears to be user-created. Modify it manually or ask the user.
 ```
 
-这一检查在 `createSkillScopedAgentConfig` 的权限层实现，而非仅靠 system prompt，确保即使模型出错也不会覆盖用户手工编写的 skill。
+This check is implemented at the permission layer in `createSkillScopedAgentConfig`, rather than relying solely on the system prompt, ensuring that even if the model makes a mistake it will not overwrite user-handcrafted skills.
 
-**主会话中的工具访问**：主 agent 不限制对 `.qwen/skills/` 的读写——用户可以通过正常的 `write_file`/`edit` 指令管理 skill。此类操作会触发 `skillsModifiedInSession = true`，导致 session 结束时跳过自动 skill review。
+**Tool access in the main session**: the main agent does not restrict reads/writes to `.qwen/skills/`—the user can manage skills via normal `write_file`/`edit` commands. Such operations trigger `skillsModifiedInSession = true`, causing the automatic skill review to be skipped when the session ends.
 
-### 4. 权限沙箱：`SkillScopedPermissionManager`
+### 4. Permission Sandbox: `SkillScopedPermissionManager`
 
-参照 `extractionAgentPlanner.ts` 中的 `createMemoryScopedAgentConfig`，为 skill review agent 创建专用权限范围：
+Following `createMemoryScopedAgentConfig` in `extractionAgentPlanner.ts`, create a dedicated permission scope for the skill review agent:
 
 ```typescript
-// skill review agent 允许的操作
-read_file:    无路径限制（需要读取任意文件来了解项目上下文）
-ls:           无路径限制
-shell:        只读命令（Shell AST 静态分析，复用现有 isShellCommandReadOnlyAST）
-write_file:   仅限 ${projectRoot}/.qwen/skills/ 路径下的文件（创建新 skill）
-edit:         仅限 ${projectRoot}/.qwen/skills/ 内，且目标文件含 source: auto-skill
+// operations the skill review agent is allowed
+read_file:    no path restriction (needs to read arbitrary files to understand project context)
+ls:           no path restriction
+shell:        read-only commands (Shell AST static analysis, reusing the existing isShellCommandReadOnlyAST)
+write_file:   only files under the ${projectRoot}/.qwen/skills/ path (create new skill)
+edit:         only within ${projectRoot}/.qwen/skills/, and the target file contains source: auto-skill
 ```
 
-**`auto-skill` 保护的实现层次**：
+**Implementation layers of `auto-skill` protection**:
 
-1. **权限管理器层**（硬约束）：`edit` 前读取 frontmatter，不含 `source: auto-skill` 则拒绝
-2. **System prompt 层**（软约束）：明确告知 agent 只能修改带有 `source: auto-skill` 标记的 skill
-3. **双重保障**：即使 system prompt 约束被绕过，权限管理器也会拦截
+1. **Permission-manager layer** (hard constraint): read frontmatter before `edit`; reject if `source: auto-skill` is absent
+2. **System-prompt layer** (soft constraint): explicitly tell the agent it may only modify skills carrying the `source: auto-skill` marker
+3. **Dual safeguard**: even if the system-prompt constraint is bypassed, the permission manager will intercept
 
 ---
 
-## Skill Review Agent 设计
+## Skill Review Agent Design
 
-### 触发 prompt（移植自 Hermes，最小化适配）
+### Trigger prompt (ported from Hermes, minimally adapted)
 
 ```
 Review the conversation above and consider saving or updating a skill if appropriate.
@@ -165,36 +165,36 @@ metadata:
 <markdown body with the procedure/approach>
 ```
 
-### Agent 配置
+### Agent Configuration
 
 ```typescript
 {
   name: "managed-skill-extractor",
   tools: [
-    "read_file",   // 读现有 skill 内容，检查 source: auto-skill
-    "ls",          // 扫描 .qwen/skills/ 目录
-    "write_file",  // 创建新 skill 文件（权限管理器限制路径）
-    "edit",        // 修改已有 auto-skill（权限管理器验证 frontmatter）
-    "shell",       // 只读命令（如 find、cat）
+    "read_file",   // read existing skill content, check source: auto-skill
+    "ls",          // scan the .qwen/skills/ directory
+    "write_file",  // create new skill files (path restricted by permission manager)
+    "edit",        // modify existing auto-skill (frontmatter validated by permission manager)
+    "shell",       // read-only commands (e.g., find, cat)
   ],
   permissionManager: createSkillScopedAgentConfig(config, projectRoot),
-  history: sessionHistory,  // 传入完整对话历史快照
+  history: sessionHistory,  // pass in the full conversation history snapshot
 }
 ```
 
 ---
 
-## 与现有 MemoryManager 的集成
+## Integration with the Existing MemoryManager
 
-### `ScheduleSkillReviewParams`（新增类型）
+### `ScheduleSkillReviewParams` (new type)
 
 ```typescript
 export interface ScheduleSkillReviewParams {
   projectRoot: string;
   sessionId: string;
-  history: Content[]; // 完整会话历史快照
-  toolCallCount: number; // 本次会话的工具调用次数
-  skillsModified: boolean; // 本次会话是否有写操作落在 .qwen/skills/
+  history: Content[]; // full session history snapshot
+  toolCallCount: number; // tool-call count for this session
+  skillsModified: boolean; // whether any write operation landed in .qwen/skills/ this session
   config?: Config;
   enabled?: boolean;
   threshold?: number;
@@ -209,137 +209,138 @@ export interface SkillReviewScheduleResult {
 }
 ```
 
-### `MemoryManager.scheduleSkillReview()`（新增方法）
+### `MemoryManager.scheduleSkillReview()` (new method)
 
 ```typescript
 scheduleSkillReview(params: ScheduleSkillReviewParams): SkillReviewScheduleResult {
-  // 1. 配置门控
+  // 1. config gate
   if (params.enabled === false) {
     return { status: 'skipped', skippedReason: 'disabled' };
   }
 
-  // 2. 阈值检查
+  // 2. threshold check
   const threshold = params.threshold ?? AUTO_SKILL_THRESHOLD;
   if (params.toolCallCount < threshold) {
     return { status: 'skipped', skippedReason: 'below_threshold' };
   }
 
-  // 3. 本轮已主动操作 skill，跳过自动 review
+  // 3. skill already actively operated this round, skip auto review
   if (params.skillsModified) {
     return { status: 'skipped', skippedReason: 'skills_modified_in_session' };
   }
 
-  // 4. 独立调度
+  // 4. independent scheduling
   const record = makeTaskRecord('skill-review', params.projectRoot, params.sessionId);
   const promise = this.track(record.id, this.runSkillReview(record, params));
   return { status: 'scheduled', taskId: record.id, promise };
 }
 ```
 
-### 任务类型扩展
+### Task-Type Extension
 
 ```typescript
-// 扩展现有 MemoryTaskRecord.taskType
+// extend the existing MemoryTaskRecord.taskType
 export type MemoryTaskType = 'extract' | 'dream' | 'skill-review';
 
-// 常量
-export const AUTO_SKILL_THRESHOLD = 20; // 工具调用次数阈值
+// constant
+export const AUTO_SKILL_THRESHOLD = 20; // tool-call count threshold
 ```
 
 ---
 
-## 数据流
+## Data Flow
 
 ```
-会话进行中
-  agent 主循环
-    ├─ 每次工具调用 → toolCallCount += 1
-    └─ 若写操作目标路径在 ${projectRoot}/.qwen/skills/ 下
+session in progress
+  agent main loop
+    ├─ each tool call → toolCallCount += 1
+    └─ if a write operation's target path is under ${projectRoot}/.qwen/skills/
          → skillsModifiedInSession = true
 
-会话结束（sessionEnd 事件）
+session end (sessionEnd event)
   ├─ scheduleExtract(params)
-  │     └─ [现有逻辑：fork extraction agent → 写 .qwen/memory/]
+  │     └─ [existing logic: fork extraction agent → write .qwen/memory/]
   │
   └─ toolCallCount >= 20 && !skillsModifiedInSession ?
-       ├─ 否 → skip（密度不足 或 本轮已手动操作 skill）
-       └─ 是 → scheduleSkillReview(params)
-                 └─ 独立 fork skill review agent
+       ├─ no → skip (insufficient density or skill already manually operated this round)
+       └─ yes → scheduleSkillReview(params)
+                 └─ independently fork the skill review agent
                         ↓
-                 skill review agent（max 8 轮，2 min，沙箱权限）
-                 工具：read_file, ls, write_file, edit, shell
-                 传入完整 sessionHistory
+                 skill review agent (max 8 turns, 2 min, sandboxed permissions)
+                 tools: read_file, ls, write_file, edit, shell
+                 pass in the full sessionHistory
                         ↓
-                 模型判断是否有可复用方法
-                 ├─ 有 → 读取已有 skill（检查 source: auto-skill）
-                 │         → write_file 创建新 skill（含 source: auto-skill）
-                 │         → edit 更新已有 auto-skill
-                 │         → SkillManager 缓存失效（notifyChangeListeners）
-                 └─ 无 → "Nothing to save." 结束
+                 model judges whether there is a reusable approach
+                 ├─ yes → read existing skill (check source: auto-skill)
+                 │         → write_file to create a new skill (with source: auto-skill)
+                 │         → edit to update an existing auto-skill
+                 │         → SkillManager cache invalidation (notifyChangeListeners)
+                 └─ no → "Nothing to save." end
 
-下次会话
+
+next session
   SkillManager.listSkills({ level: 'project' })
-  → 扫描 .qwen/skills/ 发现新建 skill
-  → 注入 system prompt 的 <available_skills> 块（Tier 1）
+  → scan .qwen/skills/ and discover the newly created skill
+  → inject into the <available_skills> block of the system prompt (Tier 1)
 ```
 
 ---
 
-## SKILL.md 格式约定（project-level）
+## SKILL.md Format Convention (project-level)
 
-自动提炼的 skill 写入 `${projectRoot}/.qwen/skills/<name>/SKILL.md`，格式与现有 SkillManager 完全兼容：
+Auto-extracted skills are written to `${projectRoot}/.qwen/skills/<name>/SKILL.md`, in a format fully compatible with the existing SkillManager:
 
 ```yaml
 ---
-name: <skill-name> # 必填，小写字母 + 连字符
-description: <description> # 必填，≤ 1024 字符
+name: <skill-name> # required, lowercase letters + hyphens
+description: <description> # required, ≤ 1024 characters
 version: 1.0.0
 metadata:
-  source: auto-skill # 必填（review agent 创建时强制写入）
+  source: auto-skill # required (forcibly written when the review agent creates the skill)
   extracted_at: '2026-04-24T12:00:00Z'
 ---
-# <技能标题>
+# <skill title>
 
-<操作步骤 / 最佳实践 / 注意事项>
+<operational steps / best practices / caveats>
 ```
 
-**`source: auto-skill` 的约束语义**：
+**Constraint semantics of `source: auto-skill`**:
 
-| 标记值       | 创建方       | skill review agent 可修改？ | 用户可修改？ |
-| ------------ | ------------ | --------------------------- | ------------ |
-| `auto-skill` | review agent | ✅ 是                       | ✅ 是        |
-| 无此字段     | 用户手工创建 | ❌ 否（权限管理器拦截）     | ✅ 是        |
+| Marker value | Creator          | Skill review agent can modify?            | User can modify? |
+| ------------ | ---------------- | ----------------------------------------- | ---------------- |
+| `auto-skill` | review agent     | ✅ yes                                    | ✅ yes           |
+| field absent | user-handcrafted | ❌ no (intercepted by permission manager) | ✅ yes           |
 
-用户若将自己创建的 skill 也加上 `source: auto-skill`，即表示允许 review agent 后续自动更新它。
-
----
-
-## 安全考量
-
-| 风险                                 | 缓解措施                                                                                                         |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| 自动提炼覆盖用户精心编写的 skill     | 权限管理器读取 frontmatter，无 `source: auto-skill` 则拒绝 `edit`；system prompt 也明确告知只能改 auto-skill     |
-| skill 无限增长                       | review prompt 明确要求"优先更新已有 skill"；更新已有 skill 优于新建                                              |
-| 写入项目外路径                       | `write_file`/`edit` 权限限制在 `${projectRoot}/.qwen/skills/` 内；`assertRealProjectSkillPath` 拒绝 symlink 穿越 |
-| 提炼出含注入风险的内容               | 复用现有内容安全扫描逻辑                                                                                         |
-| review agent 删除 skill              | review agent 工具集不含删除操作（无 `rm`、无 `shell` 写操作）；system prompt 明确禁止删除                        |
-| 主会话手动操作 skill 后仍触发 review | `skillsModifiedInSession` 检测：主会话有写操作落在 `.qwen/skills/` 则跳过 review                                 |
-| symlink 穿越写入 skills 目录外的文件 | `assertRealProjectSkillPath`（async）：用 `fs.realpath()` 解析真实路径，确认在真实 skills root 内才允许写入      |
+If the user adds `source: auto-skill` to a skill they created themselves, it signals permission for the review agent to automatically update it later.
 
 ---
 
-## 配置项
+## Security Considerations
 
-在 QwenCode config 中新增以下配置项（可选，有默认值）：
+| Risk                                                                    | Mitigation                                                                                                                                                                   |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auto-extraction overwrites a carefully written user skill               | The permission manager reads the frontmatter and rejects `edit` if `source: auto-skill` is absent; the system prompt also explicitly states only auto-skills may be modified |
+| Unbounded skill growth                                                  | The review prompt explicitly requires "prefer updating existing skills"; updating an existing skill is preferred over creating a new one                                     |
+| Writing to paths outside the project                                    | `write_file`/`edit` permissions are limited to within `${projectRoot}/.qwen/skills/`; `assertRealProjectSkillPath` rejects symlink traversal                                 |
+| Extracting content carrying injection risk                              | Reuse the existing content-safety scanning logic                                                                                                                             |
+| The review agent deleting a skill                                       | The review agent's toolset contains no delete operation (no `rm`, no `shell` write operations); the system prompt explicitly forbids deletion                                |
+| Review still triggered after manual skill operation in the main session | `skillsModifiedInSession` detection: if there is a write operation landing in `.qwen/skills/` in the main session, skip the review                                           |
+| Symlink traversal writing to files outside the skills directory         | `assertRealProjectSkillPath` (async): use `fs.realpath()` to resolve the real path and allow the write only after confirming it is within the real skills root               |
+
+---
+
+## Configuration Options
+
+Add the following configuration options to the QwenCode config (optional, with default values):
 
 ```typescript
-// config schema 新增（在 memory 下）
+// new in config schema (under memory)
 memory?: {
-  enableAutoSkill?: boolean;   // 默认 true
+  enableAutoSkill?: boolean;   // default true
 }
 ```
 
-对应 QWEN.md / `~/.qwen/config.json` 配置示例：
+Corresponding QWEN.md / `~/.qwen/config.json` configuration example:
 
 ```json
 {
@@ -351,83 +352,83 @@ memory?: {
 
 ---
 
-## E2E 测试清单
+## E2E Test Checklist
 
-功能实现完成后，按照 `.qwen/skills/e2e-testing/SKILL.md` 的流程，先执行 `npm run build && npm run bundle`，再使用本地构建产物 `node dist/cli.js` 进行端到端验证。
+After the feature is implemented, follow the procedure in `.qwen/skills/e2e-testing/SKILL.md`: first run `npm run build && npm run bundle`, then use the local build artifact `node dist/cli.js` for end-to-end verification.
 
-### 1. 低工具调用密度不触发
+### 1. Low tool-call density does not trigger
 
-- 使用临时项目目录运行 headless 模式。
-- 配置 `memory.enableAutoSkill: true`。
-- 执行一个只需要少量工具调用的简单任务并正常结束会话。
-- 断言 `.qwen/skills/` 未新增 `source: auto-skill` skill；JSON 流中不应出现对 `.qwen/skills/` 的写操作。
+- Run headless mode using a temporary project directory.
+- Configure `memory.enableAutoSkill: true`.
+- Execute a simple task that requires only a few tool calls and end the session normally.
+- Assert that `.qwen/skills/` has no newly added `source: auto-skill` skill; the JSON stream should contain no write operations to `.qwen/skills/`.
 
-### 2. 达到阈值后触发 skill review
+### 2. Skill review triggers after the threshold is reached
 
-- 使用临时项目目录运行 headless 模式（`AUTO_SKILL_THRESHOLD` 硬编码为 20，可在测试夹具中调低）。
-- 发送一个需要多次工具调用并包含可复用流程的任务。
-- 断言会话结束后调度了 skill review；若模型判断值得保存，`.qwen/skills/<name>/SKILL.md` 被创建，且 frontmatter 包含 `source: auto-skill`。
-- 若模型判断 `Nothing to save.`，断言流程正常结束且没有权限错误。
+- Run headless mode using a temporary project directory (`AUTO_SKILL_THRESHOLD` is hardcoded to 20; it can be lowered in the test fixture).
+- Send a task that requires multiple tool calls and contains a reusable workflow.
+- Assert that a skill review is scheduled after the session ends; if the model judges it worth saving, `.qwen/skills/<name>/SKILL.md` is created and the frontmatter contains `source: auto-skill`.
+- If the model judges `Nothing to save.`, assert that the flow ends normally with no permission errors.
 
-### 3. 主会话操作 skill 后跳过 review
+### 3. Skip review after the main session operates on a skill
 
-- 构造一次会话，在工具调用达到阈值的同时，通过 `write_file` 或 `edit` 写入 `.qwen/skills/` 下的文件（模拟用户手动管理 skill）。
-- 断言 session 结束时 `skillsModifiedInSession = true`，`scheduleSkillReview` 返回 `skippedReason: 'skills_modified_in_session'`。
-- 断言不会启动 review agent，避免重复写入。
+- Construct a session where, at the same time tool calls reach the threshold, a file under `.qwen/skills/` is written via `write_file` or `edit` (simulating the user manually managing skills).
+- Assert that at session end `skillsModifiedInSession = true` and `scheduleSkillReview` returns `skippedReason: 'skills_modified_in_session'`.
+- Assert that the review agent is not started, avoiding duplicate writes.
 
-### 4. 写保护只允许 project-level skills
+### 4. Write protection allows only project-level skills
 
-- 通过 skill review agent 尝试写入项目外路径、user-level skill 路径或 bundled skill 路径。
-- 断言写入被拒绝，错误信息指向只能写入 `${projectRoot}/.qwen/skills/`。
-- 断言允许写入 `${projectRoot}/.qwen/skills/<name>/SKILL.md`。
+- Through the skill review agent, attempt to write to a path outside the project, a user-level skill path, or a bundled skill path.
+- Assert that the write is rejected and the error message points to only being able to write to `${projectRoot}/.qwen/skills/`.
+- Assert that writing to `${projectRoot}/.qwen/skills/<name>/SKILL.md` is allowed.
 
-### 5. `auto-skill` 标识保护用户创建的 skill
+### 5. `auto-skill` marker protects user-created skills
 
-- 在 `.qwen/skills/` 中预置一个无 `source: auto-skill` 的用户创建 skill。
-- 触发 skill review agent 并引导模型尝试修改该 skill。
-- 断言写入被权限管理器拒绝，错误信息说明该 skill 不是 auto-skill。
-- 断言同目录下带有 `source: auto-skill` 的 skill 可以正常更新。
+- Pre-place a user-created skill without `source: auto-skill` in `.qwen/skills/`.
+- Trigger the skill review agent and steer the model to attempt to modify that skill.
+- Assert that the write is rejected by the permission manager, with an error message explaining that the skill is not an auto-skill.
+- Assert that a skill with `source: auto-skill` in the same directory can be updated normally.
 
-### 6. symlink 穿越被拒绝
+### 6. Symlink traversal is rejected
 
-- 在 `.qwen/skills/` 下创建一个指向项目外目录的 symlink。
-- 触发 skill review agent 尝试写入该 symlink 路径。
-- 断言 `assertRealProjectSkillPath` 拒绝写入，返回 `symlink traversal detected` 错误。
+- Create a symlink under `.qwen/skills/` pointing to a directory outside the project.
+- Trigger the skill review agent to attempt to write to that symlink path.
+- Assert that `assertRealProjectSkillPath` rejects the write and returns a `symlink traversal detected` error.
 
-### 7. 配置开关生效
+### 7. Config switch takes effect
 
-- 配置 `memory.enableAutoSkill: false`，即使工具调用次数超过阈值也不触发。
-- 验证默认开启时（`enableAutoSkill` 未配置或为 `true`），工具调用达到阈值后正常触发。
+- Configure `memory.enableAutoSkill: false`; it does not trigger even when the tool-call count exceeds the threshold.
+- Verify that when enabled by default (`enableAutoSkill` unconfigured or `true`), it triggers normally once tool calls reach the threshold.
 
-### 8. 本地构建产物验证
+### 8. Local build artifact verification
 
-- 按 e2e-testing skill 使用 headless JSON 输出：
-  `node dist/cli.js "<prompt>" --approval-mode yolo --output-format json 2>/dev/null`。
-- 必要时加 `--openai-logging --openai-logging-dir <tmp-dir>` 检查请求体中的工具 schema、prompt 和权限配置。
-- 对涉及 TUI 或 sessionEnd 可见状态的场景，使用 tmux interactive 流程捕获最终输出。
+- Following the e2e-testing skill, use headless JSON output:
+  `node dist/cli.js "<prompt>" --approval-mode yolo --output-format json 2>/dev/null`.
+- When necessary, add `--openai-logging --openai-logging-dir <tmp-dir>` to inspect the tool schema, prompt, and permission configuration in the request body.
+- For scenarios involving TUI or sessionEnd-visible state, use the tmux interactive flow to capture the final output.
 
-## 与现有系统的关系
+## Relationship to the Existing System
 
 ```
-现有 MemoryManager
-  ├─ scheduleExtract()       ← 不变
-  ├─ scheduleDream()         ← 不变
-  ├─ recall()                ← 不变
-  ├─ forget()                ← 不变
-  └─ scheduleSkillReview()   ← 新增（本文档）
+existing MemoryManager
+  ├─ scheduleExtract()       ← unchanged
+  ├─ scheduleDream()         ← unchanged
+  ├─ recall()                ← unchanged
+  ├─ forget()                ← unchanged
+  └─ scheduleSkillReview()   ← new (this document)
 
-现有 SkillManager
-  ├─ listSkills()            ← 不变（自动发现 .qwen/skills/ 下新增文件）
-  └─ loadSkill()             ← 不变
+existing SkillManager
+  ├─ listSkills()            ← unchanged (auto-discovers new files under .qwen/skills/)
+  └─ loadSkill()             ← unchanged
 
-现有文件工具（read_file / write_file / edit）
-  ├─ 主会话中：用户可通过这些工具手动管理 skill
-  │   └─ 写操作落在 .qwen/skills/ → skillsModifiedInSession = true
-  └─ skill review agent 中：直接用于创建/更新 auto-skill
-      └─ 权限管理器限制路径 + 验证 source: auto-skill
+existing file tools (read_file / write_file / edit)
+  ├─ in the main session: the user can manually manage skills via these tools
+  │   └─ write operation lands in .qwen/skills/ → skillsModifiedInSession = true
+  └─ in the skill review agent: used directly to create/update auto-skill
+      └─ permission manager restricts the path + validates source: auto-skill
 
-触发点（现有 sessionEnd hook）
-  └─ 同时调用 scheduleExtract + scheduleSkillReview（条件满足时）
+trigger point (existing sessionEnd hook)
+  └─ calls scheduleExtract + scheduleSkillReview simultaneously (when conditions are met)
 ```
 
-SkillManager 的读取侧（`listSkills`、`loadSkill`）完全不需要修改——review agent 写入 `${projectRoot}/.qwen/skills/` 后，`SkillManager` 通过现有的 `chokidar` 文件监听自动感知变化，调用 `notifyChangeListeners()` 触发缓存刷新，下次对话自然可以在 system prompt 中看到新 skill。
+The read side of SkillManager (`listSkills`, `loadSkill`) needs no modification at all—after the review agent writes to `${projectRoot}/.qwen/skills/`, `SkillManager` automatically detects the change via its existing `chokidar` file watcher, calls `notifyChangeListeners()` to trigger a cache refresh, and the new skill naturally appears in the system prompt of the next conversation.

@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ideContextStore } from '@qwen-code/qwen-code-core';
 import {
   type DaemonTrustPolicySnapshot,
   readDaemonTrustPolicySnapshot,
@@ -44,7 +43,6 @@ export function createDaemonTrustPolicyMonitor(
   let stopped = false;
   let lastRevision: string | undefined;
   let timer: NodeJS.Timeout | undefined;
-  let unsubscribeIde: (() => void) | undefined;
   let unsubscribeTrustedFolders: (() => void) | undefined;
   let running: Promise<void> | undefined;
 
@@ -91,9 +89,8 @@ export function createDaemonTrustPolicyMonitor(
         return;
       }
       started = true;
-      unsubscribeIde = ideContextStore.subscribe(() => {
-        void requestReconcile('ide');
-      });
+      // IDE integration is removed in this fork; there is no IDE trust store to
+      // subscribe to. Trusted-folder file changes and polling remain the signals.
       unsubscribeTrustedFolders = onTrustedFoldersChanged(() => {
         void requestReconcile('trusted_folders');
       });
@@ -109,7 +106,6 @@ export function createDaemonTrustPolicyMonitor(
       stopped = true;
       pendingReasons.clear();
       if (timer) clearInterval(timer);
-      unsubscribeIde?.();
       unsubscribeTrustedFolders?.();
     },
   };

@@ -102,10 +102,10 @@ const MockedLlmClientClass = vi.hoisted(() =>
 );
 
 const MockedUserPromptEvent = vi.hoisted(() =>
-  vi.fn().mockImplementation(() => {}),
+  vi.fn().mockImplementation(function () {}),
 );
 const MockedApiCancelEvent = vi.hoisted(() =>
-  vi.fn().mockImplementation(() => {}),
+  vi.fn().mockImplementation(function () {}),
 );
 const mockParseAndFormatApiError = vi.hoisted(() =>
   vi.fn(
@@ -118,9 +118,6 @@ const mockRefreshMemoryAfterManagedWrite = vi.hoisted(() => vi.fn());
 const mockRefreshMemoryInstruction = vi.hoisted(() => vi.fn());
 const mockCleanupReviewWorktreeLeases = vi.hoisted(() => vi.fn());
 const mockLogConversationFinishedEvent = vi.hoisted(() => vi.fn());
-const mockEndInteractionSpan = vi.hoisted(() => vi.fn());
-const mockGetActiveInteractionSpan = vi.hoisted(() => vi.fn());
-const mockInteractionSpan = vi.hoisted(() => ({}));
 const mockUseDualOutput = vi.hoisted(() => vi.fn());
 const mockDualOutput = vi.hoisted(() => ({
   startAssistantMessage: vi.fn(),
@@ -156,8 +153,6 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     refreshMemoryInstruction: mockRefreshMemoryInstruction,
     logConversationFinishedEvent: mockLogConversationFinishedEvent,
     finalizeToolResponses: mockFinalizeToolResponses,
-    endInteractionSpan: mockEndInteractionSpan,
-    getActiveInteractionSpan: mockGetActiveInteractionSpan,
   };
 });
 
@@ -239,7 +234,6 @@ describe('useLlmStream', () => {
 
   beforeEach(() => {
     vi.clearAllMocks(); // Clear mocks before each test
-    mockGetActiveInteractionSpan.mockReturnValue(mockInteractionSpan);
     mockRefreshMemoryAfterManagedWrite.mockResolvedValue(false);
     mockRefreshMemoryInstruction.mockResolvedValue(undefined);
     vi.mocked(findLastSafeSplitPoint).mockImplementation(
@@ -262,7 +256,7 @@ describe('useLlmStream', () => {
       model: 'test-model',
       apiKey: 'test-key',
       vertexai: false,
-      authType: AuthType.USE_GEMINI,
+      authType: AuthType.USE_OPENAI,
     };
     mockBackgroundShellRegistry = {
       setNotificationCallback: vi.fn(),
@@ -4752,11 +4746,6 @@ describe('useLlmStream', () => {
     });
     expect(finishTurn).not.toHaveBeenCalled();
     expect(mockSendMessageStream).toHaveBeenCalledTimes(1);
-    expect(mockEndInteractionSpan).toHaveBeenCalledWith('error', {
-      promptId: 'prompt-goal-missing',
-      errorMessage: 'missing Goal tool context',
-      errorType: 'continuation_goal_context_missing',
-    });
   });
 
   it('fails close when a ToolResult batch has a stale Goal context', async () => {
@@ -4902,11 +4891,6 @@ describe('useLlmStream', () => {
     });
     expect(finishTurn).not.toHaveBeenCalled();
     expect(mockSendMessageStream).toHaveBeenCalledTimes(1);
-    expect(mockEndInteractionSpan).toHaveBeenCalledWith('error', {
-      promptId: 'prompt-goal-stale',
-      errorMessage: 'stale Goal tool context',
-      errorType: 'continuation_goal_context_stale',
-    });
   });
 
   it('pauses the Goal when the user cancels part of a Goal tool batch', async () => {
@@ -5034,9 +5018,7 @@ describe('useLlmStream', () => {
 
     // Bind an active Goal turn whose stream schedules the next batch, so the
     // binding is still live when that batch completes. Both tools are
-    // scheduled by the same stream, which is what makes them one batch under
-    // one interaction owner -- a tool from a different owner is peeled off as
-    // a secondary tool long before the cancel branches see the batch.
+    // scheduled by the same stream, which is what makes them one batch.
     mockSendMessageStream.mockReturnValueOnce(
       (async function* () {
         yield {
@@ -6192,13 +6174,10 @@ describe('useLlmStream', () => {
         expect.any(Number),
       );
       expect(mockSendMessageStream).toHaveBeenCalledOnce();
-      expect(mockEndInteractionSpan).toHaveBeenCalledWith('ok', {
-        promptId: 'prompt-goal-complete',
-      });
     },
   );
 
-  it('records the Goal finalization error on the owning interaction', async () => {
+  it('does not call the model again when Goal finalization fails', async () => {
     const permit: GoalTurnPermit = {
       goalId: 'goal-finish-error',
       revision: 1,
@@ -6325,102 +6304,7 @@ describe('useLlmStream', () => {
       ]);
     });
 
-    expect(mockEndInteractionSpan).toHaveBeenCalledWith('error', {
-      promptId: 'prompt-goal-finish-error',
-      errorMessage: 'Goal tool continuation could not finish',
-      errorType: 'continuation_goal_finish_failed',
-    });
     expect(mockSendMessageStream).toHaveBeenCalledOnce();
-  });
-
-  it('does not let an old tool batch end a replacement interaction', async () => {
-    let capturedOnComplete:
-      | ((completedTools: TrackedToolCall[]) => Promise<void>)
-      | null = null;
-    mockUseReactToolScheduler.mockImplementation((onComplete) => {
-      capturedOnComplete = onComplete;
-      return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
-    });
-    const originalOwner = {};
-    const replacementOwner = {};
-    mockGetActiveInteractionSpan.mockReturnValue(originalOwner);
-    const client = new MockedLlmClientClass(mockConfig);
-    const { result } = renderHook(() =>
-      useLlmStream(
-        client,
-        [],
-        mockAddItem,
-        mockConfig,
-        true,
-        mockLoadedSettings,
-        mockOnDebugMessage,
-        mockHandleSlashCommand,
-        false,
-        () => 'vscode' as EditorType,
-        () => {},
-        () => Promise.resolve(),
-        false,
-        () => {},
-        () => {},
-        () => {},
-        () => {},
-        80,
-        24,
-      ),
-    );
-    mockSendMessageStream.mockReturnValueOnce(
-      (async function* () {
-        yield {
-          type: ServerLlmEventType.ToolCallRequest,
-          value: {
-            callId: 'replacement-tool',
-            name: 'testTool',
-            args: {},
-            isClientInitiated: false,
-            prompt_id: 'prompt-replaced',
-          },
-        };
-      })(),
-    );
-
-    await act(async () => {
-      await result.current.submitQuery(
-        'run the tool',
-        SendMessageType.UserQuery,
-        'prompt-replaced',
-      );
-    });
-    await waitFor(() => expect(mockScheduleToolCalls).toHaveBeenCalledOnce());
-    mockGetActiveInteractionSpan.mockReturnValue(replacementOwner);
-
-    await act(async () => {
-      await capturedOnComplete?.([
-        {
-          request: {
-            callId: 'replacement-tool',
-            name: 'testTool',
-            args: {},
-            isClientInitiated: false,
-            prompt_id: 'prompt-replaced',
-          },
-          status: 'cancelled',
-          responseSubmittedToLlm: false,
-          response: {
-            callId: 'replacement-tool',
-            responseParts: [{ text: 'cancelled' }],
-            errorType: undefined,
-          },
-          tool: { displayName: 'TestTool' },
-          invocation: {
-            getDescription: () => 'replacement test',
-          } as unknown as AnyToolInvocation,
-        } as TrackedCancelledToolCall,
-      ]);
-    });
-
-    expect(mockEndInteractionSpan).not.toHaveBeenCalledWith('cancelled', {
-      promptId: 'prompt-replaced',
-    });
   });
 
   it('records tool results with goalContext during a Goal turn', async () => {
@@ -6671,11 +6555,6 @@ describe('useLlmStream', () => {
       parts: responseParts,
     });
     expect(mockSendMessageStream).toHaveBeenCalledOnce();
-    expect(mockEndInteractionSpan).toHaveBeenCalledWith('error', {
-      promptId: 'prompt-id-agent',
-      errorMessage: 'tool continuation capacity exhausted',
-      errorType: 'continuation_capacity_exhausted',
-    });
     act(() => {
       notificationCallback?.(
         'Background agent completed.',
@@ -8616,9 +8495,6 @@ describe('useLlmStream', () => {
       expect(client.addHistory).toHaveBeenCalledWith({
         role: 'user',
         parts: [{ text: 'cancelled' }],
-      });
-      expect(mockEndInteractionSpan).toHaveBeenCalledWith('cancelled', {
-        promptId: 'prompt-id-3',
       });
       // Ensure we do NOT call back to the API after the initial tool request.
       expect(mockSendMessageStream).toHaveBeenCalledOnce();
@@ -12590,9 +12466,6 @@ describe('useLlmStream', () => {
 
       // Verify state is reset
       expect(result.current.streamingState).toBe(StreamingState.Idle);
-      expect(mockEndInteractionSpan).toHaveBeenCalledWith('cancelled', {
-        promptId: 'test-session-id########5',
-      });
     });
 
     it('should call onCancelSubmit handler when cancelOngoingRequest is called', async () => {
@@ -13531,10 +13404,10 @@ describe('useLlmStream', () => {
       const allowInlineModel = (modelId = 'inline-model') => {
         mockConfig.getModel = vi.fn(() => 'session-model');
         mockConfig.getContentGeneratorConfig = vi.fn(
-          () => ({ authType: AuthType.QWEN_OAUTH }) as never,
+          () => ({ authType: AuthType.USE_OPENAI }) as never,
         );
         mockConfig.getAvailableModelsForAuthType = vi.fn(
-          () => [{ id: modelId, authType: AuthType.QWEN_OAUTH }] as never,
+          () => [{ id: modelId, authType: AuthType.USE_OPENAI }] as never,
         );
       };
 
@@ -15549,7 +15422,7 @@ describe('useLlmStream', () => {
     it('should call parseAndFormatApiError with the correct authType on stream initialization failure', async () => {
       // 1. Setup
       const mockError = new Error('Rate limit exceeded');
-      const mockAuthType = AuthType.USE_VERTEX_AI;
+      const mockAuthType = AuthType.USE_OPENAI;
       mockParseAndFormatApiError.mockClear();
       mockSendMessageStream.mockReturnValue(
         (async function* () {
@@ -19100,274 +18973,6 @@ describe('useLlmStream', () => {
       );
     });
 
-    it('continues a deferred main tool batch without leaking its mixed ?btw owner', async () => {
-      const mainOwner = {};
-      const btwOwner = {};
-      const submissionInFlightRef = { current: false };
-      const waitForReservationSettlement = vi.fn().mockResolvedValue(undefined);
-      const goalQueueRef = {
-        current: {
-          peekNextUserBatchKey: () => undefined,
-          submissionInFlightRef,
-          waitForReservationSettlement,
-        },
-      };
-      const ownersByPromptId = new Map<string, object>();
-      mockGetActiveInteractionSpan.mockImplementation((promptId?: string) =>
-        promptId ? ownersByPromptId.get(promptId) : undefined,
-      );
-
-      let resolveMainStream!: () => void;
-      const mainStream = new Promise<void>((resolve) => {
-        resolveMainStream = resolve;
-      });
-      let callCount = 0;
-      let btwPromptId: string | undefined;
-      mockSendMessageStream.mockImplementation((_query, _signal, promptId) => {
-        callCount += 1;
-        if (callCount === 1) {
-          ownersByPromptId.set(promptId, mainOwner);
-          return (async function* () {
-            yield {
-              type: ServerLlmEventType.ToolCallRequest,
-              value: {
-                callId: 'main-tool',
-                name: 'testTool',
-                args: {},
-                isClientInitiated: false,
-                prompt_id: promptId,
-              },
-            };
-            await mainStream;
-          })();
-        }
-        if (callCount > 2) {
-          return (async function* () {})();
-        }
-        btwPromptId = promptId;
-        ownersByPromptId.set(promptId, btwOwner);
-        return (async function* () {
-          yield {
-            type: ServerLlmEventType.ToolCallRequest,
-            value: {
-              callId: 'btw-cancelled-tool',
-              name: 'testTool',
-              args: {},
-              isClientInitiated: false,
-              prompt_id: promptId,
-            },
-          };
-        })();
-      });
-
-      let capturedOnComplete:
-        | ((completedTools: TrackedToolCall[]) => Promise<void>)
-        | undefined;
-      mockUseReactToolScheduler.mockImplementation((onComplete) => {
-        capturedOnComplete = onComplete;
-        return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
-      });
-
-      const client = new MockedLlmClientClass(mockConfig);
-      const { result } = renderHook(() =>
-        useLlmStream(
-          client,
-          [],
-          mockAddItem,
-          mockConfig,
-          true,
-          mockLoadedSettings,
-          mockOnDebugMessage,
-          mockHandleSlashCommand,
-          false,
-          () => 'vscode' as EditorType,
-          () => {},
-          () => Promise.resolve(),
-          false,
-          () => {},
-          () => {},
-          () => {},
-          () => {},
-          80,
-          24,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          goalQueueRef,
-        ),
-      );
-
-      let mainRequest!: Promise<void>;
-      await act(async () => {
-        mainRequest = result.current.submitQuery(
-          'Main query',
-          SendMessageType.UserQuery,
-          'main-prompt',
-          { submittedPrompt: 'Main query' },
-        );
-      });
-      await waitFor(() =>
-        expect(result.current.streamingState).toBe(StreamingState.Responding),
-      );
-
-      await act(async () => {
-        await result.current.submitQuery(
-          '?btw use a tool',
-          SendMessageType.UserQuery,
-          undefined,
-          { submittedPrompt: '?btw use a tool' },
-        );
-      });
-      expect(btwPromptId).toBeDefined();
-      expect(mockScheduleToolCalls).toHaveBeenCalledWith(
-        [expect.objectContaining({ callId: 'btw-cancelled-tool' })],
-        expect.any(AbortSignal),
-        undefined,
-      );
-
-      const makeCancelledToolCall = (
-        callId: string,
-        promptId: string | undefined,
-      ) =>
-        ({
-          request: {
-            callId,
-            name: 'testTool',
-            args: {},
-            isClientInitiated: false,
-            prompt_id: promptId,
-          },
-          status: 'cancelled',
-          response: {
-            callId,
-            responseParts: [{ text: 'cancelled' }],
-            errorType: undefined,
-          },
-          responseSubmittedToLlm: false,
-          tool: { displayName: 'mock tool' },
-          invocation: {
-            getDescription: () => 'Mock description',
-          } as unknown as AnyToolInvocation,
-        }) as TrackedCancelledToolCall;
-      const mainCompletedToolCall = {
-        ...makeCancelledToolCall('main-tool', 'main-prompt'),
-        status: 'success',
-        response: {
-          callId: 'main-tool',
-          responseParts: [
-            {
-              functionResponse: {
-                id: 'main-tool',
-                name: 'testTool',
-                response: { output: 'done' },
-              },
-            },
-          ],
-          errorType: undefined,
-        },
-      } as unknown as TrackedCompletedToolCall;
-      const btwCancelledToolCall = makeCancelledToolCall(
-        'btw-cancelled-tool',
-        btwPromptId,
-      );
-
-      await act(async () => {
-        await capturedOnComplete?.([
-          mainCompletedToolCall,
-          btwCancelledToolCall,
-        ]);
-      });
-      expect(mockEndInteractionSpan).not.toHaveBeenCalledWith('cancelled', {
-        promptId: btwPromptId,
-      });
-      expect(mockEndInteractionSpan).not.toHaveBeenCalledWith('cancelled', {
-        promptId: 'main-prompt',
-      });
-      expect(submissionInFlightRef.current).toBe(true);
-
-      let resolveMemoryRefresh!: (value: boolean) => void;
-      mockRefreshMemoryAfterManagedWrite.mockReturnValueOnce(
-        new Promise<boolean>((resolve) => {
-          resolveMemoryRefresh = resolve;
-        }),
-      );
-      act(() => {
-        resolveMainStream();
-      });
-      await waitFor(() =>
-        expect(mockRefreshMemoryAfterManagedWrite).toHaveBeenCalledOnce(),
-      );
-      await act(async () => {
-        await result.current.submitQuery(
-          'Too early',
-          SendMessageType.UserQuery,
-          'too-early-prompt',
-        );
-      });
-      expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
-      let resolveToolReservation!: () => void;
-      waitForReservationSettlement.mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            resolveToolReservation = resolve;
-          }),
-      );
-      act(() => {
-        resolveMemoryRefresh(false);
-      });
-      await waitFor(() =>
-        expect(waitForReservationSettlement).toHaveBeenCalledTimes(3),
-      );
-      await act(async () => {
-        await result.current.submitQuery(
-          '?btw still too early',
-          SendMessageType.UserQuery,
-          'btw-too-early-prompt',
-        );
-      });
-      expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
-      expect(submissionInFlightRef.current).toBe(true);
-      act(() => {
-        resolveToolReservation();
-      });
-      await act(async () => {
-        await mainRequest;
-      });
-
-      expect(mockEndInteractionSpan).toHaveBeenCalledWith('cancelled', {
-        promptId: btwPromptId,
-      });
-      expect(mockEndInteractionSpan).not.toHaveBeenCalledWith('cancelled', {
-        promptId: 'main-prompt',
-      });
-      await waitFor(() =>
-        expect(mockSendMessageStream).toHaveBeenCalledTimes(3),
-      );
-      expect(mockSendMessageStream.mock.calls[2]?.[2]).toBe('main-prompt');
-      expect(mockSendMessageStream.mock.calls[2]?.[3]).toEqual(
-        expect.objectContaining({ type: SendMessageType.ToolResult }),
-      );
-      expect(mockSendMessageStream.mock.calls[2]?.[0]).toEqual([
-        expect.objectContaining({
-          functionResponse: expect.objectContaining({ id: 'main-tool' }),
-        }),
-      ]);
-      await act(async () => {
-        await result.current.submitQuery(
-          'After drain',
-          SendMessageType.UserQuery,
-          'after-drain-prompt',
-        );
-      });
-      expect(mockSendMessageStream).toHaveBeenCalledTimes(4);
-      expect(mockSendMessageStream.mock.calls[3]?.[2]).toBe(
-        'after-drain-prompt',
-      );
-      expect(submissionInFlightRef.current).toBe(false);
-    });
-
     it.each([
       'drain-first',
       'continuation-first',
@@ -19376,7 +18981,6 @@ describe('useLlmStream', () => {
     ] as const)(
       'keeps the submission lease while a continuation starts during a deferred drain (%s)',
       async (completionOrder) => {
-        const owner = {};
         const submissionInFlightRef = { current: false };
         let resolveConcurrentAdmission!: () => void;
         const concurrentAdmission = new Promise<void>((resolve) => {
@@ -19400,7 +19004,6 @@ describe('useLlmStream', () => {
             waitForReservationSettlement,
           },
         };
-        mockGetActiveInteractionSpan.mockReturnValue(owner);
 
         let resolveMainStream!: () => void;
         const mainStream = new Promise<void>((resolve) => {

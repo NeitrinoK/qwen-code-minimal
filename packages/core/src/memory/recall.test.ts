@@ -1820,12 +1820,8 @@ describe('auto-memory relevant recall', () => {
 
   it('keeps active tool schemas out of heuristic fallback', async () => {
     mockSnapshot(activeToolDocs);
-    let modelCandidates: ScannedAutoMemoryDocument[] = [];
-    vi.mocked(selectRelevantAutoMemoryDocumentsByModel).mockImplementation(
-      async (_config, _query, candidates) => {
-        modelCandidates = candidates;
-        throw new Error('selector failed');
-      },
+    vi.mocked(selectRelevantAutoMemoryDocumentsByModel).mockRejectedValue(
+      new Error('selector failed'),
     );
 
     const result = await resolveRelevantAutoMemoryPromptForQuery(
@@ -1834,12 +1830,6 @@ describe('auto-memory relevant recall', () => {
       { config, recentTools: ['mcp__ata__article-list-query'] },
     );
 
-    expect(modelCandidates.map((doc) => doc.filePath)).not.toContain(
-      '/tmp/ata-tool.md',
-    );
-    expect(modelCandidates.map((doc) => doc.filePath)).toContain(
-      '/tmp/ata-gotcha.md',
-    );
     expect(result.strategy).toBe('heuristic');
     expect(result.selectedDocs.map((doc) => doc.filePath)).not.toContain(
       '/tmp/ata-tool.md',

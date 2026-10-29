@@ -94,7 +94,7 @@ describe('learnCommand', () => {
     );
   });
 
-  it.each([AuthType.USE_OPENAI, AuthType.QWEN_OAUTH])(
+  it.each([AuthType.USE_OPENAI])(
     'submits a native video part through %s',
     async (authType) => {
       const ctx = createMockCommandContext({
@@ -281,8 +281,9 @@ describe('learnCommand', () => {
   });
 
   it.each([
+    // The fork is OpenAI-only, so USE_OPENAI is always a video-capable transport;
+    // rejection now hinges solely on the model lacking the video input modality.
     ['a text-only model', AuthType.USE_OPENAI, false],
-    ['a non-OpenAI-compatible provider', AuthType.USE_ANTHROPIC, true],
   ])('rejects native video input for %s', async (_label, authType, video) => {
     const ctx = createMockCommandContext({
       services: {

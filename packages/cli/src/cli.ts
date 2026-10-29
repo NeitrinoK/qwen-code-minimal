@@ -24,7 +24,6 @@ import {
   TOP_LEVEL_USAGE,
 } from './config/top-level-options.js';
 import { clearInheritedPeerMessagingEnv } from './peerMessaging/env.js';
-import { normalizeServeFastPathArgv } from './utils/serve-fast-path-argv.js';
 import { initStartupProfiler } from './utils/startupProfiler.js';
 import { initCpuProfiler } from './utils/cpuProfiler.js';
 import {
@@ -37,24 +36,12 @@ import {
 initStartupProfiler();
 initCpuProfiler();
 
-type BootstrapRoute =
-  | 'serve'
-  | 'mcp'
-  | 'managed-runtime-worker'
-  | 'session-send-mcp'
-  | 'help'
-  | 'version'
-  | 'default';
+type BootstrapRoute = 'mcp' | 'help' | 'version' | 'default';
 
 export const TOP_LEVEL_COMMANDS = [
   ['agents <command>', 'Session agents: join a coordinator as a runtime'],
   ['auth', 'Configure authentication (removed)'],
-  [
-    'batch <command>',
-    'Run many independent requests through the DashScope Batch API',
-  ],
   ['board <command>', 'Share work with other agents through a board'],
-  ['channel <command>', 'Manage messaging channels (Telegram, Discord, etc.)'],
   ['extensions <command>', 'Manage Qwen Code extensions.'],
   ['hooks', 'Manage Qwen Code hooks (use /hooks in interactive mode).'],
   ['mcp', 'Manage MCP servers'],
@@ -66,12 +53,8 @@ export const TOP_LEVEL_COMMANDS = [
     'sandbox [cmd...]',
     'Inspect the sandbox backend, or run a command inside it',
   ],
-  [
-    'serve',
-    'Run Qwen Code as a local HTTP daemon (Stage 1 experimental: --http-bridge)',
-  ],
+
   ['sessions <command>', 'Manage Qwen Code sessions'],
-  ['update', 'Check for Qwen Code updates and install if available'],
 ] as const;
 
 export const MCP_COMMANDS = [
@@ -125,7 +108,6 @@ VALUE_FLAGS.add('--sandbox-session-id');
 const BASE_VALUE_FLAGS = new Set([
   '--model',
   '-m',
-  '--fallback-model',
   '--prompt',
   '-p',
   '--prompt-interactive',
@@ -340,7 +322,7 @@ function normalizeMcpFastPathArgv(argv: readonly string[]): readonly string[] {
 export function resolveBootstrapRoute(
   rawArgv: readonly string[],
 ): BootstrapRoute {
-  const argv = normalizeServeFastPathArgv(rawArgv);
+  const argv = rawArgv;
 
   // Base-parity version intercept (structural close). Base printed the
   // version for any `-v`/`--version` token its hasFlag scan reached, no
@@ -384,22 +366,8 @@ export function resolveBootstrapRoute(
   }
 
   const firstArg = argv[0];
-  if (firstArg === 'serve') {
-    return 'serve';
-  }
-  // Version-bearing mcp argv never reaches here: the intercept above owns
-  // every exact version token before `--`, and post-`--` tokens are
-  // positional data the fast path persists verbatim.
   if (firstArg === 'mcp') {
     return 'mcp';
-  }
-  if (firstArg === 'managed-runtime-worker') {
-    return 'managed-runtime-worker';
-  }
-  // The daemon spawns `agents session-send-mcp --url <endpoint>` per agent
-  // run; its stdout is an MCP stream, so it skips normal startup entirely.
-  if (firstArg === 'agents' && argv[1] === 'session-send-mcp') {
-    return 'session-send-mcp';
   }
 
   return 'default';
@@ -435,9 +403,7 @@ async function printBootstrapVersion(): Promise<void> {
 }
 
 async function runMcpFastPath(rawArgv: readonly string[]): Promise<void> {
-  const argv: readonly string[] = normalizeMcpFastPathArgv(
-    normalizeServeFastPathArgv(rawArgv),
-  );
+  const argv = normalizeMcpFastPathArgv(rawArgv);
   const hasSubcommand = argv.length > 1 && !argv[1]!.startsWith('-');
   if (!hasSubcommand) {
     printMcpHelp();
@@ -526,90 +492,24 @@ async function parseYargsCommand(
 export async function runCliEntry(
   rawArgv: readonly string[] = process.argv.slice(2),
 ): Promise<void> {
-  // Bundles enter here directly; the npm wrapper dispatches before loading CLI.
-  if (rawArgv.length === 1 && rawArgv[0] === '--workspace-recovery-worker') {
-    const { runWorkspaceRecoveryWorker } = await import(
-      './serve/workspace-recovery-worker.js'
-    );
-    await runWorkspaceRecoveryWorker();
-    return;
-  }
-
   // Before ANY route can start a child: an inherited messaging pair names
   // an ancestor session's inbox plus a token that authenticates to it, and
   // no route here consumes it — a session that binds its own inbox
   // re-exports its own pair from PeerMessaging.start. Leaving it in place
-  // hands the capability to, among others, the npm lifecycle scripts of a
-  // managed update (which spawns with the full environment), letting
-  // third-party code inject into the running session. Same boundary and
-  // same reason as the guard-token scrub below; that one needs a serve
-  // carve-out, this one does not.
+  // hands the capability to any child process, letting third-party code
+  // inject into the running session.
   clearInheritedPeerMessagingEnv();
 
-  const managedUpdateVersion =
-    process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION'];
-  if (managedUpdateVersion) {
-    delete process.env['QWEN_CODE_MANAGED_NPM_UPDATE_VERSION'];
-    delete process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'];
-    const { installManagedNpmUpdate } = await import(
-      './utils/managed-npm-update.js'
-    );
-    await installManagedNpmUpdate(managedUpdateVersion);
-    return;
-  }
-
-  const argv = normalizeServeFastPathArgv(rawArgv);
+  const argv = rawArgv;
   const route = resolveBootstrapRoute(argv);
-  if (route !== 'serve') {
-    // This credential belongs only to `qwen serve`. Scrub it before any other
-    // subcommand handler can start a child process during yargs parsing. The
-    // serve route keeps it until either the fast path or full serve handler
-    // has captured it into daemon-local options.
-    delete process.env['QWEN_CODE_EXTERNAL_TOOL_GUARD_TOKEN'];
-  }
 
   if (route === 'version') {
     await printBootstrapVersion();
     return;
   }
 
-  if (route === 'serve') {
-    const { tryRunServeFastPath } = await import('./serve/fast-path.js');
-    if (await tryRunServeFastPath(argv)) {
-      return;
-    }
-  } else if (route === 'mcp') {
+  if (route === 'mcp') {
     await runMcpFastPath(argv);
-    return;
-  } else if (route === 'managed-runtime-worker') {
-    const containerBoot =
-      argv.length === 3 && argv[1] === '--container-boot' ? argv[2] : undefined;
-    if (argv.length !== 1 && !containerBoot) {
-      writeStderrLine('Managed Runtime worker arguments are invalid.');
-      process.exitCode = 1;
-      return;
-    }
-    const { runManagedRuntimeAttestationWorker } = await import(
-      './serve/managed-runtime-attestation-worker.js'
-    );
-    await runManagedRuntimeAttestationWorker(containerBoot);
-    return;
-  } else if (route === 'session-send-mcp') {
-    // Nothing on this path may write to stdout (the MCP stream) or read
-    // settings: Codex starts MCP servers with a minimal environment.
-    const { readSessionSendMcpUrl } = await import(
-      './commands/agents/session-send-mcp.js'
-    );
-    const url = readSessionSendMcpUrl(argv.slice(2));
-    if (!url) {
-      writeStderrLine('Usage: qwen agents session-send-mcp --url <endpoint>');
-      process.exitCode = 1;
-      return;
-    }
-    const { runSessionSendMcp } = await import(
-      './commands/agents/session-send-mcp-server.js'
-    );
-    await runSessionSendMcp(url);
     return;
   } else if (route === 'help') {
     await printTopLevelHelp();

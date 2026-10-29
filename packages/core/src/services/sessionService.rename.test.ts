@@ -96,6 +96,7 @@ describe('SessionService - rename and custom title', () => {
       );
 
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(getProjectHash).mockReturnValue('test-project-hash');
     vi.mocked(path.join).mockImplementation((...args) => args.join('/'));
     vi.mocked(path.dirname).mockImplementation((p) => {

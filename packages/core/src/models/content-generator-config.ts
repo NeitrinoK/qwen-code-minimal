@@ -74,7 +74,7 @@ export interface AgentContentGeneratorOptions {
  *
  * For cross-provider agents the parent's API key / base URL are invalid,
  * so we resolve credentials from the provider-specific environment
- * variables (e.g. ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL). This mirrors
+ * variables (e.g. OPENAI_API_KEY, OPENAI_BASE_URL). This mirrors
  * what a PTY subprocess does during its own initialization.
  */
 export function buildAgentContentGeneratorConfig(

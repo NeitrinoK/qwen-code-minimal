@@ -190,7 +190,6 @@ const baseParams: ConfigParameters = {
   cwd: '/tmp',
   targetDir: '/tmp',
   debugMode: false,
-  usageStatisticsEnabled: false,
   overrideExtensions: [],
   model: 'test-model',
 };

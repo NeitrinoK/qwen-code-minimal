@@ -27,6 +27,7 @@ function renderWithMockedStats(metrics: SessionMetrics) {
       sessionStartTime: new Date(),
       metrics,
       lastPromptTokenCount: 0,
+      basePromptTokenCount: 0,
       promptCount: 5,
     },
     getPromptCount: () => 5,

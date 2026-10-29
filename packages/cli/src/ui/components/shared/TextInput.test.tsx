@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render } from 'ink-testing-library';
 import { TextInput } from './TextInput.js';
 import { useKeypress } from '../../hooks/useKeypress.js';
@@ -48,13 +48,13 @@ function captureKeypressHandler(): (key: Key) => void {
 }
 
 describe('TextInput', () => {
-  let onChange: ReturnType<typeof vi.fn>;
-  let onSubmit: ReturnType<typeof vi.fn>;
+  let onChange: Mock<(text: string) => void>;
+  let onSubmit: Mock<(text: string) => void>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    onChange = vi.fn();
-    onSubmit = vi.fn();
+    onChange = vi.fn<(text: string) => void>();
+    onSubmit = vi.fn<(text: string) => void>();
   });
 
   describe('multiline mode (height > 1)', () => {

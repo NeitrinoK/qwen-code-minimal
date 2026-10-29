@@ -13,7 +13,29 @@ import path from 'node:path';
 const mockWriteStdoutLine = vi.hoisted(() => vi.fn());
 const mockWriteStderrLine = vi.hoisted(() => vi.fn());
 
-vi.mock('node:fs/promises');
+const { mockFsAccess, mockFsCp, mockFsMkdir, mockFsReaddir, mockFsWriteFile } =
+  vi.hoisted(() => ({
+    mockFsAccess: vi.fn(),
+    mockFsCp: vi.fn(),
+    mockFsMkdir: vi.fn(),
+    mockFsReaddir: vi.fn(),
+    mockFsWriteFile: vi.fn(),
+  }));
+vi.mock('node:fs/promises', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:fs/promises')>(
+      'node:fs/promises',
+    );
+  const mocked = {
+    ...actual,
+    access: mockFsAccess,
+    cp: mockFsCp,
+    mkdir: mockFsMkdir,
+    readdir: mockFsReaddir,
+    writeFile: mockFsWriteFile,
+  };
+  return { ...mocked, default: mocked };
+});
 
 vi.mock('../../utils/stdioHelpers.js', () => ({
   writeStdoutLine: mockWriteStdoutLine,

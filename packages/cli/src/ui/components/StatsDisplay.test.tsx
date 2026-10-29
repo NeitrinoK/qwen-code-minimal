@@ -5,7 +5,16 @@
  */
 
 import { render } from 'ink-testing-library';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  vi,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from 'vitest';
 import { StatsDisplay } from './StatsDisplay.js';
 import * as SessionContext from '../contexts/SessionContext.js';
 import type {
@@ -35,6 +44,20 @@ vi.mock('../contexts/SessionContext.js', async (importOriginal) => {
 
 const useSessionStatsMock = vi.mocked(SessionContext.useSessionStats);
 const originalNoColor = process.env['NO_COLOR'];
+
+beforeAll(() => {
+  // Pin number formatting to en-US so thousands separators are stable across
+  // machine locales (e.g. ru_RU renders a narrow no-break space, not a comma).
+  vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+    this: number,
+  ) {
+    return new Intl.NumberFormat('en-US').format(this);
+  });
+});
+
+afterAll(() => {
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
   delete process.env['NO_COLOR'];

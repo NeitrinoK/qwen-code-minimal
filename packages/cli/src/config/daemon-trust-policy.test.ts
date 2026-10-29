@@ -6,14 +6,21 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
-import { ideContextStore } from '@qwen-code/qwen-code-core';
 import {
   evaluateDaemonWorkspaceTrust,
   readDaemonTrustPolicySnapshot,
 } from './daemon-trust-policy.js';
 import { TrustLevel } from './trustedFolders.js';
 
-vi.mock('node:fs/promises');
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    default: { ...(actual as { default?: object }).default },
+    lstat: vi.fn(),
+    readFile: vi.fn(),
+  };
+});
 vi.mock('./settings.js', () => ({
   getUserSettingsPath: () => '/config/user.json',
   getSystemSettingsPath: () => '/config/system.json',
@@ -46,7 +53,6 @@ function installFiles(files: Record<string, string>): void {
 describe('daemon trust policy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    ideContextStore.clear();
   });
 
   it('uses system folder trust over user', async () => {
@@ -404,23 +410,5 @@ describe('daemon trust policy', () => {
       targetTrusted: true,
       source: 'disabled',
     });
-  });
-
-  it('lets IDE trust resolve the primary before a trusted-folders error', async () => {
-    installFiles({
-      '/config/user.json': JSON.stringify({
-        security: { folderTrust: { enabled: true } },
-      }),
-      '/config/system.json': '{}',
-      '/config/trusted.json': '{bad',
-    });
-    ideContextStore.set({ workspaceState: { isTrusted: true } });
-
-    expect(
-      evaluateDaemonWorkspaceTrust(
-        await readDaemonTrustPolicySnapshot(),
-        process.cwd(),
-      ),
-    ).toMatchObject({ state: 'trusted', source: 'ide' });
   });
 });

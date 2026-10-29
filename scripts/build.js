@@ -25,48 +25,49 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
-// Install if node_modules was removed (e.g. via npm run clean or scripts/clean.js)
+// `npm install -g .` runs this build through the `prepare` lifecycle with
+// `npm_config_global=true` in the environment. That flag leaks into the nested
+// `npm run build --workspace=...` calls below, where npm rejects it with
+// "Workspaces not supported for global packages". Strip the global flags so the
+// per-package builds always run as a normal (local) workspace build.
+const childEnv = { ...process.env };
+delete childEnv['npm_config_global'];
+delete childEnv['npm_config_g'];
+const run = (command) =>
+  execSync(command, { stdio: 'inherit', cwd: root, env: childEnv });
+
+// npm install if node_modules was removed (e.g. via npm run clean or scripts/clean.js)
 if (!existsSync(join(root, 'node_modules'))) {
-  execSync('corepack pnpm install --frozen-lockfile', {
-    stdio: 'inherit',
-    cwd: root,
-  });
+  run('npm install');
 }
 
 // build all workspaces/packages in dependency order
-execSync('npm run generate', { stdio: 'inherit', cwd: root });
+run('npm run generate');
 
-// Select the CLI by path: the repository root has the same package name.
-const cliOnly = process.argv.includes('--cli-only');
-// Mobile MCP has an independent build and was never part of the root build.
-const filter = cliOnly
-  ? '--filter "{./packages/cli}..." --filter @qwen-code/node-repl-mcp --filter @qwen-code/channel-plugin-example'
-  : '--filter "!@qwen-code/mobile-mcp"';
-execSync(`corepack pnpm -r ${filter} run build`, {
-  stdio: 'inherit',
-  cwd: root,
-});
+// Build in dependency order:
+// 1. core (foundation package, includes test-utils)
+// 2. acp-bridge (depends on core - used by cli)
+// 3. cli (depends on core, acp-bridge)
+const buildOrder = ['packages/core', 'packages/acp-bridge', 'packages/cli'];
 
-execSync('node --import tsx/esm scripts/generate-settings-schema.ts', {
-  stdio: 'inherit',
-  cwd: root,
-});
+for (const workspace of buildOrder) {
+  run(`npm run build --workspace=${workspace}`);
+}
+
+// The external-context integration is not an npm workspace, but its compiled
+// modules back the bundled Mem0 server's integration tests, which import them
+// from integrations/external-context/dist.
+run('npx tsc --build integrations/external-context');
 
 // also build container image if sandboxing is enabled
 // skip (-s) npm install + build since we did that above
 try {
-  execSync('node scripts/sandbox_command.js -q', {
-    stdio: 'inherit',
-    cwd: root,
-  });
+  run('node scripts/sandbox_command.js -q');
   if (
     process.env.BUILD_SANDBOX === '1' ||
     process.env.BUILD_SANDBOX === 'true'
   ) {
-    execSync('node scripts/build_sandbox.js -s', {
-      stdio: 'inherit',
-      cwd: root,
-    });
+    run('node scripts/build_sandbox.js -s');
   }
 } catch {
   // ignore

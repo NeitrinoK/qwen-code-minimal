@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Config } from '../config/config.js';
 import { createDebugLogger } from '../utils/debugLogger.js';
 import {
   MAX_USAGE_SCENARIO_CHARS,
+  parseAutoMemoryTopicDocument,
   rereadAutoMemoryDocument,
   sanitizeAutoMemoryPromptField,
   scanAllAutoMemoryTopicDocuments,
@@ -18,7 +20,9 @@ import {
   type MemorySourceStatus,
   type ScannedAutoMemoryDocument,
 } from './scan.js';
+import { getAutoMemoryRoot, getUserAutoMemoryRoot } from './paths.js';
 import { selectRelevantAutoMemoryDocumentsByModel } from './relevanceSelector.js';
+import type { IndexHit, MemorySearchIndex } from './search-index.js';
 import { logMemoryRecall, MemoryRecallEvent } from '../telemetry/index.js';
 import { memoryAge, memoryFreshnessText } from './memoryAge.js';
 import {
@@ -45,6 +49,13 @@ const MAX_DOC_BODY_CHARS = 1_200;
 const MAX_HEURISTIC_QUERY_TOKENS = 64;
 const MAX_MODEL_CANDIDATE_DOCS = 200;
 const RECENT_MODEL_CANDIDATE_RESERVE = 20;
+// Cap on how many indexed memory-doc hits recall loads per query. Downstream
+// selection (model or heuristic) still narrows this to MAX_RELEVANT_DOCS /
+// options.limit — this is just the candidate pool size fed into the
+// selector.
+const MEMORY_INDEX_SEARCH_LIMIT = 20;
+const MAX_TRANSCRIPT_HITS = 3;
+const MAX_TRANSCRIPT_SNIPPET_CHARS = 300;
 const debugLogger = createDebugLogger('AUTO_MEMORY_RECALL');
 
 const ACTIVE_TOOL_USAGE_MEMORY_MARKERS = [
@@ -623,34 +634,217 @@ function logRecallResult(
   );
 }
 
-export async function resolveRelevantAutoMemoryPromptForQuery(
+/**
+ * Best-effort: reach the caller's MemoryManager, reconcile its search index
+ * for `projectRoot`, and return the live index — or `null` when `config` is
+ * absent, the index is disabled, or anything along the way throws. Callers
+ * must treat `null` as "fall back to the scan path", never as an error.
+ */
+async function resolveSearchIndexForRecall(
+  projectRoot: string,
+  config: Config | undefined,
+): Promise<MemorySearchIndex | null> {
+  if (!config) {
+    return null;
+  }
+  try {
+    const manager = config.getMemoryManager();
+    await manager.ensureSearchIndexReady(projectRoot, config);
+    return manager.getSearchIndex(projectRoot);
+  } catch (error) {
+    debugLogger.debug(
+      `Search index unavailable for recall; falling back to scan path: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Load a single indexed memory-doc hit off disk and parse it through the
+ * exact same parser the scan path uses, so index-sourced and scan-sourced
+ * `ScannedAutoMemoryDocument`s are indistinguishable to everything
+ * downstream (selector, prompt renderer). Returns `null` if the file has
+ * since been deleted/moved or fails to parse — the hit is simply dropped
+ * rather than failing the whole recall.
+ */
+async function loadMemoryDocFromIndexHit(
+  projectRoot: string,
+  hit: IndexHit,
+): Promise<ScannedAutoMemoryDocument | null> {
+  try {
+    const [content, stats] = await Promise.all([
+      fs.readFile(hit.id, 'utf-8'),
+      fs.stat(hit.id),
+    ]);
+    const root =
+      hit.tier === 'user'
+        ? getUserAutoMemoryRoot()
+        : getAutoMemoryRoot(projectRoot);
+    const relativePath = path.relative(root, hit.id).replaceAll('\\', '/');
+    return parseAutoMemoryTopicDocument(
+      hit.id,
+      content,
+      stats.mtimeMs,
+      relativePath,
+      hit.tier === 'user' ? 'user' : 'project',
+    );
+  } catch (error) {
+    debugLogger.debug(`Failed to load indexed memory doc ${hit.id}`, error);
+    return null;
+  }
+}
+
+/** Memory candidate gather: index path. Used when a search index is available. */
+async function gatherIndexedMemoryDocs(
+  projectRoot: string,
+  index: MemorySearchIndex,
+  query: string,
+  options: ResolveRelevantAutoMemoryPromptOptions,
+): Promise<ScannedAutoMemoryDocument[]> {
+  try {
+    const hits = index.search(query, {
+      source: 'memory',
+      limit: MEMORY_INDEX_SEARCH_LIMIT,
+    });
+    const loaded = await Promise.all(
+      hits.map((hit) => loadMemoryDocFromIndexHit(projectRoot, hit)),
+    );
+    return loaded.filter(
+      (doc): doc is ScannedAutoMemoryDocument => doc !== null,
+    );
+  } catch (error) {
+    debugLogger.debug(
+      `Memory index search failed; falling back to scan path: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return gatherScannedMemoryDocs(projectRoot, options);
+  }
+}
+
+/**
+ * Memory candidate gather: legacy scan path. Used whenever a search index
+ * isn't available (disabled, not built yet, or failed) — this keeps the
+ * fallback identical to non-indexed recall.
+ */
+async function gatherScannedMemoryDocs(
+  projectRoot: string,
+  options: ResolveRelevantAutoMemoryPromptOptions,
+): Promise<ScannedAutoMemoryDocument[]> {
+  // User-level scan is best-effort: a read failure (EACCES, ELOOP) on
+  // `~/.qwen/memories/` must not cancel the project-level scan, otherwise
+  // recall returns nothing at all for the rest of the session.
+  const [projectDocs, userDocs] = await Promise.all([
+    scanAllAutoMemoryTopicDocuments(
+      projectRoot,
+      options.documentCache,
+      options.config?.isTrustedFolder?.() ?? false,
+      // Recall must not lose every scope to one unlistable root; forget
+      // keeps the default strict scan because it deletes on the result.
+      true,
+    ),
+    scanAllUserAutoMemoryTopicDocuments(options.documentCache).catch(
+      (error: unknown) => {
+        debugLogger.warn(
+          `User-level auto-memory scan failed; project-level recall continues: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return [];
+      },
+    ),
+  ]);
+  // Project-level docs come first so the stable-sort tie-breaker leaves
+  // project memory ahead of user memory — the "project shadows user"
+  // precedence. The model selector ranks by its own judgement, so this
+  // ordering is advisory there, not enforced.
+  return [...projectDocs, ...userDocs];
+}
+
+function truncateTranscriptSnippet(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= MAX_TRANSCRIPT_SNIPPET_CHARS) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, MAX_TRANSCRIPT_SNIPPET_CHARS).trimEnd()}… (truncated)`;
+}
+
+/**
+ * Build the `## Relevant past conversation` block from transcript search
+ * hits, or `''` when there's nothing to show (no index, transcripts
+ * disabled, empty query, or no hits). Independent of memory-doc selection —
+ * appended to whatever `## Relevant memory` prompt (if any) recall produces.
+ */
+async function buildTranscriptBlock(
+  query: string,
+  config: Config | undefined,
+  index: MemorySearchIndex | null,
+): Promise<string> {
+  if (!index || !config || query.trim().length === 0) {
+    return '';
+  }
+
+  let includeTranscripts: boolean;
+  try {
+    includeTranscripts =
+      config.getMemorySearchIndexSettings().includeTranscripts;
+  } catch (error) {
+    debugLogger.debug('Failed to read memory search-index settings.', error);
+    return '';
+  }
+  if (!includeTranscripts) {
+    return '';
+  }
+
+  let hits: IndexHit[];
+  try {
+    hits = index.search(query, {
+      source: 'transcript',
+      limit: MAX_TRANSCRIPT_HITS,
+    });
+  } catch (error) {
+    debugLogger.debug(
+      `Transcript index search failed; omitting transcript block: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return '';
+  }
+  if (hits.length === 0) {
+    return '';
+  }
+
+  return [
+    '## Relevant past conversation',
+    '',
+    ...hits.flatMap((hit) => {
+      const when = hit.ts !== undefined ? memoryAge(hit.ts) : 'unknown date';
+      const sessionShort = hit.sessionId
+        ? hit.sessionId.slice(0, 8)
+        : 'unknown';
+      const snippet = hit.text ? truncateTranscriptSnippet(hit.text) : '';
+      return [
+        `- ${when} · session ${sessionShort}`,
+        ...(snippet ? [`  ${snippet}`] : []),
+      ];
+    }),
+  ].join('\n');
+}
+
+async function computeRelevantAutoMemoryResult(
   projectRoot: string,
   query: string,
-  options: ResolveRelevantAutoMemoryPromptOptions = {},
+  options: ResolveRelevantAutoMemoryPromptOptions,
+  index: MemorySearchIndex | null,
 ): Promise<RelevantAutoMemoryPromptResult> {
   const t0 = Date.now();
   const legacy =
     (options.config?.getMemoryRecallMode?.() ?? 'legacy') === 'legacy';
   const teamMemoryEnabled = options.config?.getTeamMemoryEnabled?.() ?? false;
+  // Legacy recall sources its candidates from the search index when one is
+  // available (catching documents a title/description scorer would miss), and
+  // otherwise from the full scan. Structured recall renders the memory tree,
+  // which needs the complete snapshot, so it always scans.
   const snapshot = legacy
-    ? await Promise.all([
-        scanAllAutoMemoryTopicDocuments(
-          projectRoot,
-          options.documentCache,
-          options.config?.isTrustedFolder?.() ?? false,
-          // Recall must not lose every scope to one unlistable root; forget
-          // keeps the default strict scan because it deletes on the result.
-          true,
-        ),
-        scanAllUserAutoMemoryTopicDocuments(options.documentCache).catch(
-          (error: unknown) => {
-            debugLogger.warn(
-              `User-level auto-memory scan failed; project-level recall continues: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            return [];
-          },
-        ),
-      ]).then(([projectDocs, userDocs]) => {
+    ? await (
+        index
+          ? gatherIndexedMemoryDocs(projectRoot, index, query, options)
+          : gatherScannedMemoryDocs(projectRoot, options)
+      ).then((docs) => {
         const sourceStatus: MemorySourceStatus = {
           requestedScopes: ['project', 'user'],
           searchedScopes: ['project', 'user'],
@@ -658,10 +852,7 @@ export async function resolveRelevantAutoMemoryPromptForQuery(
           complete: true,
           incompleteScopes: [],
         };
-        return {
-          docs: [...projectDocs, ...userDocs],
-          sourceStatus,
-        };
+        return { docs, sourceStatus };
       })
     : await scanAutoMemorySnapshot(projectRoot, {
         scopes: teamMemoryEnabled ? [...AUTO_MEMORY_SCOPES] : undefined,
@@ -914,4 +1105,43 @@ export async function resolveRelevantAutoMemoryPromptForQuery(
     selectorStartedAt !== undefined,
   );
   return result;
+}
+
+export async function resolveRelevantAutoMemoryPromptForQuery(
+  projectRoot: string,
+  query: string,
+  options: ResolveRelevantAutoMemoryPromptOptions = {},
+): Promise<RelevantAutoMemoryPromptResult> {
+  const index = await resolveSearchIndexForRecall(projectRoot, options.config);
+  const [base, transcriptBlock] = await Promise.all([
+    computeRelevantAutoMemoryResult(projectRoot, query, options, index),
+    buildTranscriptBlock(query, options.config, index),
+  ]);
+  if (!transcriptBlock) {
+    return base;
+  }
+  const append = (prompt: string) =>
+    prompt
+      ? `${prompt}
+
+${transcriptBlock}`
+      : transcriptBlock;
+  return {
+    ...base,
+    focusedPrompt: append(base.focusedPrompt),
+    prompt: append(base.prompt),
+  };
+}
+
+export async function buildRelevantAutoMemoryPromptForQuery(
+  projectRoot: string,
+  query: string,
+  options: ResolveRelevantAutoMemoryPromptOptions = {},
+): Promise<string> {
+  const result = await resolveRelevantAutoMemoryPromptForQuery(
+    projectRoot,
+    query,
+    options,
+  );
+  return result.prompt;
 }

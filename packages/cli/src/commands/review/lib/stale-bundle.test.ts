@@ -459,12 +459,10 @@ describe('the bundled skill stops on what this module prints', () => {
     ].map((m) => m[1]);
     expect(quotes.length).toBeGreaterThan(0);
 
-    // realpath the fixture root: `bundleStalenessNotices` resolves the entry
-    // with `realpathSync` before deriving the tree, and the mock's fault
-    // injection matches by exact path. On a platform where `tmpdir()` is a
-    // symlink (macOS: /var -> /private/var) an unresolved fixture sits in a
-    // different namespace from every path the walk produces, the read-fault
-    // stage never fires, and its notice silently drops out of the pin.
+    // realpath the temp root: bundleStalenessNotices realpaths the entry before
+    // deriving source paths, so on platforms where tmpdir() sits behind a
+    // symlink (macOS: /var -> /private/var) the walked paths would otherwise not
+    // match the `unreadable.path` this fixture sets from the unresolved root.
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'skill-parity-')));
     try {
       const distDir = join(root, 'dist');

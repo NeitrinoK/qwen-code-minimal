@@ -19,17 +19,17 @@ exports[`ThemeDialog Snapshots > should render correctly in theme selection mode
 │ > Select Theme                               Preview                                             │
 │ ▲                                            ┌─────────────────────────────────────────────────┐ │
 │ ›  1. Auto Auto                              │                                                 │ │
-│    2. Qwen Light Light                       │ 1 # function                                    │ │
-│    3. Qwen Dark Dark                         │ 2 def fibonacci(n):                             │ │
-│    4. ANSI Dark                              │ 3     a, b = 0, 1                               │ │
-│    5. Atom One Dark                          │ 4     for _ in range(n):                        │ │
-│    6. Ayu Dark                               │ 5         a, b = b, a + b                       │ │
-│    7. Default Dark                           │ 6     return a                                  │ │
-│    8. Dracula Dark                           │                                                 │ │
-│    9. GitHub Dark                            │ 1 - print("Hello, " + name)                     │ │
-│   10. Shades Of Purple Dark                  │ 1 + print(f"Hello, {name}!")                    │ │
-│   11. ANSI Light Light                       │                                                 │ │
-│   12. Ayu Light Light                        └─────────────────────────────────────────────────┘ │
+│    2. Qwen Minimal Dark                      │ 1 # function                                    │ │
+│    3. Qwen Light Light                       │ 2 def fibonacci(n):                             │ │
+│    4. Qwen Dark Dark                         │ 3     a, b = 0, 1                               │ │
+│    5. ANSI Dark                              │ 4     for _ in range(n):                        │ │
+│    6. Atom One Dark                          │ 5         a, b = b, a + b                       │ │
+│    7. Ayu Dark                               │ 6     return a                                  │ │
+│    8. Default Dark                           │                                                 │ │
+│    9. Dracula Dark                           │ 1 - print("Hello, " + name)                     │ │
+│   10. GitHub Dark                            │ 1 + print(f"Hello, {name}!")                    │ │
+│   11. Shades Of Purple Dark                  │                                                 │ │
+│   12. ANSI Light Light                       └─────────────────────────────────────────────────┘ │
 │ ▼                                                                                                │
 │                                                                                                  │
 │ (Use Enter to select, Tab to configure scope)                                                    │

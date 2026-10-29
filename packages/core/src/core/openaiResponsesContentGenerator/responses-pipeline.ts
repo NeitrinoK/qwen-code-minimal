@@ -656,6 +656,8 @@ export class ResponsesPipeline {
     const runtimeOptions = buildRuntimeFetchOptions(
       'openai',
       this.cliConfig.getProxy(),
+      this.cliConfig.getNoProxy?.() ?? [],
+      this.cliConfig.getCaCertificates?.() ?? [],
     );
     if (runtimeOptions?.fetchOptions?.dispatcher) {
       fetchOpts.dispatcher = runtimeOptions.fetchOptions.dispatcher;

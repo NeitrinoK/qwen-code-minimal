@@ -23,6 +23,7 @@ import { createDebugLogger } from '../utils/debugLogger.js';
 import { resolveInteractionMode } from '../core/prompts.js';
 import { InputFormat } from '../output/types.js';
 import { parseAnswerQuestionIndex } from '../permissions/trusted-user-answers.js';
+import { CAP_ESCALATION_LABELS } from '../plan-gate/types.js';
 
 const debugLogger = createDebugLogger('ASK_USER_QUESTION');
 
@@ -36,6 +37,19 @@ export interface Question {
   header: string;
   options: QuestionOption[];
   multiSelect?: boolean;
+}
+
+// Max display width of the chip/tag header. Headers are TRUNCATED to this,
+// never rejected — rejecting a too-long header the model can't shorten (common
+// with non-Latin scripts like Cyrillic/CJK, where words run longer than English
+// chip labels) caused a validation-retry loop.
+export const HEADER_MAX_LENGTH = 20;
+
+export function truncateHeader(header: string): string {
+  const trimmed = header.trim();
+  return trimmed.length > HEADER_MAX_LENGTH
+    ? `${trimmed.slice(0, HEADER_MAX_LENGTH - 1)}…`
+    : trimmed;
 }
 
 export interface AskUserQuestionParams {
@@ -81,7 +95,7 @@ const askUserQuestionToolSchemaData: FunctionDeclaration = {
             },
             header: {
               description:
-                'Very short label displayed as a chip/tag (max 12 chars). Examples: "Auth method", "Library", "Approach".',
+                'Very short label displayed as a chip/tag — aim for ~20 characters or less. Longer labels are truncated, not rejected. Examples: "Auth method", "Library", "Approach".',
               type: 'string',
             },
             options: {
@@ -224,7 +238,10 @@ class AskUserQuestionToolInvocation extends BaseToolInvocation<
     const details: ToolAskUserQuestionConfirmationDetails = {
       type: 'ask_user_question',
       title: 'Please answer the following question(s):',
-      questions: this.params.questions,
+      questions: this.params.questions.map((q) => ({
+        ...q,
+        header: truncateHeader(q.header),
+      })),
       metadata: this.params.metadata,
       onConfirm: async (
         outcome: ToolConfirmationOutcome,
@@ -281,9 +298,14 @@ class AskUserQuestionToolInvocation extends BaseToolInvocation<
           if (questionIndex === undefined) return [];
           const question = this.params.questions[questionIndex]!;
           answers.push({ question: question.question, answer: value });
-          return `**${question.header || `Question ${questionIndex + 1}`}**: ${value}`;
+          const label = question.header
+            ? truncateHeader(question.header)
+            : `Question ${questionIndex + 1}`;
+          return `**${label}**: ${value}`;
         })
         .join('\n');
+
+      this.applyPlanGateMetadata();
 
       const messageBody =
         answersContent.length > 0
@@ -312,6 +334,62 @@ class AskUserQuestionToolInvocation extends BaseToolInvocation<
         llmContent: errorLlmContent,
         returnDisplay: `Error processing answers: ${errorMessage}`,
       };
+    }
+  }
+
+  /**
+   * Updates Plan Approval Gate state based on the metadata.source field
+   * and the user's answer. Only acts on recognized gate metadata sources.
+   */
+  private applyPlanGateMetadata(): void {
+    const source = this.params.metadata?.source;
+    if (!source) return;
+
+    const gateState = this._config.getPlanGateState();
+    if (!gateState) return;
+
+    if (source === 'plan_gate_cap') {
+      // Cap escalation: only honor when a cap escalation actually
+      // occurred (prevents model from fabricating this metadata).
+      if (!gateState.capEscalationPending) {
+        debugLogger.warn(
+          '[applyPlanGateMetadata] plan_gate_cap ignored: no cap escalation pending',
+        );
+        return;
+      }
+
+      // The first answer determines the next gate mode.
+      // Match against the canonical labels from CAP_ESCALATION_LABELS.
+      const firstAnswer = Object.values(this.userAnswers)[0] ?? '';
+
+      if (firstAnswer === CAP_ESCALATION_LABELS.CONTINUE) {
+        gateState.gateMode = 'uncapped';
+      } else if (firstAnswer === CAP_ESCALATION_LABELS.APPROVE) {
+        gateState.gateMode = 'user_override';
+      } else {
+        // Free-text / Other: user takes manual control
+        gateState.gateMode = 'user_takeover';
+      }
+      gateState.capEscalationPending = false;
+    } else if (source === 'plan_gate_needs_user') {
+      // Only honor when the gate actually returned needs_user
+      // (prevents model from fabricating this metadata).
+      if (!gateState.needsUserPending) {
+        debugLogger.warn(
+          '[applyPlanGateMetadata] plan_gate_needs_user ignored: no needs_user pending',
+        );
+        return;
+      }
+      // User answered a gate-suggested question. Only reset the
+      // review count when the gate actually asked for user input
+      // (gateMode must still be active, not already overridden).
+      if (
+        gateState.gateMode === 'capped' ||
+        gateState.gateMode === 'uncapped'
+      ) {
+        gateState.reviewCount = 0;
+      }
+      gateState.needsUserPending = false;
     }
   }
 }

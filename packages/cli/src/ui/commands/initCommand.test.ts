@@ -13,8 +13,8 @@ import { createMockCommandContext } from '../../test-utils/mockCommandContext.js
 import { type CommandContext } from './types.js';
 
 // Mock the 'fs' module with both named and default exports to avoid breaking default import sites
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs')>();
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
   const existsSync = vi.fn();
   const writeFileSync = vi.fn();
   const readFileSync = vi.fn();

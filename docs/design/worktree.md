@@ -1,292 +1,292 @@
-# Worktree 通用能力设计
+# Worktree General-Purpose Capability Design
 
-## 问题陈述
+## Problem Statement
 
-qwen-code 目前仅有面向 Arena 多模型对比场景的内部 worktree 实现（`GitWorktreeService`），用户无法在普通会话中使用 worktree 隔离工作，AgentTool 也不支持为 subagent 创建隔离的 worktree 环境。
+qwen-code currently has only an internal worktree implementation (`GitWorktreeService`) aimed at the Arena multi-model comparison scenario. Users cannot use worktrees to isolate work in a normal session, and AgentTool does not support creating an isolated worktree environment for a subagent.
 
-目标是将 worktree 做成通用能力，支持用户会话级隔离和 Agent 级隔离，同时保证现有 Arena 功能体验完全不变。
+The goal is to turn worktrees into a general-purpose capability that supports user-session-level isolation and Agent-level isolation, while guaranteeing that the existing Arena experience remains completely unchanged.
 
-## 现状对比
+## Current State Comparison
 
-| 功能                              | qwen-code       | claude-code | 阶段    |
-| --------------------------------- | --------------- | ----------- | ------- |
-| `EnterWorktree` 工具              | ✅（Phase A）   | ✅          | —       |
-| `ExitWorktree` 工具               | ✅（Phase A）   | ✅          | —       |
-| AgentTool `isolation: 'worktree'` | ✅（Phase B）   | ✅          | —       |
-| 过期 worktree 自动清理            | ✅（Phase B）   | ✅          | —       |
-| worktree 会话状态持久化与恢复     | ❌              | ✅          | Phase C |
-| Post-creation setup（hooks 配置） | ❌              | ✅          | Phase C |
-| StatusLine worktree 状态展示      | ❌              | ✅          | Phase C |
-| WorktreeExitDialog（退出提示）    | ❌              | ✅          | Phase C |
-| `--worktree` CLI 启动标志         | ✅（Phase D）   | ✅          | —       |
-| 符号链接目录（node_modules 等）   | ✅（Phase D）   | ✅          | —       |
-| PR 引用（`--worktree=#123`）      | ✅（Phase D）   | ✅          | —       |
-| sparse checkout                   | ❌              | ✅          | Future  |
-| tmux 集成                         | ❌              | ✅          | Future  |
-| Arena 多模型 worktree 隔离        | ✅（qwen 独有） | ❌          | —       |
-| 脏状态覆盖（stash + copy）        | ✅              | ✅          | —       |
-| Baseline commit 追踪              | ✅（qwen 独有） | ❌          | —       |
+| Feature                                        | qwen-code      | claude-code | Phase   |
+| ---------------------------------------------- | -------------- | ----------- | ------- |
+| `EnterWorktree` tool                           | ✅ (Phase A)   | ✅          | —       |
+| `ExitWorktree` tool                            | ✅ (Phase A)   | ✅          | —       |
+| AgentTool `isolation: 'worktree'`              | ✅ (Phase B)   | ✅          | —       |
+| Automatic cleanup of stale worktrees           | ✅ (Phase B)   | ✅          | —       |
+| Worktree session state persistence and restore | ❌             | ✅          | Phase C |
+| Post-creation setup (hooks config)             | ❌             | ✅          | Phase C |
+| StatusLine worktree status display             | ❌             | ✅          | Phase C |
+| WorktreeExitDialog (exit prompt)               | ❌             | ✅          | Phase C |
+| `--worktree` CLI startup flag                  | ✅ (Phase D)   | ✅          | —       |
+| Symlinked directories (node_modules, etc.)     | ✅ (Phase D)   | ✅          | —       |
+| PR reference (`--worktree=#123`)               | ✅ (Phase D)   | ✅          | —       |
+| sparse checkout                                | ❌             | ✅          | Future  |
+| tmux integration                               | ❌             | ✅          | Future  |
+| Arena multi-model worktree isolation           | ✅ (qwen only) | ❌          | —       |
+| Dirty-state coverage (stash + copy)            | ✅             | ✅          | —       |
+| Baseline commit tracking                       | ✅ (qwen only) | ❌          | —       |
 
-## 设计原则
+## Design Principles
 
-**worktree 是通用能力，Arena 是其上层应用。**
+**A worktree is a general-purpose capability, and Arena is an application layered on top of it.**
 
-- 通用 worktree 层：`EnterWorktree`/`ExitWorktree` 工具、AgentTool `isolation` 参数、会话状态管理、自动清理
-- Arena 层：多模型并行调度、`worktreeBaseDir` 自定义路径、批量创建与 diff 对比，继续使用 `GitWorktreeService.setupWorktrees()` 的现有逻辑，不受通用层改动影响
+- General worktree layer: `EnterWorktree`/`ExitWorktree` tools, the AgentTool `isolation` parameter, session state management, automatic cleanup
+- Arena layer: multi-model parallel scheduling, the `worktreeBaseDir` custom path, batch creation and diff comparison; it continues to use the existing logic of `GitWorktreeService.setupWorktrees()` and is unaffected by changes to the general layer
 
-AgentTool 的 `isolation: 'worktree'` 只走通用路径，Arena 内部不经过这个参数创建 worktree，两者路径独立。
+AgentTool's `isolation: 'worktree'` only goes through the general path; Arena does not create worktrees via this parameter internally. The two paths are independent.
 
-## 路径与配置
+## Paths and Configuration
 
-### 通用 worktree 路径
+### General worktree path
 
-由 `EnterWorktree` 工具或 AgentTool `isolation: 'worktree'` 创建的 worktree 固定存放在：
+Worktrees created by the `EnterWorktree` tool or by AgentTool `isolation: 'worktree'` are stored at a fixed location:
 
 ```
-{git 仓库根}/.qwen/worktrees/{slug}
+{git repo root}/.qwen/worktrees/{slug}
 ```
 
-路径不可配置。slug 命名规则：
+The path is not configurable. slug naming rules:
 
-- 用户会话 worktree：用户指定名称，或自动生成（格式：`{形容词}-{名词}-{4位随机}`）
-- Agent worktree：`agent-{7位随机 hex}`
+- User-session worktree: a user-specified name, or auto-generated (format: `{adjective}-{noun}-{4 random chars}`)
+- Agent worktree: `agent-{7 random hex chars}`
 
-### Arena worktree 路径（已有，保持不变）
+### Arena worktree path (existing, unchanged)
 
-Arena 的 worktree 路径由 `agents.arena.worktreeBaseDir` 控制，默认 `~/.qwen/arena`（`ArenaManager.ts:125`），与通用路径完全独立，不做任何改动。
+Arena's worktree path is controlled by `agents.arena.worktreeBaseDir`, defaulting to `~/.qwen/arena` (`ArenaManager.ts:125`). It is completely independent of the general path and is left unchanged.
 
-### 扩展配置
+### Extended configuration
 
-| 配置项                            | 类型       | 用途                                                             | 阶段    |
-| --------------------------------- | ---------- | ---------------------------------------------------------------- | ------- |
-| `ui.hideBuiltinWorktreeIndicator` | `boolean`  | 隐藏 Footer 中内置 `⎇ worktree-… (…)` 行，留给 custom statusline | Phase C |
-| `worktree.symlinkDirectories`     | `string[]` | 符号链接指定目录（如 `node_modules`）到 worktree，避免磁盘浪费   | Phase D |
-| `worktree.sparsePaths`            | `string[]` | git sparse-checkout cone 模式，大型 monorepo 只写入指定路径      | Future  |
+| Config item                       | Type       | Purpose                                                                                       | Phase   |
+| --------------------------------- | ---------- | --------------------------------------------------------------------------------------------- | ------- |
+| `ui.hideBuiltinWorktreeIndicator` | `boolean`  | Hide the built-in `⎇ worktree-… (…)` line in the Footer, leaving room for a custom statusline | Phase C |
+| `worktree.symlinkDirectories`     | `string[]` | Symlink specified directories (e.g. `node_modules`) into the worktree to avoid disk waste     | Phase D |
+| `worktree.sparsePaths`            | `string[]` | git sparse-checkout cone mode; for large monorepos, only write the specified paths            | Future  |
 
-Phase A / B 不新增任何配置项。
+Phases A / B do not add any config items.
 
-## 工具设计
+## Tool Design
 
 ### EnterWorktree
 
-**触发条件：** 用户明确说 "start a worktree"、"use a worktree"、"create a worktree" 等词语。不应在用户说"修复 bug"、"开发功能"时自动触发。
+**Trigger condition:** The user explicitly says phrases like "start a worktree", "use a worktree", "create a worktree". It should not be triggered automatically when the user says "fix a bug" or "develop a feature".
 
-**输入 schema：**
+**Input schema:**
 
 ```
-name?: string  // 可选，slug 格式：字母/数字/点/下划线/破折号，最大 64 字符
+name?: string  // optional, slug format: letters/digits/dot/underscore/dash, max 64 chars
 ```
 
-**行为：**
+**Behavior:**
 
-1. 验证当前未在 worktree 中（防止嵌套）
-2. 解析到 git 仓库根（处理已在子目录的情况）
-3. 调用 `GitWorktreeService` 创建 worktree，路径为 `.qwen/worktrees/{slug}`
-4. 将 worktree 会话写入 `SessionService`
-5. 切换工作目录到 worktree 路径
-6. 清除文件缓存
+1. Validate that we are not currently in a worktree (prevent nesting)
+2. Resolve to the git repo root (handle the case of already being in a subdirectory)
+3. Call `GitWorktreeService` to create the worktree, with path `.qwen/worktrees/{slug}`
+4. Write the worktree session to `SessionService`
+5. Switch the working directory to the worktree path
+6. Clear the file cache
 
-**输出：** `worktreePath`、`worktreeBranch`、`message`
+**Output:** `worktreePath`, `worktreeBranch`, `message`
 
 ### ExitWorktree
 
-**触发条件：** 用户说 "exit the worktree"、"leave the worktree"、"go back" 等。
+**Trigger condition:** The user says "exit the worktree", "leave the worktree", "go back", etc.
 
-**输入 schema：**
+**Input schema:**
 
 ```
 action: 'keep' | 'remove'
-discard_changes?: boolean  // 仅 action='remove' 时有效
+discard_changes?: boolean  // only valid when action='remove'
 ```
 
-**安全守卫：**
+**Safety guards:**
 
-- 仅操作本会话通过 `EnterWorktree` 创建的 worktree
-- `action='remove'` 且存在未提交变更时，拒绝执行（除非 `discard_changes: true`）
+- Only operate on the worktree created by `EnterWorktree` in this session
+- When `action='remove'` and there are uncommitted changes, refuse to execute (unless `discard_changes: true`)
 
-**行为：**
+**Behavior:**
 
-- `keep`：清空会话中的 worktree 状态，保留 worktree 目录和分支，恢复原始工作目录
-- `remove`：删除 worktree 目录，删除对应 git 分支，清空会话状态，恢复原始工作目录
+- `keep`: clear the worktree state in the session, retain the worktree directory and branch, restore the original working directory
+- `remove`: delete the worktree directory, delete the corresponding git branch, clear the session state, restore the original working directory
 
-**输出：** `action`、`originalCwd`、`worktreePath`、`worktreeBranch`
+**Output:** `action`, `originalCwd`, `worktreePath`, `worktreeBranch`
 
-## 用户触发方式
+## User Trigger Methods
 
-| 方式           | 示例                                                     | 实现阶段 |
-| -------------- | -------------------------------------------------------- | -------- |
-| 会话中明确请求 | 用户说 "在 worktree 中开始工作" → 模型调用 EnterWorktree | Phase A  |
-| Agent 隔离     | 模型为 subagent 设置 `isolation: 'worktree'`             | Phase B  |
-| CLI 启动标志   | `qwen --worktree my-feature`                             | Phase D  |
+| Method                      | Example                                                                     | Implementation Phase |
+| --------------------------- | --------------------------------------------------------------------------- | -------------------- |
+| Explicit request in session | The user says "start working in a worktree" → the model calls EnterWorktree | Phase A              |
+| Agent isolation             | The model sets `isolation: 'worktree'` for a subagent                       | Phase B              |
+| CLI startup flag            | `qwen --worktree my-feature`                                                | Phase D              |
 
-无斜杠命令。会话中 worktree 的触发依赖用户明确提及，`isolation: 'worktree'` 才是模型自主决策的场景。
+No slash commands. Triggering a worktree in a session relies on the user explicitly mentioning it; `isolation: 'worktree'` is the scenario where the model decides on its own.
 
-## 分阶段实现计划
+## Phased Implementation Plan
 
-### Phase A：核心工具（用户会话级 worktree）
+### Phase A: Core tools (user-session-level worktree)
 
-**目标：** 用户能在会话中进入 / 退出 worktree。
+**Goal:** The user can enter / exit a worktree within a session.
 
-**要实现的功能：**
+**Features to implement:**
 
-- `EnterWorktree` 工具：创建 worktree，切换工作目录，记录会话状态
-- `ExitWorktree` 工具：keep / remove 两种退出方式，安全守卫
-- `GitWorktreeService` 扩展：新增面向单用户会话的 `createUserWorktree()` / `removeUserWorktree()` 方法，复用现有 git 操作逻辑，不改动 Arena 使用的批量接口
-- `SessionService` 扩展：新增 `WorktreeSession` 字段，记录 `{ slug, worktreePath, worktreeBranch, originalCwd, originalBranch }`；`--resume` 时恢复 worktree 工作目录
-- 工具 prompt：为每个工具编写使用说明，明确何时调用、何时不调用
+- `EnterWorktree` tool: create a worktree, switch the working directory, record session state
+- `ExitWorktree` tool: keep / remove exit modes, safety guards
+- `GitWorktreeService` extension: add `createUserWorktree()` / `removeUserWorktree()` methods aimed at single-user sessions, reusing the existing git operation logic without changing the batch interface used by Arena
+- `SessionService` extension: add a `WorktreeSession` field recording `{ slug, worktreePath, worktreeBranch, originalCwd, originalBranch }`; restore the worktree working directory on `--resume`
+- Tool prompts: write usage instructions for each tool, clarifying when to call and when not to call
 
-**影响文件：**
+**Affected files:**
 
-| 文件                                               | 变更类型                                      |
-| -------------------------------------------------- | --------------------------------------------- |
-| `packages/core/src/tools/tool-names.ts`            | 新增 `ENTER_WORKTREE`、`EXIT_WORKTREE` 常量   |
-| `packages/core/src/tools/EnterWorktreeTool/`       | 新建目录：`EnterWorktreeTool.ts`、`prompt.ts` |
-| `packages/core/src/tools/ExitWorktreeTool/`        | 新建目录：`ExitWorktreeTool.ts`、`prompt.ts`  |
-| `packages/core/src/services/gitWorktreeService.ts` | 新增用户会话级接口（不改动 Arena 接口）       |
-| `packages/core/src/services/sessionService.ts`     | 新增 `WorktreeSession` 字段及读写方法         |
-| `packages/core/src/tools/` 注册入口                | 注册新工具                                    |
+| File                                               | Change type                                                          |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| `packages/core/src/tools/tool-names.ts`            | Add `ENTER_WORKTREE`, `EXIT_WORKTREE` constants                      |
+| `packages/core/src/tools/EnterWorktreeTool/`       | New directory: `EnterWorktreeTool.ts`, `prompt.ts`                   |
+| `packages/core/src/tools/ExitWorktreeTool/`        | New directory: `ExitWorktreeTool.ts`, `prompt.ts`                    |
+| `packages/core/src/services/gitWorktreeService.ts` | Add user-session-level interfaces (no change to the Arena interface) |
+| `packages/core/src/services/sessionService.ts`     | Add the `WorktreeSession` field and read/write methods               |
+| `packages/core/src/tools/` registration entry      | Register the new tools                                               |
 
-**不在 Phase A 范围内：**
+**Out of scope for Phase A:**
 
-- Agent 隔离（Phase B）
-- hooks 配置等 post-creation setup（Phase C）
-- UI 状态展示（Phase C）
-
----
-
-### Phase B：Agent 隔离（AgentTool `isolation: 'worktree'`）+ 描述更新
-
-**目标：** 模型可为 subagent 创建临时隔离 worktree，agent 结束后自动清理；同步更新受影响的工具描述和提示词。
-
-**要实现的功能：**
-
-_Agent 隔离核心：_
-
-- `AgentTool` 新增 `isolation?: 'worktree'` 参数
-- Agent 启动时创建临时 worktree（slug：`agent-{7hex}`，路径：`.qwen/worktrees/agent-{7hex}`）
-- Agent 结束后：无变更则自动删除；有变更则保留，将路径和分支返回在结果中
-- 过期 worktree 自动清理：扫描 `.qwen/worktrees/`，匹配 `agent-{7hex}` 模式，超过 30 天且无未推送提交则删除，fail-closed 策略
-
-_描述与提示词更新：_
-
-- `AgentTool` description 补充 `isolation: 'worktree'` 参数说明（参考 claude-code `AgentTool/prompt.ts:272`）
-- 新增 `buildWorktreeNotice()`：当 fork subagent 在 worktree 中运行时，向其注入上下文提示，说明其处于隔离 worktree、路径继承自父 agent、编辑前需重新读取文件（参考 claude-code `forkSubagent.ts:buildWorktreeNotice`）
-
-_无需改动：_
-
-- review skill（`SKILL.md`）：review 使用独立机制（路径 `.qwen/tmp/review-pr-<n>`，通过 `qwen review fetch-pr` 命令创建），与通用 worktree 路径和机制完全不同，不存在混淆
-
-**Arena 兼容保证：** Arena 内部不经过 `isolation` 参数创建 worktree，此改动不触碰 Arena 代码路径。
-
-**影响文件：**
-
-| 文件                                               | 变更类型                                               |
-| -------------------------------------------------- | ------------------------------------------------------ |
-| `packages/core/src/tools/agent/agent.ts`           | 新增 `isolation` 参数及 worktree 创建/清理逻辑         |
-| `packages/core/src/tools/agent/fork-subagent.ts`   | 新增 `buildWorktreeNotice()` 并在 worktree 模式下注入  |
-| `packages/core/src/services/gitWorktreeService.ts` | 新增 `createAgentWorktree()` / `removeAgentWorktree()` |
-| `packages/core/src/services/worktreeCleanup.ts`    | 新建：过期 worktree 自动清理逻辑                       |
+- Agent isolation (Phase B)
+- Post-creation setup such as hooks config (Phase C)
+- UI status display (Phase C)
 
 ---
 
-### Phase C：会话完整性（SessionService 持久化 + UI 安全网）
+### Phase B: Agent isolation (AgentTool `isolation: 'worktree'`) + description updates
 
-**目标：** worktree 状态在会话中断后可恢复，用户在界面上始终知道自己在哪个 worktree 里，退出会话时有安全提示。
+**Goal:** The model can create a temporary isolated worktree for a subagent, which is cleaned up automatically after the agent finishes; meanwhile, update the affected tool descriptions and prompts.
 
-**要实现的功能：**
+**Features to implement:**
 
-_SessionService worktree 状态持久化 + `--resume` 恢复：_
+_Agent isolation core:_
 
-- `SessionService` 扩展 `WorktreeSession` 字段，记录 `{ slug, worktreePath, worktreeBranch, originalCwd, originalBranch }`
-- `EnterWorktreeTool` 调用 `sessionService.setWorktreeSession()` 写入状态
-- `ExitWorktreeTool` 调用 `sessionService.clearWorktreeSession()` 清除状态
-- `--resume` 启动路径读取该字段，恢复 `targetDir` 并向模型注入上下文提示
+- `AgentTool` adds an `isolation?: 'worktree'` parameter
+- Create a temporary worktree when the agent starts (slug: `agent-{7hex}`, path: `.qwen/worktrees/agent-{7hex}`)
+- After the agent finishes: if there are no changes, delete it automatically; if there are changes, retain it and return the path and branch in the result
+- Automatic cleanup of stale worktrees: scan `.qwen/worktrees/`, match the `agent-{7hex}` pattern, and delete any older than 30 days with no unpushed commits, using a fail-closed strategy
 
-_Post-creation setup：_
+_Description and prompt updates:_
 
-- 创建 worktree 后自动执行 `git config core.hooksPath <mainRepo>/.git/hooks`，确保 worktree 内的提交与主仓库 hooks 行为一致
+- Supplement the `AgentTool` description with an explanation of the `isolation: 'worktree'` parameter (see claude-code `AgentTool/prompt.ts:272`)
+- Add `buildWorktreeNotice()`: when a forked subagent runs in a worktree, inject a context hint into it stating that it is in an isolated worktree, that the path is inherited from the parent agent, and that it must re-read files before editing (see claude-code `forkSubagent.ts:buildWorktreeNotice`)
 
-_StatusLine worktree 展示：_
+_No changes needed:_
 
-- `UIStateContext` 新增 `activeWorktree` 字段（从 session 状态读取），在会话进入 / 退出 worktree 时更新
-- `StatusLineCommandInput` payload 新增 `worktree?: { slug: string; branch: string }` 字段，供用户 statusline 脚本使用
-- `Footer` 在 `activeWorktree` 非空时内置展示一行 `⎇ <branch> (<slug>)`，无需用户配置 statusline 脚本即可获得基本可见性
+- review skill (`SKILL.md`): review uses an independent mechanism (path `.qwen/tmp/review-pr-<n>`, created via the `qwen review fetch-pr` command), which is completely different from the general worktree path and mechanism, so there is no confusion
 
-_WorktreeExitDialog：_
+**Arena compatibility guarantee:** Arena does not create worktrees via the `isolation` parameter internally, so this change does not touch the Arena code path.
 
-- 新增 `WorktreeExitDialog.tsx` 组件，参考现有 Dialog 写法
-- 修改退出键（Ctrl+C / Ctrl+D）处理逻辑：检测到 `activeWorktree` 非空时，拦截第二次确认，展示 Dialog 提示用户选择 keep 或 remove
-- keep / remove 操作复用 `ExitWorktreeTool` 的现有路径
+**Affected files:**
 
-**影响文件：**
-
-| 文件                                                          | 变更类型                                                                      |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `packages/core/src/services/sessionService.ts`                | 新增 `WorktreeSession` 字段及读写方法                                         |
-| `packages/core/src/tools/enter-worktree.ts`                   | 调用 `sessionService.setWorktreeSession()`                                    |
-| `packages/core/src/tools/exit-worktree.ts`                    | 调用 `sessionService.clearWorktreeSession()`                                  |
-| `packages/core/src/services/gitWorktreeService.ts`            | `createUserWorktree()` / `createAgentWorktree()` 后追加 `core.hooksPath` 配置 |
-| `packages/cli/src/ui/contexts/UIStateContext.tsx`             | 新增 `activeWorktree` 字段及 set/clear action                                 |
-| `packages/cli/src/ui/hooks/useStatusLine.ts`                  | `StatusLineCommandInput` 新增 `worktree` 字段                                 |
-| `packages/cli/src/ui/components/Footer.tsx`                   | 内置 worktree 行展示                                                          |
-| `packages/cli/src/ui/components/WorktreeExitDialog.tsx`       | 新建                                                                          |
-| `packages/cli/src/ui/components/DialogManager.tsx`            | 注册 `WorktreeExitDialog`                                                     |
-| `packages/cli/src/ui/components/ExitWarning.tsx` 或退出键处理 | 检测 `activeWorktree` 并拦截退出                                              |
+| File                                               | Change type                                                       |
+| -------------------------------------------------- | ----------------------------------------------------------------- |
+| `packages/core/src/tools/agent/agent.ts`           | Add the `isolation` parameter and worktree creation/cleanup logic |
+| `packages/core/src/tools/agent/fork-subagent.ts`   | Add `buildWorktreeNotice()` and inject it in worktree mode        |
+| `packages/core/src/services/gitWorktreeService.ts` | Add `createAgentWorktree()` / `removeAgentWorktree()`             |
+| `packages/core/src/services/worktreeCleanup.ts`    | New: automatic cleanup logic for stale worktrees                  |
 
 ---
 
-### Phase D：启动时配置（`--worktree` CLI 标志 + 目录符号链接 + PR 引用）
+### Phase C: Session completeness (SessionService persistence + UI safety net)
 
-**目标：** 支持在启动时直接进入 worktree、通过目录符号链接减少大型项目的磁盘开销，以及通过 PR 引用快速基于一个 pull request 创建 worktree。
+**Goal:** Worktree state is recoverable after a session is interrupted; the user always knows in the UI which worktree they are in; and there is a safety prompt when exiting the session.
 
-**范围：** 三个功能在一个阶段一起落地，因为它们都挂在同一个启动入口上，且 symlink / PR fetch 两者都需要在 worktree 创建之后立即执行 — 单独拆分会重复改 bootstrap 序列。
+**Features to implement:**
 
-#### D-1：`--worktree [name]` CLI 启动标志
+_SessionService worktree state persistence + `--resume` restore:_
 
-**参数形态：** yargs 选项接受三种形式：
+- `SessionService` extends the `WorktreeSession` field, recording `{ slug, worktreePath, worktreeBranch, originalCwd, originalBranch }`
+- `EnterWorktreeTool` calls `sessionService.setWorktreeSession()` to write the state
+- `ExitWorktreeTool` calls `sessionService.clearWorktreeSession()` to clear the state
+- The `--resume` startup path reads this field, restores `targetDir`, and injects a context hint into the model
 
-| 形式                      | 行为                                                 |
-| ------------------------- | ---------------------------------------------------- |
-| `qwen --worktree`         | bare flag，自动生成 slug（`{形容词}-{名词}-{6hex}`） |
-| `qwen --worktree my-name` | 显式 slug，沿用 `EnterWorktreeTool` 的 slug 校验规则 |
-| `qwen --worktree=my-name` | 等价于上一种                                         |
+_Post-creation setup:_
 
-不提供短别名 `-w`（qwen-code 短别名只保留给最高频参数，避免命名冲突）。
+- After creating a worktree, automatically run `git config core.hooksPath <mainRepo>/.git/hooks` to ensure commits inside the worktree behave consistently with the main repo's hooks
 
-**启动序列：** worktree 在以下位置创建：
+_StatusLine worktree display:_
 
-1. `parseArguments()` 解析 argv（已有）
-2. resume picker（已有，line 588-629 of `gemini.tsx`）
-3. `loadCliConfig()` 初始化 Config + auth（已有，line 643-653）
-4. **新增：** 若 `argv.worktree !== undefined`，调用 `createUserWorktree()`
-   - 写入 sidecar（`writeWorktreeSession()`）
-   - 设置 `process.chdir(worktreePath)` 同时 `Config.setTargetDir(worktreePath)`
-   - 同一 worktree 的 re-attach 路径：跳过 `git worktree add` 并就地 chdir（Phase 6 修复）。跨 projectHash 的 `--resume` × `--worktree` 组合在 session lookup 阶段会失败，详见下文"与 `--resume` 的优先级"。
-5. 主循环（TUI / headless `-p` / ACP 三种入口都要走第 4 步）
+- `UIStateContext` adds an `activeWorktree` field (read from the session state), updated when the session enters / exits a worktree
+- The `StatusLineCommandInput` payload adds a `worktree?: { slug: string; branch: string }` field for use by user statusline scripts
+- The `Footer`, when `activeWorktree` is non-empty, displays a built-in `⎇ <branch> (<slug>)` line, providing basic visibility without the user needing to configure a statusline script
 
-**与 Phase A 简化的差异：** Phase A 的 `EnterWorktreeTool` **不**修改 `Config.targetDir`，依赖模型从工具结果里读到绝对路径并继续使用。Phase D 的 CLI flag 在启动期就生效，没有运行中的模型上下文需要兼容，所以**直接切换 `targetDir` 和 `process.cwd()`** —— 这是更强的隔离保证。两条路径行为不同，需要在用户文档里说明。
+_WorktreeExitDialog:_
 
-**退出行为：** 复用现有 `WorktreeExitDialog`（Phase C 已实现）。Ctrl+C/D 两次触发 → 用户在 keep / remove / cancel 之间选择。不需要新代码路径。
+- Add a `WorktreeExitDialog.tsx` component, following the existing Dialog conventions
+- Modify the exit-key (Ctrl+C / Ctrl+D) handling logic: when `activeWorktree` is detected as non-empty, intercept the second confirmation and show the Dialog prompting the user to choose keep or remove
+- The keep / remove operations reuse the existing path of `ExitWorktreeTool`
 
-**与 `--resume` 的优先级：**
+**Affected files:**
 
-由于 session 存储以 `projectHash(process.cwd())` 为 key，而 `--worktree` 在 resume picker / `loadCliConfig` 之前就 chdir 到 worktree，所以"在 worktree X 启动的 session，从 worktree Y 内 resume"是**架构上不可达**的（两者的 projectHash 不同，session 文件落在不同目录）。下表反映 D-1 实现 + Phase 6 re-attach 修复后的实际行为：
+| File                                                                  | Change type                                                                           |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `packages/core/src/services/sessionService.ts`                        | Add the `WorktreeSession` field and read/write methods                                |
+| `packages/core/src/tools/enter-worktree.ts`                           | Call `sessionService.setWorktreeSession()`                                            |
+| `packages/core/src/tools/exit-worktree.ts`                            | Call `sessionService.clearWorktreeSession()`                                          |
+| `packages/core/src/services/gitWorktreeService.ts`                    | Append `core.hooksPath` config after `createUserWorktree()` / `createAgentWorktree()` |
+| `packages/cli/src/ui/contexts/UIStateContext.tsx`                     | Add the `activeWorktree` field and set/clear actions                                  |
+| `packages/cli/src/ui/hooks/useStatusLine.ts`                          | Add the `worktree` field to `StatusLineCommandInput`                                  |
+| `packages/cli/src/ui/components/Footer.tsx`                           | Built-in worktree line display                                                        |
+| `packages/cli/src/ui/components/WorktreeExitDialog.tsx`               | New                                                                                   |
+| `packages/cli/src/ui/components/DialogManager.tsx`                    | Register `WorktreeExitDialog`                                                         |
+| `packages/cli/src/ui/components/ExitWarning.tsx` or exit-key handling | Detect `activeWorktree` and intercept the exit                                        |
 
-| `--resume` 状态              | `--worktree` 状态          | 结果                                                                                       |
-| ---------------------------- | -------------------------- | ------------------------------------------------------------------------------------------ |
-| 无                           | 无                         | 普通会话，无 worktree                                                                      |
-| 无                           | 有（新 slug）              | 新建 worktree                                                                              |
-| 无                           | 有（已存在的 slug）        | **re-attach** 到已有 worktree（Phase 6 修复）                                              |
-| 有                           | 无                         | 恢复旧 worktree（Phase C 行为，sidecar 命中则注入 reminder）                               |
-| 有（sid 出自同一 worktree）  | 有（同一 slug，re-attach） | re-attach + session 命中：正常 resume                                                      |
-| 有（sid 出自 main checkout） | 有（任意 slug）            | **session lookup 失败**：`No saved session found with ID …`，exit 1。documented limitation |
-| 有（sid 出自 worktree X）    | 有（slug Y, X != Y）       | 同上，session 跨 projectHash 不可寻                                                        |
+---
 
-跨 projectHash override 的语义（`--worktree` 在不同 worktree / 主 checkout 的 session 之间转移）需要 storage 锚定到 repo root 而非 cwd-derived projectHash，属于未来 Config 重构范畴。`persistStartupWorktreeSidecar` 内的 `overrodeResumedWorktree` 分支代码保留是为该重构落地后能自动生效，目前在生产路径不会触发。
+### Phase D: Startup configuration (`--worktree` CLI flag + directory symlinks + PR reference)
 
-#### D-2：`worktree.symlinkDirectories` 配置项
+**Goal:** Support entering a worktree directly at startup, reduce disk overhead for large projects via directory symlinks, and quickly create a worktree based on a pull request via a PR reference.
 
-**schema：**
+**Scope:** The three features land together in one phase because they all hang off the same startup entry point, and both symlink / PR fetch need to run immediately after worktree creation — splitting them apart would repeatedly modify the bootstrap sequence.
+
+#### D-1: `--worktree [name]` CLI startup flag
+
+**Argument forms:** The yargs option accepts three forms:
+
+| Form                      | Behavior                                                           |
+| ------------------------- | ------------------------------------------------------------------ |
+| `qwen --worktree`         | bare flag, auto-generate a slug (`{adjective}-{noun}-{6hex}`)      |
+| `qwen --worktree my-name` | explicit slug, follows `EnterWorktreeTool`'s slug validation rules |
+| `qwen --worktree=my-name` | equivalent to the previous one                                     |
+
+No short alias `-w` is provided (qwen-code reserves short aliases only for the most frequently used arguments, to avoid naming conflicts).
+
+**Startup sequence:** The worktree is created at the following point:
+
+1. `parseArguments()` parses argv (existing)
+2. resume picker (existing, line 588-629 of `gemini.tsx`)
+3. `loadCliConfig()` initializes Config + auth (existing, line 643-653)
+4. **New:** if `argv.worktree !== undefined`, call `createUserWorktree()`
+   - write the sidecar (`writeWorktreeSession()`)
+   - set `process.chdir(worktreePath)` and `Config.setTargetDir(worktreePath)`
+   - re-attach path for the same worktree: skip `git worktree add` and chdir in place (Phase 6 fix). The cross-projectHash `--resume` × `--worktree` combination fails at the session lookup stage; see "Priority relative to `--resume`" below.
+5. Main loop (all three entry points — TUI / headless `-p` / ACP — must go through step 4)
+
+**Difference from the Phase A simplification:** Phase A's `EnterWorktreeTool` does **not** modify `Config.targetDir`; it relies on the model reading the absolute path from the tool result and continuing to use it. Phase D's CLI flag takes effect at startup, with no running model context to remain compatible with, so it **switches `targetDir` and `process.cwd()` directly** — this is a stronger isolation guarantee. The two paths behave differently and this needs to be explained in the user docs.
+
+**Exit behavior:** Reuse the existing `WorktreeExitDialog` (implemented in Phase C). Triggering Ctrl+C/D twice → the user chooses between keep / remove / cancel. No new code path is needed.
+
+**Priority relative to `--resume`:**
+
+Because session storage is keyed by `projectHash(process.cwd())`, and `--worktree` chdir's into the worktree before the resume picker / `loadCliConfig`, "resuming, from inside worktree Y, a session that was started in worktree X" is **architecturally unreachable** (the two have different projectHashes, so the session files land in different directories). The table below reflects the actual behavior after the D-1 implementation + the Phase 6 re-attach fix:
+
+| `--resume` state                 | `--worktree` state         | Result                                                                                      |
+| -------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| none                             | none                       | Normal session, no worktree                                                                 |
+| none                             | yes (new slug)             | Create a new worktree                                                                       |
+| none                             | yes (existing slug)        | **re-attach** to the existing worktree (Phase 6 fix)                                        |
+| yes                              | none                       | Restore the old worktree (Phase C behavior; if the sidecar hits, inject a reminder)         |
+| yes (sid from the same worktree) | yes (same slug, re-attach) | re-attach + session hit: normal resume                                                      |
+| yes (sid from the main checkout) | yes (any slug)             | **session lookup fails**: `No saved session found with ID …`, exit 1. documented limitation |
+| yes (sid from worktree X)        | yes (slug Y, X != Y)       | Same as above; the session is cross-projectHash and unlookupable                            |
+
+The semantics of cross-projectHash override (`--worktree` transferring a session between different worktrees / the main checkout) require storage to be anchored to the repo root rather than the cwd-derived projectHash, which falls under a future Config refactor. The `overrodeResumedWorktree` branch code inside `persistStartupWorktreeSidecar` is retained so that it can take effect automatically once that refactor lands; currently it is never triggered on the production path.
+
+#### D-2: `worktree.symlinkDirectories` config item
+
+**schema:**
 
 ```jsonc
 {
@@ -296,102 +296,102 @@ _WorktreeExitDialog：_
 }
 ```
 
-- 类型：`string[]`，默认 `undefined`（不开启，opt-in）
-- 顶层 namespace `worktree` 是新增的（在 `settingsSchema.ts` 中按字母序插在 `tools` 与 `ui` 之间）
-- 路径**相对于主仓库根**，绝对路径或包含 `..` 的路径被路径遍历守卫拒绝
+- Type: `string[]`, default `undefined` (off, opt-in)
+- The top-level namespace `worktree` is new (inserted alphabetically between `tools` and `ui` in `settingsSchema.ts`)
+- Paths are **relative to the main repo root**; absolute paths or paths containing `..` are rejected by the path-traversal guard
 
-**作用范围：** 所有由通用层创建的 worktree，包括：
+**Scope:** All worktrees created by the general layer, including:
 
-- `EnterWorktreeTool`（Phase A）
-- `AgentTool` `isolation: 'worktree'`（Phase B）
-- `--worktree` CLI flag（Phase D-1）
+- `EnterWorktreeTool` (Phase A)
+- `AgentTool` `isolation: 'worktree'` (Phase B)
+- the `--worktree` CLI flag (Phase D-1)
 
-Arena 的 worktree 不走通用层，**不**受此配置影响。
+Arena's worktrees do not go through the general layer and are **not** affected by this config.
 
-**实现位置：** `GitWorktreeService.performPostCreationSetup()` —— 紧跟现有的 `configureHooksPath()`（Phase C 已建立的模式）。新增 `symlinkConfiguredDirectories()` 方法，遍历配置项调用 `fs.symlink(absSource, absDest, 'dir')`。
+**Implementation location:** `GitWorktreeService.performPostCreationSetup()` — immediately following the existing `configureHooksPath()` (the pattern established in Phase C). Add a `symlinkConfiguredDirectories()` method that iterates the config items and calls `fs.symlink(absSource, absDest, 'dir')`.
 
-**错误处理（fail-open）：**
+**Error handling (fail-open):**
 
-| 场景                          | 行为                           |
-| ----------------------------- | ------------------------------ |
-| 源目录不存在（ENOENT）        | 静默跳过，debug log            |
-| 目标路径已存在（EEXIST）      | 静默跳过，debug log（不覆盖）  |
-| 路径遍历（`../`、绝对路径等） | 拒绝该项，debug log warn       |
-| 其他 I/O 错误                 | debug log warn，继续处理后续项 |
+| Scenario                                     | Behavior                                          |
+| -------------------------------------------- | ------------------------------------------------- |
+| Source directory missing (ENOENT)            | Silently skip, debug log                          |
+| Target path already exists (EEXIST)          | Silently skip, debug log (no overwrite)           |
+| Path traversal (`../`, absolute paths, etc.) | Reject the item, debug log warn                   |
+| Other I/O errors                             | debug log warn, continue with the remaining items |
 
-worktree 创建本身**不会**因为 symlink 失败而中止 —— 与 `configureHooksPath()` 相同的"best-effort post-creation setup"原则。
+Worktree creation itself **does not** abort because a symlink fails — the same "best-effort post-creation setup" principle as `configureHooksPath()`.
 
-#### D-3：PR 引用解析（`--worktree=#<N>` / 全 URL）
+#### D-3: PR reference parsing (`--worktree=#<N>` / full URL)
 
-**支持形式：**
+**Supported forms:**
 
-| 形式                                                            | 解析后的 PR 号 |
-| --------------------------------------------------------------- | -------------- |
-| `--worktree=#123`                                               | 123            |
-| `--worktree '#123'`                                             | 123            |
-| `--worktree https://github.com/foo/bar/pull/123`                | 123            |
-| `--worktree https://gh.enterprise.com/foo/bar/pull/123?baz=qux` | 123            |
+| Form                                                            | Parsed PR number |
+| --------------------------------------------------------------- | ---------------- |
+| `--worktree=#123`                                               | 123              |
+| `--worktree '#123'`                                             | 123              |
+| `--worktree https://github.com/foo/bar/pull/123`                | 123              |
+| `--worktree https://gh.enterprise.com/foo/bar/pull/123?baz=qux` | 123              |
 
-**slug 与分支命名：**
+**slug and branch naming:**
 
-- slug：`pr-<N>`（特殊保留前缀，与用户 slug 区分）
-- 分支：`worktree-pr-<N>`（沿用 qwen-code 现有 `worktree-<slug>` 命名规则；不采用 claude-code 的 `pr-<N>` 直接命名，避免与本地 `pr-<N>` 分支冲突）
+- slug: `pr-<N>` (a special reserved prefix, to distinguish from user slugs)
+- branch: `worktree-pr-<N>` (follows qwen-code's existing `worktree-<slug>` naming rule; does not adopt claude-code's direct `pr-<N>` naming, to avoid conflicting with a local `pr-<N>` branch)
 
-**fetch 策略：**
+**fetch strategy:**
 
 ```
 git fetch origin pull/<N>/head
-→ 用 FETCH_HEAD 作为新 worktree 的 base
+→ use FETCH_HEAD as the base for the new worktree
 ```
 
-不依赖 `gh` CLI —— 纯 git fetch，支持任何 GitHub 实例（公网或企业版），只要 `origin` 远程指向 GitHub。
+Does not depend on the `gh` CLI — pure git fetch, supporting any GitHub instance (public or enterprise), as long as the `origin` remote points at GitHub.
 
-**错误路径：**
+**Error paths:**
 
-| 场景                     | 错误消息                                                                     |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `origin` 远程缺失        | `--worktree=#<N> requires an "origin" remote that points at GitHub.`         |
-| `git fetch` 失败         | `Failed to fetch PR #<N>: PR may not exist or origin remote is unreachable.` |
-| 网络超时（30s）          | 同上，加 `(timeout)`                                                         |
-| `origin` 远程不是 GitHub | 不做主动检查，由 `git fetch` 自然失败（PR 协议是 GitHub 特有的）             |
+| Scenario                      | Error message                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------ |
+| `origin` remote missing       | `--worktree=#<N> requires an "origin" remote that points at GitHub.`                 |
+| `git fetch` fails             | `Failed to fetch PR #<N>: PR may not exist or origin remote is unreachable.`         |
+| Network timeout (30s)         | Same as above, with `(timeout)` appended                                             |
+| `origin` remote is not GitHub | No active check; let `git fetch` fail naturally (the PR protocol is GitHub-specific) |
 
-**与 D-2 的关系：** PR worktree **同样**应用 `symlinkDirectories`（用户期望在 PR 上立刻能跑测试，依赖目录需要复用）。
+**Relationship to D-2:** PR worktrees **also** apply `symlinkDirectories` (the user expects to be able to run tests on the PR immediately, so dependency directories need to be reused).
 
-#### 影响文件
+#### Affected files
 
-| 文件                                                         | 变更类型                                                                                                                                   |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `packages/cli/src/config/config.ts`                          | yargs 新增 `--worktree` 选项；`CliArgs` 接口加 `worktree?: string \| boolean`                                                              |
-| `packages/cli/src/gemini.tsx`                                | `loadCliConfig()` 之后、主循环之前调用新的 `setupStartupWorktree()` helper                                                                 |
-| `packages/cli/src/startup/worktreeStartup.ts`                | 新建：`setupStartupWorktree()` 处理 slug 解析、PR fetch、sidecar 写入、cwd 切换                                                            |
-| `packages/cli/src/nonInteractiveCli.ts`                      | 复用同一 helper（已有 `restoreWorktreeContext` 注入逻辑，无须改）                                                                          |
-| `packages/cli/src/acp-integration/acpAgent.ts`               | 复用同一 helper                                                                                                                            |
-| `packages/core/src/services/gitWorktreeService.ts`           | 新增 `parsePRReference()`、`fetchPullRequestRef()`、`symlinkConfiguredDirectories()`；`createUserWorktree()` 接受可选 `baseBranchRef` 参数 |
-| `packages/cli/src/config/settingsSchema.ts`                  | 新增 `worktree.symlinkDirectories: string[]` 顶层项                                                                                        |
-| `packages/vscode-ide-companion/schemas/settings.schema.json` | 重新生成                                                                                                                                   |
-| `docs/users/features/worktree.md`                            | 新增 Quick Start CLI flag 章节、Settings 表新增一行                                                                                        |
+| File                                                         | Change type                                                                                                                                               |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/cli/src/config/config.ts`                          | yargs adds the `--worktree` option; the `CliArgs` interface adds `worktree?: string \| boolean`                                                           |
+| `packages/cli/src/gemini.tsx`                                | Call the new `setupStartupWorktree()` helper after `loadCliConfig()` and before the main loop                                                             |
+| `packages/cli/src/startup/worktreeStartup.ts`                | New: `setupStartupWorktree()` handles slug parsing, PR fetch, sidecar write, cwd switch                                                                   |
+| `packages/cli/src/nonInteractiveCli.ts`                      | Reuse the same helper (the existing `restoreWorktreeContext` injection logic needs no change)                                                             |
+| `packages/cli/src/acp-integration/acpAgent.ts`               | Reuse the same helper                                                                                                                                     |
+| `packages/core/src/services/gitWorktreeService.ts`           | Add `parsePRReference()`, `fetchPullRequestRef()`, `symlinkConfiguredDirectories()`; `createUserWorktree()` accepts an optional `baseBranchRef` parameter |
+| `packages/cli/src/config/settingsSchema.ts`                  | Add the top-level `worktree.symlinkDirectories: string[]` item                                                                                            |
+| `packages/vscode-ide-companion/schemas/settings.schema.json` | Regenerate                                                                                                                                                |
+| `docs/users/features/worktree.md`                            | Add a Quick Start CLI flag section and a new row to the Settings table                                                                                    |
 
-#### 安全与回滚
+#### Safety and Rollback
 
-- **fail-open vs fail-close：** symlink / hooks 失败 **不** 中止 worktree 创建（同 Phase C 既定模式）；PR fetch 失败 **中止** 启动（无 base ref 就无法创建 worktree）；slug 校验失败 **中止** 启动（与 `EnterWorktreeTool` 一致）。
-- **path traversal：** `symlinkDirectories` 项必须解析后仍在 `repoRoot` 内，否则拒绝该项并 log。
-- **PR fetch 超时：** 30 秒硬超时，避免无响应的网络拖死启动。
-- **cwd 切换的副作用：** 切 `process.cwd()` 之后，相对路径（如 `--prompt-file ./foo.txt`）的解析会受影响。**对策：** 在切 cwd 之前先解析所有相对路径参数（具体在 `setupStartupWorktree()` 入口处做一次 normalize）。
+- **fail-open vs fail-close:** symlink / hooks failures do **not** abort worktree creation (same as the established Phase C pattern); a PR fetch failure **aborts** startup (without a base ref the worktree cannot be created); a slug validation failure **aborts** startup (consistent with `EnterWorktreeTool`).
+- **path traversal:** Each `symlinkDirectories` item must still be inside `repoRoot` after resolution, otherwise the item is rejected and logged.
+- **PR fetch timeout:** A 30-second hard timeout, to avoid an unresponsive network stalling startup.
+- **Side effects of switching cwd:** After switching `process.cwd()`, the resolution of relative paths (e.g. `--prompt-file ./foo.txt`) is affected. **Countermeasure:** resolve all relative-path arguments before switching cwd (specifically, run a single normalize at the entry of `setupStartupWorktree()`).
 
-#### 开放问题
+#### Open Questions
 
-1. **`--worktree-keep-on-exit`？** claude-code 没有，qwen-code 是否需要一个 CLI flag 让 Exit Dialog 默认选 keep？建议**先不加**，等用户反馈。
-2. **`worktree.symlinkDirectories` 是否需要 per-project override？** 当前 settings 已经支持 user/workspace/project 三级合并，无需特殊处理。
-3. **PR fetch 是否要拉取 `merge` ref（`pull/<N>/merge`，即与 base 合并后的 ref）而非 `head`？** claude-code 选 `head`，理由是用户通常想看 PR 的实际改动。沿用此选择。
+1. **`--worktree-keep-on-exit`?** claude-code doesn't have it; does qwen-code need a CLI flag to make the Exit Dialog default to keep? Recommendation: **don't add it for now**, wait for user feedback.
+2. **Does `worktree.symlinkDirectories` need a per-project override?** The current settings already support three-level user/workspace/project merging, so no special handling is needed.
+3. **Should PR fetch pull the `merge` ref (`pull/<N>/merge`, i.e. the ref after merging with base) instead of `head`?** claude-code chooses `head`, on the grounds that users usually want to see the PR's actual changes. Follow this choice.
 
 ---
 
-### Future：高级功能（按需实现）
+### Future: Advanced features (implemented on demand)
 
-以下功能面向更特定的使用场景，当前阶段不纳入排期，待用户需求明确后再评估实现。
+The following features target more specific use cases. They are not scheduled in the current phase and will be evaluated for implementation once user needs are clear.
 
-| 功能                    | 说明                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------- |
-| sparse checkout         | `worktree.sparsePaths` 配置项，大型 monorepo 只 checkout 指定路径，缩短创建时间和磁盘占用 |
-| `.worktreeinclude` 文件 | 将 gitignore 的文件（`.env`、`secrets.json` 等）自动复制进 worktree                       |
-| tmux 集成               | `--worktree --tmux` 在新 tmux 窗口启动 worktree 会话                                      |
+| Feature                 | Description                                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| sparse checkout         | A `worktree.sparsePaths` config item; for large monorepos, only checkout the specified paths to shorten creation time and disk usage |
+| `.worktreeinclude` file | Automatically copy gitignored files (`.env`, `secrets.json`, etc.) into the worktree                                                 |
+| tmux integration        | `--worktree --tmux` starts the worktree session in a new tmux window                                                                 |

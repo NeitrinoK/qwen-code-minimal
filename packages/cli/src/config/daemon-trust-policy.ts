@@ -6,7 +6,6 @@
 
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
-import { ideContextStore } from '@qwen-code/qwen-code-core';
 import stripJsonComments from 'strip-json-comments';
 import { parseJsoncObject } from '../utils/jsonc-editor.js';
 import {
@@ -320,7 +319,9 @@ export async function readDaemonTrustPolicySnapshot(): Promise<DaemonTrustPolicy
   );
   const trustedFoldersError =
     trustedFoldersFile.error ?? parsedTrustedFolders.error;
-  const ideTrust = ideContextStore.get()?.workspaceState?.isTrusted;
+  // IDE integration is removed in this fork, so no IDE-provided trust signal
+  // is available; the folder-trust file remains the sole source of truth.
+  const ideTrust: boolean | undefined = undefined;
   const revision = semanticRevision({
     folderTrustEnabled,
     ideTrust,

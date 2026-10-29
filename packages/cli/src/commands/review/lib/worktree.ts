@@ -30,6 +30,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
   type Dirent,
   type Stats,
@@ -3118,8 +3119,15 @@ function farmNodeModules(
       // symlink at the target read as absent and the wipe was skipped — while
       // the link itself stayed to redirect whatever wrote there next.
       try {
-        lstatSync(target);
-        rmSync(target, { recursive: true, force: true });
+        // A dangling symlink at the target lstats fine but `rmSync` no-ops on
+        // it on macOS (force swallows the followed-target ENOENT), leaving the
+        // link to redirect the next writer. `unlinkSync` removes the link
+        // itself; only a real directory needs the recursive wipe.
+        if (lstatSync(target).isSymbolicLink()) {
+          unlinkSync(target);
+        } else {
+          rmSync(target, { recursive: true, force: true });
+        }
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') done.failed++;
       }
@@ -3171,7 +3179,14 @@ function farmNodeModules(
       return;
     }
     try {
-      rmSync(target, { recursive: true, force: true });
+      // See the no-source branch above: a dangling symlink here survives
+      // `rmSync` on macOS, so mkdirSync would then die EEXIST forever. Unlink
+      // the link directly; only a real directory needs the recursive wipe.
+      if (lstatSync(target).isSymbolicLink()) {
+        unlinkSync(target);
+      } else {
+        rmSync(target, { recursive: true, force: true });
+      }
     } catch {
       // Cannot clear it: leave it, and report nothing linked rather than
       // claiming a farm this code did not build.

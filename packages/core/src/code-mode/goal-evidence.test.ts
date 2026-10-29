@@ -48,8 +48,6 @@ describe('Code Mode Goal evidence', () => {
         sessionId: randomUUID(),
         codeModeOnly: true,
         chatRecording: false,
-        telemetry: { enabled: false },
-        deferTelemetryInitialization: true,
       });
       vi.spyOn(Storage.prototype, 'getProjectDir').mockReturnValue(workspace);
       recorder = new ChatRecordingService(config, undefined, false);

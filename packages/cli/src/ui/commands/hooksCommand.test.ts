@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, type Mock } from 'vitest';
 import { hooksCommand } from './hooksCommand.js';
 import { createMockCommandContext } from '../../test-utils/mockCommandContext.js';
 
@@ -21,14 +21,19 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
+
 describe('hooksCommand', () => {
   let mockContext: ReturnType<typeof createMockCommandContext>;
   let mockConfig: {
-    getHookSystem: ReturnType<typeof vi.fn>;
-    setHooksFromSettings: ReturnType<typeof vi.fn>;
-    getBareMode: ReturnType<typeof vi.fn>;
-    isSafeMode: ReturnType<typeof vi.fn>;
-    getTopTierMcpServers: ReturnType<typeof vi.fn>;
+    getHookSystem: MockAny;
+    setHooksFromSettings: MockAny;
+    getBareMode: MockAny;
+    isSafeMode: MockAny;
+    getTopTierMcpServers: MockAny;
   };
 
   beforeEach(() => {

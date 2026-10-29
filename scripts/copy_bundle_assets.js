@@ -39,7 +39,6 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { glob } from 'glob';
 import fs from 'node:fs';
-import { copyBrowserUseAssets } from './copy-browser-use-assets.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = join(__dirname, '..');
@@ -517,14 +516,9 @@ export function copyBundleAssets({ root = defaultRoot } = {}) {
       // DESIGN.md files are maintainer design narratives, not runtime inputs;
       // shipping one would hand a review a ~125 KB read_file target that
       // outweighs the context the slimmed skill saves.
-      skipEntry: (entry, sourcePath) =>
-        isBundledSkillTestFile(entry) ||
-        entry === 'DESIGN.md' ||
-        sourcePath === join(bundledSkillsDir, 'browser-use', 'runtime'),
+      skipEntry: (entry) =>
+        isBundledSkillTestFile(entry) || entry === 'DESIGN.md',
     });
-    if (existsSync(join(bundledSkillsDir, 'browser-use', 'SKILL.md'))) {
-      copyBrowserUseAssets(root, join(destBundledDir, 'browser-use'));
-    }
     console.log('Copied bundled skills to dist/bundled/');
   } else {
     console.warn(
@@ -580,78 +574,6 @@ export function copyBundleAssets({ root = defaultRoot } = {}) {
   } else {
     console.warn(
       `Warning: Extension examples directory not found at ${extensionExamplesDir}`,
-    );
-  }
-
-  // Copy the built Web Shell SPA (index.html + assets/) so the bundled
-  // `qwen serve` can serve the browser UI at its root path. The library
-  // build outputs (dist/index.js, dist/types) are for npm consumers and are
-  // intentionally NOT copied. Source only exists after the web-shell
-  // workspace is built (npm run build); when absent (e.g. a --cli-only
-  // build, or bundling without a prior full build) we warn and skip so the
-  // bundle step never fails — the daemon then runs API-only at runtime.
-  const webShellDistDir = join(root, 'packages', 'web-shell', 'dist');
-  const webShellIndexHtml = join(webShellDistDir, 'index.html');
-  const webShellAssetsDir = join(webShellDistDir, 'assets');
-  if (existsSync(webShellIndexHtml) && existsSync(webShellAssetsDir)) {
-    const destWebShellDir = join(distDir, 'web-shell');
-    mkdirSync(destWebShellDir, { recursive: true });
-    copyFileSync(webShellIndexHtml, join(destWebShellDir, 'index.html'));
-    copyRecursiveSync(webShellAssetsDir, join(destWebShellDir, 'assets'));
-    for (const file of ['manifest.webmanifest', 'sw.js']) {
-      const source = join(webShellDistDir, file);
-      if (existsSync(source)) {
-        copyFileSync(source, join(destWebShellDir, file));
-      } else {
-        console.warn(`Warning: Web Shell PWA asset not found: ${source}`);
-      }
-    }
-    console.log('Copied Web Shell UI to dist/web-shell/');
-  } else {
-    console.warn(
-      `Warning: Web Shell assets not found at ${webShellDistDir}; ` +
-        'dist/web-shell/ will be absent and `qwen serve` runs API-only. ' +
-        'Run a full `npm run build` before bundling to include the UI.',
-    );
-  }
-
-  const exportTranscriptRenderer = join(
-    root,
-    'packages',
-    'web-templates',
-    'src',
-    'export-html',
-    'dist',
-    'export-transcript-document.js',
-  );
-  const exportTranscriptCss = join(
-    root,
-    'packages',
-    'web-templates',
-    'src',
-    'export-html',
-    'dist',
-    'export-transcript-document.css',
-  );
-  if (existsSync(exportTranscriptRenderer) && existsSync(exportTranscriptCss)) {
-    copyFileSync(
-      exportTranscriptRenderer,
-      join(distDir, 'export-transcript-document.js'),
-    );
-    copyFileSync(
-      exportTranscriptCss,
-      join(distDir, 'export-transcript-document.css'),
-    );
-    console.log('Copied HTML export renderer to dist/');
-  } else {
-    const missingExportTranscriptAssets = [
-      exportTranscriptRenderer,
-      exportTranscriptCss,
-    ].filter((assetPath) => !existsSync(assetPath));
-    console.warn(
-      `Warning: HTML export renderer assets not found at ${missingExportTranscriptAssets.join(', ')}; ` +
-        'dist/ will carry no HTML export renderer. ' +
-        'Run a full `npm run build` before bundling to include it.',
     );
   }
 

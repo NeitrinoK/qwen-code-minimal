@@ -661,6 +661,31 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
     this.promptId = promptId;
   }
 
+  /**
+   * Best-effort skill-outcome-tracking hook. Registers this launch attempt
+   * with the SkillOutcomeTracker (owned by MemoryManager, keyed by project)
+   * so a later turn can score whether it helped or hurt. Wrapped so it can
+   * NEVER break skill launching — a missing/throwing config method (e.g. a
+   * partial `Config` mock in tests) is swallowed here rather than
+   * propagating out of `execute`.
+   */
+  private registerSkillLaunchOutcome(success: boolean): void {
+    try {
+      this.config
+        .getMemoryManager()
+        .registerSkillLaunch(
+          this.config.getProjectRoot(),
+          this.params.skill,
+          this.config.getSessionId(),
+          Date.now(),
+          success,
+          this.config,
+        );
+    } catch {
+      // Best-effort — must never break skill launching.
+    }
+  }
+
   getDescription(): string {
     return this.params.args === undefined
       ? `Use skill: "${this.params.skill}"`
@@ -747,6 +772,7 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
       this.config,
       new SkillLaunchEvent(this.params.skill, false, this.promptId),
     );
+    this.registerSkillLaunchOutcome(false);
     if (!disabledCommandFallbackAttempted) {
       recordSkillInvocation(this.config, {
         skillName: this.params.skill,
@@ -794,6 +820,7 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
         this.config,
         new SkillLaunchEvent(this.params.skill, false, this.promptId),
       );
+      this.registerSkillLaunchOutcome(false);
       if (!hiddenCommandFallbackAttempted) {
         recordSkillInvocation(this.config, {
           skillName: this.params.skill,
@@ -847,6 +874,7 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
               this.config,
               new SkillLaunchEvent(this.params.skill, false, this.promptId),
             );
+            this.registerSkillLaunchOutcome(false);
             return {
               llmContent: commandResult.error,
               returnDisplay: commandResult.error,
@@ -857,11 +885,11 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
               this.config,
               new SkillLaunchEvent(this.params.skill, true, this.promptId),
             );
+            this.registerSkillLaunchOutcome(true);
             // Don't track via `onSkillLoaded` (mirrors the disabled
             // branch above): the result is raw command text, not a
-            // skill body, so a tracked name here would block a later
-            // same-named file skill behind the dedup guard even though
-            // no body is resident.
+            // skill body, so tracking it would misattribute `/context`
+            // skill tokens to a command run.
             return {
               llmContent: [{ text: commandResult }],
               returnDisplay: `Executed command: ${this.params.skill}`,
@@ -874,6 +902,7 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
           this.config,
           new SkillLaunchEvent(this.params.skill, false, this.promptId),
         );
+        this.registerSkillLaunchOutcome(false);
         if (!commandFallbackAttempted) {
           recordSkillInvocation(this.config, {
             skillName: this.params.skill,
@@ -923,24 +952,14 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
         ) {
           throw error;
         }
-        activationWarning = ` Warning: review workflow activation failed (${error.message}); workflow dispatch may be unavailable.`;
+        activationWarning = `Warning: review workflow activation failed (${error.message}); workflow dispatch may be unavailable.`;
       }
 
-      // Prevent re-invoking an already-loaded skill from appending
-      // duplicate instructions to context. The first invocation
-      // returns the full skill body; subsequent invocations return a
-      // short confirmation so the model knows the skill is active
-      // without wasting context tokens. Check BEFORE calling
-      // onSkillLoaded, which adds the name to the loaded set.
-      if (this.isSkillLoaded(this.params.skill)) {
-        this.onSkillLoaded(this.params.skill);
-        void this.recordAutoSkillUsageBestEffort(skill);
-        const msg = `Skill "${this.params.skill}" is already loaded in context.${activationWarning}`;
-        return {
-          llmContent: msg,
-          returnDisplay: msg,
-        };
-      }
+      // No "already loaded" short-circuit: every invocation returns the full
+      // skill body and base directory, so the model always re-reads the
+      // current instructions instead of relying on an earlier copy that may
+      // have drifted out of its attention window.
+      this.registerSkillLaunchOutcome(true);
 
       const baseDir = path.dirname(skill.filePath);
       const llmContent = buildSkillLlmContent(baseDir, skill.body);
@@ -951,9 +970,12 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
         skillName: this.params.skill,
         success: true,
       });
+      this.config.markSkillInvoked(this.params.skill);
 
       return {
-        llmContent: [{ text: llmContent }],
+        llmContent: activationWarning
+          ? [{ text: llmContent }, { text: activationWarning }]
+          : [{ text: llmContent }],
         returnDisplay: skill.description,
         modelOverride: skill.model,
       };
@@ -967,6 +989,7 @@ class SkillToolInvocation extends BaseToolInvocation<SkillParams, ToolResult> {
         this.config,
         new SkillLaunchEvent(this.params.skill, false, this.promptId),
       );
+      this.registerSkillLaunchOutcome(false);
       if (!commandFallbackAttempted) {
         recordSkillInvocation(this.config, {
           skillName: this.params.skill,

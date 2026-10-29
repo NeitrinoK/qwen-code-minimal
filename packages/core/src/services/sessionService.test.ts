@@ -263,6 +263,11 @@ describe('SessionService', () => {
   let rmSyncSpy: MockInstance<typeof fs.rmSync>;
 
   beforeEach(() => {
+    // Reset accumulated mock call history between tests. Module mocks (e.g.
+    // `jsonl.readLines`) are not cleared by the `afterEach` `restoreAllMocks`
+    // (which only restores spies), so without this their `.mock.calls` leak
+    // across tests and break exact call-count / first-call assertions.
+    vi.clearAllMocks();
     vi.mocked(getProjectHash).mockReturnValue('test-project-hash');
     vi.mocked(path.join).mockImplementation((...args) => args.join('/'));
     vi.mocked(path.dirname).mockImplementation((p) => {

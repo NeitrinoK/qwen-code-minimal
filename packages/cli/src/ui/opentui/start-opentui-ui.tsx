@@ -68,13 +68,11 @@ import {
   SessionStatsProvider,
   useSessionStats,
 } from '../contexts/SessionContext.js';
-import { MessageType, type HistoryItemWithoutId } from '../types.js';
-import { useUpdateNoticeFlush } from './use-update-notice-flush.js';
+import { type HistoryItemWithoutId } from '../types.js';
 import { applyOpenTuiTheme } from './theme.js';
 import { getActiveOpenTuiTheme } from './theme-parity.js';
 import { useLogger } from '../hooks/useLogger.js';
 import { useAwaySummary } from '../hooks/useAwaySummary.js';
-import type { UpdateObject } from '../utils/updateCheck.js';
 import { OpenTuiApp } from './opentui-app-shell.js';
 import { useFollowupSuggestionGeneration } from './followup-generation.js';
 import { useTerminalFocus } from './focus-tracking.js';
@@ -96,8 +94,6 @@ import {
 const debugLogger = createDebugLogger('OPEN_TUI_START');
 
 export interface StartOpenTuiUIOptions {
-  postRenderConnectIde?: boolean;
-  postRenderInitializeTelemetry?: boolean;
   extensionRefreshState?: ExtensionRefreshState;
 }
 
@@ -202,28 +198,8 @@ function OpenTuiEntryApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- update-notification wiring (ink AppContainer parity) -----------------
-  const [updateNotice, setUpdateNotice] = useState<string | null>(null);
-  const isIdleRef = useRef(true);
-  useEffect(() => {
-    isIdleRef.current = !live.streaming;
-  }, [live.streaming]);
-  const addUpdateItem = useCallback(
-    (item: HistoryItemWithoutId) => {
-      if (item.type === MessageType.INFO) {
-        applyEvent({ type: 'info', text: item.text });
-      } else if (item.type === MessageType.WARNING) {
-        applyEvent({ type: 'warning', text: item.text });
-      } else if (item.type === MessageType.ERROR) {
-        applyEvent({ type: 'error', text: item.text });
-      }
-    },
-    [applyEvent],
-  );
-  const setUpdateInfo = useCallback((info: UpdateObject | null) => {
-    setUpdateNotice(info?.message ?? null);
-  }, []);
-  useUpdateNoticeFlush(addUpdateItem, setUpdateInfo, isIdleRef, live.streaming);
+  // Update notices came from the auto-updater, which this build does not ship.
+  const updateNotice: string | null = null;
 
   // --- two-press exit guard (ink useDoublePress parity) ---------------------
   const [exitHint, setExitHint] = useState<string | null>(null);
@@ -472,12 +448,7 @@ export async function startOpenTuiUI(
     );
     profileCheckpoint('first_paint');
 
-    startPostRenderPrefetches(config, settings, {
-      connectIde: options.postRenderConnectIde ?? false,
-      initializeTelemetry:
-        options.postRenderInitializeTelemetry ??
-        config.isTelemetryInitializationDeferred(),
-    });
+    startPostRenderPrefetches(config, settings);
 
     registerCleanup(async () => {
       root.unmount();

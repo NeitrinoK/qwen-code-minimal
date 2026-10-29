@@ -9,30 +9,51 @@ import {
   isStructuredError,
   QUOTA_EXHAUSTED_PREFIX,
 } from './quotaErrorDetection.js';
-import { AuthType } from './auth-type.js';
 import { getErrorMessage } from './errors.js';
+import type { AuthType } from './auth-type.js';
 
 const RATE_LIMIT_MESSAGE_BY_AUTH = {
-  [AuthType.USE_GEMINI]:
-    '\nPlease wait and try again later. To increase your limits, request a quota increase through AI Studio, or switch to another /auth method',
-  [AuthType.USE_VERTEX_AI]:
-    '\nPlease wait and try again later. To increase your limits, request a quota increase through Vertex, or switch to another /auth method',
   default:
     '\nPossible quota limitations in place or slow response times detected. Please wait and try again later.',
 } as const;
 
 const RATE_LIMIT_SUFFIXES = Object.values(RATE_LIMIT_MESSAGE_BY_AUTH);
 
-function getRateLimitMessage(authType?: AuthType): string {
-  if (authType === AuthType.USE_GEMINI) {
-    return RATE_LIMIT_MESSAGE_BY_AUTH[AuthType.USE_GEMINI];
-  }
-
-  if (authType === AuthType.USE_VERTEX_AI) {
-    return RATE_LIMIT_MESSAGE_BY_AUTH[AuthType.USE_VERTEX_AI];
-  }
-
+function getRateLimitMessage(_authType?: AuthType): string {
   return RATE_LIMIT_MESSAGE_BY_AUTH.default;
+}
+
+/**
+ * User-facing guidance shown when a request is rejected because the API key
+ * is invalid or expired (HTTP 401 / "token validation" errors).
+ */
+export const AUTH_TOKEN_ERROR_HELP =
+  '⚠ The model provider rejected your API key (invalid or expired).\n' +
+  '\n' +
+  'Renew it:\n' +
+  '  • /auth → select your provider → paste a new key, or\n' +
+  '  • update the key in ~/.qwen/.env';
+
+const AUTH_HELP_SUFFIX = `\n\n${AUTH_TOKEN_ERROR_HELP}`;
+
+/**
+ * True when an error is an authentication/token failure (invalid or expired
+ * token) rather than a transport/quota/other error. Narrow by design: only
+ * HTTP 401 and token-validation messages, so the renewal help is not shown for
+ * unrelated auth-adjacent failures (403/billing/quota).
+ */
+export function isAuthTokenError(error: {
+  status?: number;
+  message?: string;
+}): boolean {
+  if (error.status === 401) return true;
+  const m = (error.message ?? '').toLowerCase();
+  return (
+    m.includes('token validation') ||
+    m.includes('invalid token') ||
+    m.includes('unauthorized') ||
+    m.includes('invalid api key')
+  );
 }
 
 const API_ERROR_PREFIX = '[API Error: ';
@@ -72,6 +93,11 @@ function isAlreadyFormatted(value: string): boolean {
     return true;
   }
 
+  // Already carries the appended token-renewal help block.
+  if (trimmed.includes(AUTH_TOKEN_ERROR_HELP)) {
+    return true;
+  }
+
   return RATE_LIMIT_SUFFIXES.some((suffix) => trimmed.includes(`]${suffix}`));
 }
 
@@ -102,6 +128,9 @@ export function parseAndFormatApiError(
     if (error.status === 429) {
       text += getRateLimitMessage(authType);
     }
+    if (isAuthTokenError({ status: error.status, message })) {
+      text += AUTH_HELP_SUFFIX;
+    }
     return text;
   }
 
@@ -112,9 +141,14 @@ export function parseAndFormatApiError(
       return error;
     }
 
+    const rawTokenSuffix = isAuthTokenError({ message: error })
+      ? AUTH_HELP_SUFFIX
+      : '';
+
     const jsonStart = error.indexOf('{');
     if (jsonStart === -1) {
-      return `[API Error: ${error}]`; // Not a JSON error, return as is.
+      // Not a JSON error, return as is.
+      return `[API Error: ${error}]${rawTokenSuffix}`;
     }
 
     const jsonString = error.substring(jsonStart);
@@ -139,12 +173,23 @@ export function parseAndFormatApiError(
         if (parsedError.error.code === 429) {
           text += getRateLimitMessage(authType);
         }
+        if (
+          isAuthTokenError({
+            status:
+              typeof parsedError.error.code === 'number'
+                ? parsedError.error.code
+                : undefined,
+            message: finalMessage,
+          })
+        ) {
+          text += AUTH_HELP_SUFFIX;
+        }
         return text;
       }
     } catch (_e) {
       // Not a valid JSON, fall through and return the original message.
     }
-    return `[API Error: ${error}]`;
+    return `[API Error: ${error}]${rawTokenSuffix}`;
   }
 
   return '[API Error: An unknown error occurred.]';

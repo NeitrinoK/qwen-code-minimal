@@ -515,7 +515,9 @@ describe('tmuxPlan — every call is scoped to the private server', () => {
     const i = plan.start.indexOf('--');
     expect(i).toBeGreaterThan(-1);
     expect(plan.start[i + 1]).toContain('node cli.js');
-    expect(i + 2).toBe(plan.start.length);
+    // Only the geometry pin (`; resize-window …`) may follow the holder.
+    expect(plan.start[i + 2]).toBe(';');
+    expect(plan.start[i + 3]).toBe('resize-window');
   });
 
   it('PROPAGATES geometry — a hardcoded 80x24 must not pass', () => {
@@ -564,7 +566,7 @@ describe('tmuxPlan — every call is scoped to the private server', () => {
     // `trap : INT` so one C-c through the capture's own --keys path kills
     // neither the holder nor the server (measured: untrapped, pane →
     // session → server died before the capture).
-    expect(plan.start[plan.start.length - 1]).toBe(
+    expect(plan.start[plan.start.indexOf('--') + 1]).toBe(
       `trap : INT QUIT\n( trap '' INT QUIT; '/bin/sleep' 10800; kill -9 -$$ 2>/dev/null ) &\n: > '/ready'\n/bin/sh -c 'node cli.js'\ni=0; while [ $i -lt 180 ]; do '/bin/sleep' 60; i=$((i+1)); done`,
     );
   });
@@ -591,7 +593,7 @@ describe('tmuxPlan — every call is scoped to the private server', () => {
     const esc = (v: string): string => v.replaceAll("'", "'\\''");
     const cmd = `printf '%s' "it's"`;
     const inner = `/bin/sh -c '${esc(cmd)}'`;
-    const held = p.start[p.start.length - 1];
+    const held = p.start[p.start.indexOf('--') + 1];
     expect(held).toBe(
       `trap : INT QUIT\n( trap '' INT QUIT; '/bin/sleep' 10800; kill -9 -$$ 2>/dev/null ) &\n: > '${esc('/ready')}'\n${inner}\ni=0; while [ $i -lt 180 ]; do '/bin/sleep' 60; i=$((i+1)); done`,
     );
@@ -615,7 +617,7 @@ describe('tmuxPlan — every call is scoped to the private server', () => {
       readyFile: '/ready',
       sleepBin: "/opt/sl eep/sl'eep",
     });
-    const held = p.start[p.start.length - 1];
+    const held = p.start[p.start.indexOf('--') + 1];
     expect(held).toContain(`'/opt/sl eep/sl'\\''eep' 10800`);
     expect(held).toContain(`'/opt/sl eep/sl'\\''eep' 60`);
     // No bare invocation survives anywhere in the script.
@@ -645,7 +647,7 @@ describe('tmuxPlan — every call is scoped to the private server', () => {
     });
     const esc = (v: string): string => v.replaceAll("'", "'\\''");
     const inner = `/bin/sh -c '${esc('node cli.js')}'`;
-    const held = p.start[p.start.length - 1];
+    const held = p.start[p.start.indexOf('--') + 1];
     // Single layer now: the plan hands tmux the SCRIPT itself (default-shell
     // is pinned to /bin/sh in the same invocation), so the trap lives at
     // layer 0 — QUIT included — and only the sentinel path needs escaping.

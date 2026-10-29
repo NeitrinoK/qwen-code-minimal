@@ -139,6 +139,42 @@ describe('secure-browser-launcher', () => {
       }
     });
 
+    it('should allow mailto: links only when explicitly requested', async () => {
+      setPlatform('linux');
+      vi.stubEnv('DISPLAY', ':1');
+      const mailto = 'mailto:test@example.com?subject=Bug';
+
+      await expect(openBrowserSecurely(mailto)).rejects.toThrow(
+        'Unsafe protocol',
+      );
+
+      await openBrowserSecurely(mailto, { allowMailto: true });
+
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'xdg-open',
+        [mailto],
+        expect.any(Object),
+      );
+    });
+
+    it('should send mailto: links to the platform opener, never $BROWSER', async () => {
+      setPlatform('linux');
+      vi.stubEnv('DISPLAY', ':1');
+      vi.stubEnv('BROWSER', 'firefox');
+      const mailto = 'mailto:test@example.com?subject=Bug';
+
+      await openBrowserSecurely(mailto, { allowMailto: true });
+
+      // Reached the platform opener (xdg-open) and never spawned the $BROWSER
+      // binary (which launchDetached would have done via spawn).
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'xdg-open',
+        [mailto],
+        expect.any(Object),
+      );
+      expect(mockSpawn).not.toHaveBeenCalled();
+    });
+
     it('should allow file URLs only when explicitly requested with an allow-list', async () => {
       setLinuxDesktop();
       const filePath = resolve('report.html');

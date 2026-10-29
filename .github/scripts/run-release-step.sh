@@ -23,7 +23,7 @@ publish_package() {
       echo "::notice::${package_name}@${RELEASE_VERSION} already published; skipping"
       exit 0
     fi
-    corepack pnpm publish --no-git-checks --provenance "${publish_args[@]}"
+    npm publish --provenance "${publish_args[@]}"
   )
 }
 
@@ -84,12 +84,12 @@ case "${step}" in
     ;;
 
   pack-build)
-    build_paths=('dist' 'packages/web-templates/src/generated')
+    build_paths=('dist')
     while IFS= read -r -d '' path; do
       build_paths+=("${path}")
     done < <(find packages integrations -type d -name node_modules -prune -o -type d -name dist -prune -print0)
     printf '%s\n' "${build_paths[@]}"
-    [[ ${#build_paths[@]} -gt 2 ]] || {
+    [[ ${#build_paths[@]} -gt 1 ]] || {
       echo "::error::Pack Build Outputs found no build outputs beyond the hardcoded paths."
       exit 1
     }
@@ -118,7 +118,7 @@ case "${step}" in
 
   push-release-branch)
     release_branch_name="${BRANCH_NAME:?}"
-    git add package.json pnpm-lock.yaml packages/*/package.json packages/channels/*/package.json integrations/*/package.json integrations/*/qwen-extension.json
+    git add package.json package-lock.json packages/*/package.json
     if git diff --staged --quiet; then
       echo "No version changes to commit"
     else
@@ -176,16 +176,8 @@ case "${step}" in
     ;;
 
   publish-packages)
-    package_names="$(node "$(dirname "$0")/../../scripts/release-packages.mjs")"
-    publish_args=(--access public "--tag=${NPM_TAG}" --no-git-checks --provenance)
-    while IFS= read -r name; do
-      publish_args+=("--filter=${name}")
-    done <<< "${package_names}"
-    if [[ "${IS_DRY_RUN}" == "true" ]]; then
-      # Exercise packing and lifecycle checks even for an existing version.
-      publish_args+=(--dry-run --force)
-    fi
-    corepack pnpm -r publish "${publish_args[@]}"
+    # Only the bundled CLI in dist/ is published; the workspace packages are
+    # bundled into it and stay private.
     publish_package 'dist'
     ;;
 

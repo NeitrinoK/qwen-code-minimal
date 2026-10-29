@@ -9,13 +9,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import {
   AuthType,
-  deepseekProvider,
-  openRouterProvider,
-  tokenPlanProvider,
+  buildHubProviders,
   customProvider,
-  minimaxProvider,
   generateCustomEnvKey as generateCustomApiKeyEnvKey,
-  getDefaultModelIds,
   resolveBaseUrl,
   type ProviderSetupInputs,
 } from '@qwen-code/qwen-code-core';
@@ -25,13 +21,6 @@ import {
   maskApiKey,
 } from './useAuth.js';
 import { setNestedPropertySafe } from '../../config/settingsUtils.js';
-
-vi.mock('../hooks/useQwenAuth.js', () => ({
-  useQwenAuth: vi.fn(() => ({
-    qwenAuthState: {},
-    cancelQwenAuth: vi.fn(),
-  })),
-}));
 
 vi.mock('../../config/settingsUtils.js', async (importOriginal) => {
   const actual =
@@ -47,6 +36,11 @@ vi.mock('../../config/settingsUtils.js', async (importOriginal) => {
 vi.mock('../../config/modelProvidersScope.js', () => ({
   getPersistScopeForModelSelection: vi.fn(() => 'user'),
 }));
+
+const [hubProvider] = buildHubProviders({
+  label: 'Test Hub',
+  endpoints: [{ name: 'prod', baseUrl: 'https://hub.example.com/v1' }],
+});
 
 const createSettings = () => {
   const file = {
@@ -67,18 +61,16 @@ const createSettings = () => {
   };
 };
 
-const createConfig = (recordSlashCommand = vi.fn()) => {
+const createConfig = () => {
   const modelsConfig = {
     syncAfterAuthRefresh: vi.fn(),
   };
   return {
     getAuthType: vi.fn(() => AuthType.USE_OPENAI),
-    getUsageStatisticsEnabled: vi.fn(() => false),
     reloadModelProvidersConfig: vi.fn(),
     syncModelSelection: vi.fn(),
     refreshAuth: vi.fn(async () => undefined),
     getModelsConfig: vi.fn(() => modelsConfig),
-    getChatRecordingService: vi.fn(() => ({ recordSlashCommand })),
   };
 };
 
@@ -121,40 +113,9 @@ describe('useAuthCommand', () => {
     expect(result.current.authError).toBe(null);
   });
 
-  it('keeps first-time authentication open after saving only a preset image model', async () => {
+  it('configures Test Hub via the unified provider submit', async () => {
     const settings = createSettings();
-    const config = { ...createConfig(), getAuthType: vi.fn(() => undefined) };
-    const addItem = vi.fn();
-    const { result } = renderHook(() =>
-      useAuthCommand(settings as never, config as never, addItem),
-    );
-    await act(async () => {
-      await result.current.handleProviderSubmit(minimaxProvider, {
-        baseUrl: resolveBaseUrl(minimaxProvider),
-        apiKey: 'test-image',
-        modelIds: ['image-01'],
-      });
-    });
-    expect(settings.setValue).toHaveBeenCalledWith(
-      'user',
-      'modelProviders.openai',
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'image-01', imageOnly: true }),
-      ]),
-    );
-    expect(config.refreshAuth).not.toHaveBeenCalled();
-    expect(result.current.isAuthDialogOpen).toBe(true);
-    expect(result.current.isAuthenticating).toBe(false);
-    expect(result.current.authError).toBe(
-      'Service models saved. Configure a conversation model to start chatting.',
-    );
-    expect(addItem).not.toHaveBeenCalled();
-  });
-
-  it('configures DeepSeek via the unified provider submit', async () => {
-    const settings = createSettings();
-    const recordSlashCommand = vi.fn();
-    const config = createConfig(recordSlashCommand);
+    const config = createConfig();
     const addItem = vi.fn();
 
     const { result } = renderHook(() =>
@@ -162,23 +123,19 @@ describe('useAuthCommand', () => {
     );
 
     const inputs: ProviderSetupInputs = {
-      baseUrl: resolveBaseUrl(deepseekProvider),
-      apiKey: 'sk-deepseek',
-      modelIds: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      baseUrl: resolveBaseUrl(hubProvider),
+      apiKey: 'sk-test',
+      modelIds: ['Qwen/Qwen3.6-27B'],
     };
 
-    act(() => {
-      result.current.openAuthDialog();
-    });
-
     await act(async () => {
-      await result.current.handleProviderSubmit(deepseekProvider, inputs);
+      await result.current.handleProviderSubmit(hubProvider, inputs);
     });
 
     expect(settings.setValue).toHaveBeenCalledWith(
       'user',
-      'env.DEEPSEEK_API_KEY',
-      'sk-deepseek',
+      'env.HUB_API_KEY',
+      'sk-test',
     );
     expect(settings.setValue).toHaveBeenCalledWith(
       'user',
@@ -188,140 +145,16 @@ describe('useAuthCommand', () => {
     expect(settings.setValue).toHaveBeenCalledWith(
       'user',
       'model.name',
-      'deepseek-v4-flash',
+      'Qwen/Qwen3.6-27B',
     );
     expect(config.refreshAuth).toHaveBeenCalledWith(AuthType.USE_OPENAI);
     expect(result.current.isAuthDialogOpen).toBe(false);
     expect(addItem).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining('Successfully configured DeepSeek'),
+        text: expect.stringContaining('Successfully configured Test Hub'),
       }),
       expect.any(Number),
     );
-    expect(recordSlashCommand).toHaveBeenCalledWith({
-      phase: 'result',
-      rawCommand: '/auth',
-      outputHistoryItems: [
-        expect.objectContaining({
-          text: expect.stringContaining('Successfully configured DeepSeek'),
-        }),
-      ],
-    });
-  });
-
-  it('keeps live feedback but skips the /auth record when the dialog auto-opened', async () => {
-    const settings = createSettings();
-    const recordSlashCommand = vi.fn();
-    const config = createConfig(recordSlashCommand);
-    const addItem = vi.fn();
-
-    const { result } = renderHook(() =>
-      useAuthCommand(settings as never, config as never, addItem),
-    );
-
-    await act(async () => {
-      await result.current.handleProviderSubmit(deepseekProvider, {
-        baseUrl: resolveBaseUrl(deepseekProvider),
-        apiKey: 'sk-deepseek',
-        modelIds: ['deepseek-v4-flash'],
-      });
-    });
-
-    expect(addItem).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: expect.stringContaining('Successfully configured DeepSeek'),
-      }),
-      expect.any(Number),
-    );
-    expect(recordSlashCommand).not.toHaveBeenCalled();
-  });
-
-  it('clears the /auth recording latch when a command-opened dialog closes', async () => {
-    const settings = createSettings();
-    const recordSlashCommand = vi.fn();
-    const config = createConfig(recordSlashCommand);
-    const addItem = vi.fn();
-
-    const { result } = renderHook(() =>
-      useAuthCommand(settings as never, config as never, addItem),
-    );
-
-    act(() => {
-      result.current.openAuthDialog();
-      result.current.closeAuthDialog();
-      result.current.onAuthError('later unauthorized');
-    });
-
-    await act(async () => {
-      await result.current.handleProviderSubmit(deepseekProvider, {
-        baseUrl: resolveBaseUrl(deepseekProvider),
-        apiKey: 'sk-deepseek',
-        modelIds: ['deepseek-v4-flash'],
-      });
-    });
-
-    expect(addItem).toHaveBeenCalledTimes(1);
-    expect(recordSlashCommand).not.toHaveBeenCalled();
-  });
-
-  it('configures OpenRouter via the unified provider submit', async () => {
-    const settings = createSettings();
-    const config = createConfig();
-    const addItem = vi.fn();
-
-    const { result } = renderHook(() =>
-      useAuthCommand(settings as never, config as never, addItem),
-    );
-
-    await act(async () => {
-      await result.current.handleProviderSubmit(openRouterProvider, {
-        baseUrl: resolveBaseUrl(openRouterProvider),
-        apiKey: 'sk-or-v1-key',
-        modelIds: ['z-ai/glm-4.5-air:free'],
-      });
-    });
-
-    expect(settings.setValue).toHaveBeenCalledWith(
-      'user',
-      'env.OPENROUTER_API_KEY',
-      'sk-or-v1-key',
-    );
-    expect(settings.setValue).toHaveBeenCalledWith(
-      'user',
-      'security.auth.selectedType',
-      'openai',
-    );
-    expect(settings.setValue).toHaveBeenCalledWith(
-      'user',
-      'model.name',
-      'z-ai/glm-4.5-air:free',
-    );
-    expect(config.refreshAuth).toHaveBeenCalledWith(AuthType.USE_OPENAI);
-  });
-
-  it('configures Token Plan with the independent Token Plan endpoint', async () => {
-    const settings = createSettings();
-    const config = createConfig();
-    const addItem = vi.fn();
-
-    const { result } = renderHook(() =>
-      useAuthCommand(settings as never, config as never, addItem),
-    );
-
-    await act(async () => {
-      await result.current.handleProviderSubmit(tokenPlanProvider, {
-        baseUrl: resolveBaseUrl(tokenPlanProvider),
-        apiKey: 'sk-token-plan',
-        modelIds: getDefaultModelIds(tokenPlanProvider),
-      });
-    });
-
-    expect(settings.setValue).toHaveBeenCalledWith(
-      'user',
-      'env.BAILIAN_TOKEN_PLAN_API_KEY',
-      'sk-token-plan',
-    );
-    expect(config.refreshAuth).toHaveBeenCalledWith(AuthType.USE_OPENAI);
   });
 
   it('configures Custom API Key via the provider install plan flow', async () => {
@@ -432,10 +265,10 @@ describe('useAuthCommand', () => {
     );
 
     await act(async () => {
-      await result.current.handleProviderSubmit(deepseekProvider, {
-        baseUrl: resolveBaseUrl(deepseekProvider),
+      await result.current.handleProviderSubmit(hubProvider, {
+        baseUrl: resolveBaseUrl(hubProvider),
         apiKey: 'sk-bad',
-        modelIds: ['deepseek-v4-flash'],
+        modelIds: ['Qwen/Qwen3.6-27B'],
       });
     });
 
@@ -468,18 +301,6 @@ describe('generateCustomApiKeyEnvKey', () => {
       'https://api.openai.com/v1',
     );
     expect(key).toBe(key2);
-  });
-
-  it('produces different keys for different protocols', () => {
-    const key1 = generateCustomApiKeyEnvKey(
-      AuthType.USE_OPENAI,
-      'https://api.example.com/v1',
-    );
-    const key2 = generateCustomApiKeyEnvKey(
-      AuthType.USE_ANTHROPIC,
-      'https://api.example.com/v1',
-    );
-    expect(key1).not.toBe(key2);
   });
 
   it('produces different keys for different base URLs', () => {

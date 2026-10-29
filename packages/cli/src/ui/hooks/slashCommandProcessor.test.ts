@@ -86,23 +86,29 @@ vi.mock('node:process', () => {
 
 const mockBuiltinLoadCommands = vi.fn();
 vi.mock('../../services/BuiltinCommandLoader.js', () => ({
-  BuiltinCommandLoader: vi.fn().mockImplementation(() => ({
-    loadCommands: mockBuiltinLoadCommands,
-  })),
+  BuiltinCommandLoader: vi.fn().mockImplementation(function () {
+    return {
+      loadCommands: mockBuiltinLoadCommands,
+    };
+  }),
 }));
 
 const mockFileLoadCommands = vi.fn();
 vi.mock('../../services/FileCommandLoader.js', () => ({
-  FileCommandLoader: vi.fn().mockImplementation(() => ({
-    loadCommands: mockFileLoadCommands,
-  })),
+  FileCommandLoader: vi.fn().mockImplementation(function () {
+    return {
+      loadCommands: mockFileLoadCommands,
+    };
+  }),
 }));
 
 const mockMcpLoadCommands = vi.fn();
 vi.mock('../../services/McpPromptLoader.js', () => ({
-  McpPromptLoader: vi.fn().mockImplementation(() => ({
-    loadCommands: mockMcpLoadCommands,
-  })),
+  McpPromptLoader: vi.fn().mockImplementation(function () {
+    return {
+      loadCommands: mockMcpLoadCommands,
+    };
+  }),
 }));
 
 vi.mock('../contexts/SessionContext.js', () => ({
@@ -1219,25 +1225,6 @@ describe('useSlashCommandProcessor', () => {
       });
 
       expect(mockOpenOutputStyleDialog).toHaveBeenCalledTimes(1);
-    });
-
-    it('should handle "dialog: voice-model" action', async () => {
-      const command = createTestCommand({
-        name: 'voicemodelcmd',
-        action: vi
-          .fn()
-          .mockResolvedValue({ type: 'dialog', dialog: 'voice-model' }),
-      });
-      const result = setupProcessorHook([command]);
-      await waitFor(() => expect(result.current.slashCommands).toHaveLength(1));
-
-      await act(async () => {
-        await result.current.handleSlashCommand('/voicemodelcmd');
-      });
-
-      expect(mockOpenModelDialog).toHaveBeenCalledWith({
-        voiceModelMode: true,
-      });
     });
 
     it('should handle "dialog: vision-model" action', async () => {

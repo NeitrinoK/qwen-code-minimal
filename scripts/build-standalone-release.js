@@ -14,7 +14,6 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { parse as parseYaml } from 'yaml';
 import {
   TARGET_CLIPBOARD_PACKAGE,
   standaloneArchiveName,
@@ -251,20 +250,16 @@ async function packageTarget({
   });
 }
 
-// The release installs from pnpm-lock.yaml, so that is where every target's
-// native package version comes from. Only the build host's own platform
-// package is installed, so the installed tree cannot answer for the others.
-let pnpmLockedKeys;
-function readPnpmLockedVersion(packageName) {
-  pnpmLockedKeys ??= Object.keys(
-    parseYaml(fs.readFileSync(path.join(rootDir, 'pnpm-lock.yaml'), 'utf8'))
-      ?.packages ?? {},
-  );
-  const versions = pnpmLockedKeys
-    .filter((key) => key.startsWith(`${packageName}@`))
-    .map((key) => key.slice(packageName.length + 1));
-  // Two locked versions would leave the staged one ambiguous; fail instead.
-  return versions.length === 1 ? versions[0] : undefined;
+// The release installs from package-lock.json, so that is where every
+// target's native package version comes from. Only the build host's own
+// platform package is installed, so the installed tree cannot answer for the
+// others; npm still locks every optional platform package.
+let lockedPackages;
+function readLockedVersion(packageName) {
+  lockedPackages ??=
+    JSON.parse(fs.readFileSync(path.join(rootDir, 'package-lock.json'), 'utf8'))
+      .packages ?? {};
+  return lockedPackages[`node_modules/${packageName}`]?.version;
 }
 
 function readClipboardPackageSpecs() {
@@ -280,7 +275,7 @@ function readClipboardPackageSpecs() {
   ];
 
   return packageNames.map((packageName) => {
-    const version = readPnpmLockedVersion(packageName);
+    const version = readLockedVersion(packageName);
     const declaredVersion = cliPackage.optionalDependencies?.[packageName];
     if (!version || ![version, `^${version}`].includes(declaredVersion)) {
       fail(`Clipboard package version is not locked for ${packageName}`);
@@ -305,7 +300,7 @@ function readNodePtyPackageSpecs() {
   ).filter((packageName) => packageName.startsWith('@lydell/node-pty'));
 
   return packageNames.map((packageName) => {
-    const version = readPnpmLockedVersion(packageName);
+    const version = readLockedVersion(packageName);
     if (!version) {
       fail(`node-pty package version is not locked for ${packageName}`);
     }
@@ -350,7 +345,7 @@ function stageNativeModules(runtimeDir) {
 // so each standalone archive must ship the matching platform package(s).
 function readOpenTuiPackageSpecs() {
   return OPENTUI_PLATFORM_PACKAGES.map((packageName) => {
-    const version = readPnpmLockedVersion(packageName);
+    const version = readLockedVersion(packageName);
     if (!version) {
       fail(`OpenTUI platform package version is not locked for ${packageName}`);
     }

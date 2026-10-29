@@ -84,7 +84,11 @@ describe('ChatRecordingService - recordParentSession', () => {
     vi.spyOn(fs, 'existsSync').mockReturnValue(false);
 
     // writeLine is async; mockResolvedValue lets the writeChain settle on flush.
-    vi.mocked(jsonl.writeLine).mockResolvedValue(undefined);
+    // mockReset first: jsonl is vi.mock'd at module scope, so afterEach's
+    // vi.restoreAllMocks() (which only restores spies) leaves writeLine's
+    // recorded calls to accumulate across tests, inflating the
+    // toHaveBeenCalledOnce/Times assertions below.
+    vi.mocked(jsonl.writeLine).mockReset().mockResolvedValue(undefined);
     mockLease = {
       sessionId: 'test-session-id',
       ownerId: 'test-owner-id',

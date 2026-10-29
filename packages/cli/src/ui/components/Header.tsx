@@ -25,8 +25,6 @@ import { formatVersionLabel } from '../../utils/version.js';
  * Simplified representation of authentication method shown to users.
  */
 export enum AuthDisplayType {
-  QWEN_OAUTH = 'qwen_oauth',
-  CODING_PLAN = 'coding_plan',
   API_KEY = 'api_key',
   UNKNOWN = 'unknown',
 }
@@ -40,10 +38,6 @@ function formatAuthDisplayType(
 
   const value = authDisplayType.trim();
   switch (value) {
-    case AuthDisplayType.QWEN_OAUTH:
-      return t('Qwen OAuth');
-    case AuthDisplayType.CODING_PLAN:
-      return t('Coding Plan');
     case AuthDisplayType.API_KEY:
       return t('API Key');
     case AuthDisplayType.UNKNOWN:
@@ -209,10 +203,10 @@ export const Header: React.FC<HeaderProps> = ({
         width={showLogo ? availableInfoPanelWidth : undefined}
       >
         {/* Title line: customBannerTitle (already sanitized) or the default
-            ">_ Qwen Code" brand. Version suffix is always appended. */}
+            ">_ Qwen Code Minimal" brand. Version suffix is always appended. */}
         <Text>
           <Text bold color={theme.text.accent}>
-            {customBannerTitle ? customBannerTitle : '>_ Qwen Code'}
+            {customBannerTitle ? customBannerTitle : '>_ Qwen Code Minimal'}
           </Text>
           <Text color={theme.text.secondary}> ({versionLabel})</Text>
         </Text>

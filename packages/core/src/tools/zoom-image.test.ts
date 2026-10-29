@@ -86,7 +86,14 @@ describe('ZoomImageTool', () => {
     zoomTool.build(params(file, region)).execute(new AbortController().signal);
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'zoom-image-tool-'));
+    // Canonicalize: the fork's getFileReadDefaultPermission resolves the
+    // requested path via realpathNearestExisting (collapsing the macOS
+    // /var -> /private/var symlink) before comparing against workspace
+    // roots, so the workspace root mock must be canonical too or the
+    // in-workspace path is misclassified as external ('ask').
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'zoom-image-tool-')),
+    );
     const config = {
       getFileService: () => new FileDiscoveryService(root),
       getTargetDir: () => root,

@@ -239,7 +239,6 @@ export interface OpenDialogActionReturn {
     | 'model'
     | 'fast-model'
     | 'advisor-model'
-    | 'voice-model'
     | 'vision-model'
     | 'compaction-model'
     | 'image-model'

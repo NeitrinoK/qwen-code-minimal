@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import type { Config, OutputStyleDefinition } from '@qwen-code/qwen-code-core';
 import {
   BUILT_IN_OUTPUT_STYLES,
@@ -16,6 +16,11 @@ import { outputStyleCommand } from './output-style-command.js';
 import { SettingScope } from '../../config/settings.js';
 import { createMockCommandContext } from '../../test-utils/mockCommandContext.js';
 import { t } from '../../i18n/index.js';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 // t() returns the key verbatim so assertions can match on the key text.
 vi.mock('../../i18n/index.js', () => ({
@@ -41,10 +46,10 @@ const CUSTOM_STYLE: OutputStyleDefinition = {
 };
 
 describe('outputStyleCommand', () => {
-  let setOutputStyle: ReturnType<typeof vi.fn>;
-  let getOutputStyle: ReturnType<typeof vi.fn>;
-  let refreshSystemInstruction: ReturnType<typeof vi.fn>;
-  let setValue: ReturnType<typeof vi.fn>;
+  let setOutputStyle: MockAny;
+  let getOutputStyle: MockAny;
+  let refreshSystemInstruction: MockAny;
+  let setValue: MockAny;
   let context: CommandContext;
 
   beforeEach(() => {
@@ -122,7 +127,7 @@ describe('outputStyleCommand', () => {
   it('reads project styles only from a trusted folder', async () => {
     (
       context.services.config as unknown as {
-        isTrustedFolder: ReturnType<typeof vi.fn>;
+        isTrustedFolder: MockAny;
       }
     ).isTrustedFolder = vi.fn().mockReturnValue(false);
 
@@ -197,7 +202,7 @@ describe('outputStyleCommand', () => {
   it('notes that the style has no effect when the system prompt is replaced', async () => {
     (
       context.services.config as unknown as {
-        getSystemPrompt: ReturnType<typeof vi.fn>;
+        getSystemPrompt: MockAny;
       }
     ).getSystemPrompt = vi.fn().mockReturnValue('replaced');
 
@@ -367,7 +372,7 @@ describe('outputStyleCommand', () => {
   it('reports why Learning is skipped in a headless run', async () => {
     (
       context.services.config as unknown as {
-        isInteractive: ReturnType<typeof vi.fn>;
+        isInteractive: MockAny;
       }
     ).isInteractive = vi.fn().mockReturnValue(false);
 
@@ -403,7 +408,7 @@ describe('outputStyleCommand', () => {
       .mockReturnValue(false);
     (
       context.services.config as unknown as {
-        isTrustedFolder: ReturnType<typeof vi.fn>;
+        isTrustedFolder: MockAny;
       }
     ).isTrustedFolder = isTrustedFolder;
 
@@ -435,7 +440,7 @@ describe('outputStyleCommand', () => {
     setOutputStyle(getBuiltInOutputStyle('Learning'));
     (
       context.services.config as unknown as {
-        isInteractive: ReturnType<typeof vi.fn>;
+        isInteractive: MockAny;
       }
     ).isInteractive = vi.fn().mockReturnValue(false);
 
@@ -468,12 +473,9 @@ describe('outputStyleCommand', () => {
   it.each(['getBareMode', 'isSafeMode'] as const)(
     'rejects changes when %s is active',
     async (mode) => {
-      (
-        context.services.config as unknown as Record<
-          typeof mode,
-          ReturnType<typeof vi.fn>
-        >
-      )[mode] = vi.fn().mockReturnValue(true);
+      (context.services.config as unknown as Record<typeof mode, MockAny>)[
+        mode
+      ] = vi.fn().mockReturnValue(true);
 
       const res = await outputStyleCommand.action!(context, 'Concise');
 

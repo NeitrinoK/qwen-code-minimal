@@ -325,6 +325,11 @@ describe('BackgroundAgentResumeService', () => {
       getSkillManager: () => options.skillManager,
       getDisabledSkillNames: () => new Set<string>(),
       isSkillEnabled: () => true,
+      // buildAvailableSkillsReminder reads this outside its inner try/catch;
+      // without it the skills + deferred-tool reminder branches throw and are
+      // swallowed by buildForkResumeCapabilityReminder. Mirrors the real
+      // Config default (true).
+      getSkillEnforcementEnabled: () => true,
       getModelInvocableCommandsProvider: () => undefined,
       getSkipStartupContext: () => true,
       getTranscriptPath: () => path.join(tempDir, 'session.jsonl'),

@@ -201,7 +201,15 @@ function cleanupOldHeapSnapshots(
 
   for (const filePath of snapshots.slice(maxSnapshots)) {
     try {
-      fs.rmSync(filePath, { force: true });
+      // Use unlinkSync, not rmSync({ force: true }): on Node 20+ /macOS,
+      // rmSync with `force` silently no-ops on a DANGLING symlink (it
+      // stats the missing target, sees ENOENT, and treats the entry as
+      // "already gone" without unlinking the link itself). unlinkSync
+      // operates on the link entry directly, so a broken snapshot symlink
+      // is actually removed. The surrounding try/catch keeps cleanup
+      // best-effort — an entry that genuinely vanished throws ENOENT,
+      // which we ignore.
+      fs.unlinkSync(filePath);
     } catch {
       // Cleanup is best effort; one stuck file should not block the rest.
     }

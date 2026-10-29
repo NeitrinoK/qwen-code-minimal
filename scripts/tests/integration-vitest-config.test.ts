@@ -37,20 +37,15 @@ describe('integration Vitest config', () => {
   it('serializes test files on shared self-hosted runners', async () => {
     const config = await configFor('self-hosted');
     expect(config.test?.pool).toBe('forks');
-    expect(config.test?.poolOptions?.forks).toEqual({
-      minForks: 1,
-      maxForks: 1,
-    });
-    expect(config.test?.poolOptions?.threads).toBeUndefined();
+    // Vitest 4 removed `poolOptions`; the limits are top-level options now.
+    expect(config.test?.maxWorkers).toBe(1);
+    expect(config.test).not.toHaveProperty('poolOptions');
   });
 
   it('keeps the existing fork limits outside the shared pool', async () => {
     for (const environment of ['github-hosted', undefined]) {
       const config = await configFor(environment);
-      expect(config.test?.poolOptions?.forks).toEqual({
-        minForks: 2,
-        maxForks: 4,
-      });
+      expect(config.test?.maxWorkers).toBe(4);
     }
   });
 

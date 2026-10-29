@@ -59,6 +59,7 @@ export enum Command {
   EXIT = 'exit',
   SHOW_MORE_LINES = 'showMoreLines',
   RETRY_LAST = 'retryLast',
+  TOGGLE_COMPACT_MODE = 'toggleCompactMode',
   TOGGLE_RENDER_MODE = 'toggleRenderMode',
   /**
    * Promote the running foreground shell command to a background task.
@@ -150,6 +151,7 @@ export const defaultKeyBindings: KeyBindingConfig = {
 
   // Screen control
   [Command.CLEAR_SCREEN]: [{ key: 'l', ctrl: true }],
+  [Command.TOGGLE_COMPACT_MODE]: [{ key: 'o', ctrl: true }],
 
   // History navigation
   [Command.HISTORY_UP]: [{ key: 'p', ctrl: true }],
@@ -267,11 +269,10 @@ export const defaultKeyBindings: KeyBindingConfig = {
   [Command.EXPAND_SUGGESTION]: [{ key: 'right' }],
   [Command.COLLAPSE_SUGGESTION]: [{ key: 'left' }],
 
-  // Thinking expansion (Ctrl+O primary, Alt+T legacy)
-  [Command.TOGGLE_THINKING_EXPANDED]: [
-    { key: 'o', ctrl: true },
-    { key: 't', meta: true },
-  ],
+  // Thinking expansion. Upstream moved this to Ctrl+O, but this fork reserves
+  // Ctrl+O for TOGGLE_COMPACT_MODE, so keep the fork's Alt+T binding to avoid a
+  // collision where a single Ctrl+O press would toggle both.
+  [Command.TOGGLE_THINKING_EXPANDED]: [{ key: 't', meta: true }],
 
   // Scroll commands
   [Command.SCROLL_UP]: [{ key: 'up', shift: true }],

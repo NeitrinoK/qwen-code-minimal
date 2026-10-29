@@ -40,45 +40,29 @@ export { discoverProviderModels } from './model-discovery.js';
 // Provider registry
 export {
   ALL_PROVIDERS,
-  ALIBABA_PROVIDERS,
-  alibabaStandardProvider,
-  codingPlanProvider,
   CUSTOM_API_KEY_ENV_PREFIX,
   customProvider,
-  deepseekProvider,
+  findDiscoverableProviderByBaseUrl,
   findProviderByCredentials,
   findProviderById,
   generateCustomEnvKey,
   getAllProviderBaseUrls,
   grokProvider,
-  idealabProvider,
-  minimaxProvider,
-  modelscopeProvider,
-  moonshotProvider,
-  openRouterProvider,
   requestyProvider,
-  THIRD_PARTY_PROVIDERS,
-  tokenPlanProvider,
-  zaiProvider,
+  setHubProviders,
 } from './all-providers.js';
 
+export {
+  buildHubProviders,
+  HUB_UI_GROUP,
+  isHubProvider,
+  type HubEndpointSettings,
+  type HubLoadPillSettings,
+  type HubModelSettings,
+  type HubSettings,
+} from './presets/openai-hub.js';
+
 // Preset constants
-export {
-  CODING_PLAN_CHINA_BASE_URL,
-  CODING_PLAN_ENV_KEY,
-  CODING_PLAN_GLOBAL_BASE_URL,
-} from './presets/alibaba-coding-plan.js';
-export {
-  TOKEN_PLAN_BASE_URL,
-  TOKEN_PLAN_CHINA_BASE_URL,
-  TOKEN_PLAN_ENV_KEY,
-  TOKEN_PLAN_GLOBAL_BASE_URL,
-} from './presets/alibaba-token-plan.js';
-export { GROK_BASE_URL, GROK_ENV_KEY } from './presets/grok.js';
-export {
-  OPENROUTER_BASE_URL,
-  OPENROUTER_ENV_KEY,
-} from './presets/openrouter.js';
 export { REQUESTY_BASE_URL, REQUESTY_ENV_KEY } from './presets/requesty.js';
 
 // Install logic
@@ -90,3 +74,7 @@ export {
 } from './install.js';
 
 export { preserveModelProviderPlaceholders } from './model-config-serialization.js';
+
+// Model discovery
+export { listProviderModelIds } from './discover-models.js';
+export type { DiscoverModelsOptions } from './discover-models.js';

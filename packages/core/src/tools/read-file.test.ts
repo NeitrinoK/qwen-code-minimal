@@ -739,9 +739,10 @@ describe('ReadFileTool', () => {
       const response = new Promise<{ content: string }>((resolve) => {
         release = resolve;
       });
-      const service = Object.assign(new StandardFileSystemService(), {
-        withReadFile: undefined,
-      });
+      const service: StandardFileSystemService = Object.assign(
+        new StandardFileSystemService(),
+        { withReadFile: undefined },
+      ) as unknown as StandardFileSystemService;
       const read = vi
         .spyOn(service, 'readTextFile')
         .mockReturnValueOnce(response);

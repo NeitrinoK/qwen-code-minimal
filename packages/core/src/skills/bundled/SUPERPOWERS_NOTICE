@@ -1,0 +1,7 @@
+The superpowers-* skills bundled here are adapted from obra/superpowers
+(https://github.com/obra/superpowers), MIT © 2025 Jesse Vincent, vendored
+version 6.1.1. Adaptations: names prefixed `superpowers:`, cross-references
+rewritten to the prefixed names, Claude-Code-specific bits removed (SessionStart
+hook, visual companion, plugin-cache paths), and the always-invoke bootstrap
+(`using-superpowers`) replaced by qwen-code-minimal's `skills.enforceInvocation`
+setting. See docs/superpowers/specs/2026-07-15-bundle-superpowers-skills-design.md.

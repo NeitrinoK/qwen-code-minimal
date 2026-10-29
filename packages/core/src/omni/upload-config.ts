@@ -6,11 +6,34 @@
 
 import type { Config } from '../config/config.js';
 import type { ContentGeneratorConfig } from '../core/contentGenerator.js';
-import { AuthType } from '../core/contentGenerator.js';
-import { DashScopeOpenAICompatibleProvider } from '../core/openaiContentGenerator/provider/dashscope.js';
 
-const QWEN_OAUTH_PLACEHOLDER_API_KEY = 'QWEN_OAUTH_DYNAMIC_TOKEN';
 const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// The DashScope provider class is not part of this build, so the upload
+// channel carries its own endpoint check. Hostname comparison (not a regex on
+// the raw URL) rejects path-only look-alikes such as
+// https://evil.example/dashscope.aliyuncs.com/.
+const DASHSCOPE_REGIONAL_HOSTS: readonly string[] = [
+  'dashscope.aliyuncs.com',
+  'dashscope-intl.aliyuncs.com',
+  'dashscope-us.aliyuncs.com',
+];
+
+function isDashScopeBaseUrl(baseUrl: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    DASHSCOPE_REGIONAL_HOSTS.some(
+      (host) => hostname === host || hostname.endsWith('.' + host),
+    ) ||
+    (hostname.startsWith('token-plan.') &&
+      hostname.endsWith('.maas.aliyuncs.com'))
+  );
+}
 
 export interface OmniUploadConfig {
   baseUrl: string;
@@ -58,12 +81,7 @@ export function normalizeDedicatedOmniUploadConfig(
       'omni.delivery.upload.apiKeyEnv must be a valid environment variable name.',
     );
   }
-  if (
-    !DashScopeOpenAICompatibleProvider.isDashScopeProvider({
-      authType: AuthType.USE_OPENAI,
-      baseUrl,
-    } as ContentGeneratorConfig)
-  ) {
+  if (!isDashScopeBaseUrl(baseUrl)) {
     throw new OmniUploadConfigError(
       'omni.delivery.upload.baseUrl must be a DashScope-compatible endpoint.',
     );
@@ -83,14 +101,10 @@ function resolveLegacyOmniUploadConfig(
 ): OmniUploadConfig | undefined {
   if (
     !contentGeneratorConfig ||
-    contentGeneratorConfig.authType === AuthType.QWEN_OAUTH ||
     !contentGeneratorConfig.apiKey ||
-    contentGeneratorConfig.apiKey === QWEN_OAUTH_PLACEHOLDER_API_KEY ||
     !contentGeneratorConfig.baseUrl ||
     !model ||
-    !DashScopeOpenAICompatibleProvider.isDashScopeProvider(
-      contentGeneratorConfig,
-    )
+    !isDashScopeBaseUrl(contentGeneratorConfig.baseUrl)
   ) {
     return undefined;
   }

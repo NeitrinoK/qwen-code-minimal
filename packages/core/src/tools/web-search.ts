@@ -6,9 +6,7 @@
 
 import type { FunctionDeclaration } from '@google/genai';
 import type { Config } from '../config/config.js';
-import { AuthType } from '../core/contentGenerator.js';
-import { DEFAULT_DASHSCOPE_BASE_URL } from '../core/openaiContentGenerator/constants.js';
-import { DASHSCOPE_REGIONAL_HOSTS } from '../core/openaiContentGenerator/provider/dashscope.js';
+import { AuthType } from '../utils/auth-type.js';
 import { getDefaultApiKeyEnvVar } from '../models/modelConfigErrors.js';
 import {
   ALL_PROVIDERS,
@@ -36,6 +34,20 @@ import type { PermissionDecision } from '../permissions/types.js';
 import { BaseDeclarativeTool, BaseToolInvocation, Kind } from './tools.js';
 import { ToolNames, ToolDisplayNames } from './tool-names.js';
 import { createDebugLogger, type DebugLogger } from '../utils/debugLogger.js';
+
+/**
+ * DashScope constants. The DashScope provider/auth was removed from this fork,
+ * so these are retained locally to keep the (OpenAI-compatible) WebSearch tool
+ * self-contained: the default OpenAI-compatible search endpoint and the
+ * regional hosts allowlisted for the side request.
+ */
+const DEFAULT_DASHSCOPE_BASE_URL =
+  'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const DASHSCOPE_REGIONAL_HOSTS: readonly string[] = [
+  'dashscope.aliyuncs.com',
+  'dashscope-intl.aliyuncs.com',
+  'dashscope-us.aliyuncs.com',
+];
 
 /** Mirrors claw-code's WebSearchTool `maxResultSizeChars`. */
 const MAX_RESULT_SIZE_CHARS = 100_000;
@@ -247,8 +259,7 @@ const gateDebugLogger: DebugLogger = createDebugLogger('WEB_SEARCH');
 
 /**
  * Whether a provider entry can back the search side channel: a direct API
- * key on a DashScope-compatible HTTPS endpoint. OAuth entries are excluded —
- * their tokens cannot authenticate this request.
+ * key on a DashScope-compatible HTTPS endpoint.
  */
 function isUsableSearchEntry(entry: {
   authType: AuthType;
@@ -257,7 +268,6 @@ function isUsableSearchEntry(entry: {
   apiKey?: string;
 }): boolean {
   return (
-    entry.authType !== AuthType.QWEN_OAUTH &&
     !!entry.baseUrl &&
     isDashScopeCompatibleBaseUrl(entry.baseUrl) &&
     (!!entry.apiKey?.trim() ||
@@ -621,16 +631,10 @@ export function evaluateWebSearchGate(config: Config): WebSearchGateResult {
     };
   }
   // The same model id can legally appear on several provider entries
-  // (different baseUrls, or an OAuth entry sorted first). Prefer an entry
-  // this tool can actually use; fall back to the first match so the notice
-  // below names the concrete disqualifier.
+  // (different baseUrls). Prefer an entry this tool can actually use; fall
+  // back to the first match so the notice below names the concrete
+  // disqualifier.
   const entry = matches.find(isUsableSearchEntry) ?? matches[0];
-  if (entry.authType === AuthType.QWEN_OAUTH) {
-    return {
-      ok: false,
-      notice: `WebSearch search model "${selector}" resolves to a Qwen OAuth entry. The search side channel needs a modelProviders entry with a direct API key (envKey); OAuth tokens cannot back it. Use an authType-qualified selector (e.g. "openai:<model-id>") to target a specific entry.`,
-    };
-  }
   if (!entry.baseUrl) {
     return {
       ok: false,

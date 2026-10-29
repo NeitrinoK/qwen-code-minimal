@@ -1,33 +1,33 @@
-# Phase 3 技术设计文档：体验对齐
+# Phase 3 Technical Design Document: Experience Alignment
 
-## 1. 设计目标与约束
+## 1. Design Goals and Constraints
 
-### 1.1 目标
+### 1.1 Goals
 
-Phase 3 在 Phase 1/2 已落地的命令元数据、跨模式过滤和 prompt command 模型调用基础上，补齐用户可感知的 slash command 体验：
+Building on the command metadata, cross-mode filtering, and prompt command model invocation already delivered in Phase 1/2, Phase 3 fills in the user-perceivable slash command experience:
 
-- 补全菜单展示来源、参数提示、alias 命中，并引入 session 级最近使用排序
-- 完善 mid-input slash command 的 ghost text、参数提示、来源展示和有效 token 高亮
-- 将 `/help` 从当前不可用的命令堆砌重构为 Claude Code 风格的分 tab、清晰、美观的帮助面板
-- 增强 ACP `available_commands_update` 的命令元数据
-- 确认已实现的 `/doctor` 不重复实现；`/release-notes` 不纳入本阶段
+- Show source, argument hints, and alias hits in the completion menu, and introduce session-level recently-used ordering
+- Refine the ghost text, argument hints, source display, and valid-token highlighting for mid-input slash commands
+- Refactor `/help` from its current unusable command dump into a Claude Code-style tabbed, clear, and polished help panel
+- Enrich the command metadata in the ACP `available_commands_update`
+- Confirm that the already-implemented `/doctor` is not reimplemented; `/release-notes` is not included in this phase
 
-### 1.2 硬性约束
+### 1.2 Hard Constraints
 
-- **代码为准**：Phase 1/2 文档与实现存在差异时，以当前主分支源码为准。
-- **不引入新执行架构**：继续复用现有 `SlashCommand`、`CommandService`、`handleSlashCommand`、`useSlashCompletion` 和 `Help` 组件，不新建 `CommandDescriptor` / `CommandExecutor` / `ModeAdapter`。
-- **不恢复 `commandType`**：当前实现已删除 Phase 1 早期设计中的 `commandType` 字段，Phase 3 不重新引入该字段。
-- **session 级 recently used**：最近使用排序只在当前 CLI session 内生效，不持久化到磁盘。
-- **interactive 行为不退化**：补全、help、doctor 等已有 interactive 行为保持可用；Phase 3 只增强展示与补齐缺失命令。
-- **ACP 向后兼容**：`availableCommands[].name`、`description`、`input` 三个已有字段保持不变；新增元数据放在兼容字段或 `_meta` 中，避免破坏已有 ACP 客户端。
+- **Code is authoritative**: When the Phase 1/2 docs diverge from the implementation, the current main branch source code prevails.
+- **No new execution architecture**: Continue to reuse the existing `SlashCommand`, `CommandService`, `handleSlashCommand`, `useSlashCompletion`, and `Help` components; do not introduce new `CommandDescriptor` / `CommandExecutor` / `ModeAdapter`.
+- **Do not restore `commandType`**: The current implementation has removed the `commandType` field from the early Phase 1 design; Phase 3 does not reintroduce that field.
+- **Session-level recently used**: Recently-used ordering applies only within the current CLI session and is not persisted to disk.
+- **No regression in interactive behavior**: Existing interactive behaviors such as completion, help, and doctor remain usable; Phase 3 only enhances the display and fills in missing commands.
+- **ACP backward compatibility**: The three existing fields `availableCommands[].name`, `description`, and `input` remain unchanged; new metadata goes into compatible fields or `_meta` to avoid breaking existing ACP clients.
 
 ---
 
-## 2. 当前实现基线（源码审计结论）
+## 2. Current Implementation Baseline (Source Audit Conclusions)
 
-### 2.1 已有元数据与 Loader 行为
+### 2.1 Existing Metadata and Loader Behavior
 
-`packages/cli/src/ui/commands/types.ts` 当前 `SlashCommand` 已包含：
+`packages/cli/src/ui/commands/types.ts` currently has `SlashCommand` including:
 
 - `source?: CommandSource`
 - `sourceLabel?: string`
@@ -38,7 +38,7 @@ Phase 3 在 Phase 1/2 已落地的命令元数据、跨模式过滤和 prompt co
 - `whenToUse?: string`
 - `examples?: string[]`
 
-`CommandSource` 当前支持：
+`CommandSource` currently supports:
 
 ```typescript
 export type CommandSource =
@@ -49,65 +49,65 @@ export type CommandSource =
   | 'mcp-prompt';
 ```
 
-各 Loader 当前已填充的展示信息：
+Display information each Loader currently populates:
 
-| Loader                                  | source                                 | sourceLabel                              | argumentHint     | modelInvocable                                   |
-| --------------------------------------- | -------------------------------------- | ---------------------------------------- | ---------------- | ------------------------------------------------ |
-| `BuiltinCommandLoader`                  | `builtin-command`                      | `Built-in`                               | 多数未声明       | `false`                                          |
-| `BundledSkillLoader`                    | `bundled-skill`                        | `Skill`                                  | 来自 skill       | `!disableModelInvocation`                        |
-| `FileCommandLoader` / `command-factory` | `skill-dir-command` / `plugin-command` | `Custom` / `Plugin: <extensionName>`     | 来自 frontmatter | 用户/项目默认 true；插件需 description/whenToUse |
-| `SkillCommandLoader`                    | `skill-dir-command` / `plugin-command` | `User` / `Project` / `Extension: <name>` | 来自 skill       | 用户/项目默认 true；插件需 description/whenToUse |
-| `McpPromptLoader`                       | `mcp-prompt`                           | `MCP: <serverName>`                      | 未生成           | 当前未显式设置 `modelInvocable`                  |
+| Loader                                  | source                                 | sourceLabel                              | argumentHint        | modelInvocable                                                |
+| --------------------------------------- | -------------------------------------- | ---------------------------------------- | ------------------- | ------------------------------------------------------------- |
+| `BuiltinCommandLoader`                  | `builtin-command`                      | `Built-in`                               | mostly not declared | `false`                                                       |
+| `BundledSkillLoader`                    | `bundled-skill`                        | `Skill`                                  | from skill          | `!disableModelInvocation`                                     |
+| `FileCommandLoader` / `command-factory` | `skill-dir-command` / `plugin-command` | `Custom` / `Plugin: <extensionName>`     | from frontmatter    | user/project default true; plugins need description/whenToUse |
+| `SkillCommandLoader`                    | `skill-dir-command` / `plugin-command` | `User` / `Project` / `Extension: <name>` | from skill          | user/project default true; plugins need description/whenToUse |
+| `McpPromptLoader`                       | `mcp-prompt`                           | `MCP: <serverName>`                      | not generated       | currently does not explicitly set `modelInvocable`            |
 
-> 注意：Phase 1 路线图曾要求 MCP prompt `modelInvocable: true`，但当前实现没有显式设置。Phase 3 不改变 MCP prompt 的模型调用路径；MCP prompt 仍通过 MCP 原生机制调用，不通过 `SkillTool` 中转。
+> Note: The Phase 1 roadmap once required MCP prompts to be `modelInvocable: true`, but the current implementation does not set this explicitly. Phase 3 does not change the model invocation path of MCP prompts; MCP prompts are still invoked through the native MCP mechanism, not relayed through `SkillTool`.
 
-### 2.2 当前已实现的 Phase 3 相关能力
+### 2.2 Phase 3-Related Capabilities Already Implemented
 
-| 能力                                                 | 当前状态                                                                                                | 关键文件                                                         |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| mid-input slash 基础 ghost text                      | 已部分实现，仅对 `modelInvocable` 命令做前缀补全                                                        | `ui/utils/commandUtils.ts`、`ui/hooks/useCommandCompletion.tsx`  |
-| line-start 命令 argument ghost text                  | 已部分实现，命令完全匹配且无 args 时展示 `argumentHint`                                                 | `ui/hooks/useCommandCompletion.tsx`                              |
-| alias 参与匹配                                       | 已实现匹配与排序，但展示总是显示全部 alias，不区分命中 alias                                            | `ui/hooks/useSlashCompletion.ts`                                 |
-| source badge                                         | 仅 MCP 展示 `[MCP]`                                                                                     | `ui/components/SuggestionsDisplay.tsx`、`ui/components/Help.tsx` |
-| `/help`                                              | 当前实现视为未完成：虽有分组尝试，但仍是命令堆砌，不具备 Claude Code 风格的分 tab、清晰可读帮助面板体验 | `ui/components/Help.tsx`                                         |
-| ACP `argumentHint`                                   | 已映射到 `availableCommands[].input.hint`                                                               | `acp-integration/session/Session.ts`                             |
-| ACP source/supportedModes/subcommands/modelInvocable | 未暴露                                                                                                  | `acp-integration/session/Session.ts`                             |
-| 冲突处理                                             | extension 命令冲突时已重命名为 `extensionName.commandName`，非 extension 同名为后加载覆盖前加载         | `services/CommandService.ts`                                     |
-| `/doctor`                                            | 已实现，支持 `interactive` / `non_interactive` / `acp`                                                  | `ui/commands/doctorCommand.ts`、`ui/commands/doctorChecks.ts`    |
+| Capability                                           | Current Status                                                                                                                                                                               | Key Files                                                        |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| mid-input slash basic ghost text                     | Partially implemented; only does prefix completion for `modelInvocable` commands                                                                                                             | `ui/utils/commandUtils.ts`, `ui/hooks/useCommandCompletion.tsx`  |
+| line-start command argument ghost text               | Partially implemented; shows `argumentHint` when the command matches exactly and has no args                                                                                                 | `ui/hooks/useCommandCompletion.tsx`                              |
+| alias participates in matching                       | Matching and ordering implemented, but the display always shows all aliases without distinguishing the hit alias                                                                             | `ui/hooks/useSlashCompletion.ts`                                 |
+| source badge                                         | Only MCP shows `[MCP]`                                                                                                                                                                       | `ui/components/SuggestionsDisplay.tsx`, `ui/components/Help.tsx` |
+| `/help`                                              | The current implementation is considered incomplete: although it attempts grouping, it is still a command dump and lacks the Claude Code-style tabbed, clear, readable help panel experience | `ui/components/Help.tsx`                                         |
+| ACP `argumentHint`                                   | Already mapped to `availableCommands[].input.hint`                                                                                                                                           | `acp-integration/session/Session.ts`                             |
+| ACP source/supportedModes/subcommands/modelInvocable | Not exposed                                                                                                                                                                                  | `acp-integration/session/Session.ts`                             |
+| conflict handling                                    | extension command conflicts are already renamed to `extensionName.commandName`; for non-extension same names, the later-loaded overrides the earlier-loaded                                  | `services/CommandService.ts`                                     |
+| `/doctor`                                            | Implemented, supports `interactive` / `non_interactive` / `acp`                                                                                                                              | `ui/commands/doctorCommand.ts`, `ui/commands/doctorChecks.ts`    |
 
-### 2.3 Claude Code 可借鉴点
+### 2.3 Points to Borrow from Claude Code
 
-参考 `/Users/mochi/code/claude-code` 源码：
+Referencing the `/Users/mochi/code/claude-code` source:
 
-- `src/types/command.ts`：命令模型包含 `argumentHint`、`whenToUse`、`aliases`、`loadedFrom`、`kind`、`immediate`、`isSensitive`、`userFacingName`、`supportsNonInteractive` 等展示/能力字段。
-- `src/utils/suggestions/commandSuggestions.ts`：补全排序同时考虑精确命中、alias 命中、prefix、fuzzy、skill usage；alias 命中时只展示用户实际命中的 alias。
-- `src/utils/suggestions/commandSuggestions.ts`：mid-input slash 使用 `findMidInputSlashCommand()`、`getBestCommandMatch()` 和 `findSlashCommandPositions()` 支持 ghost text 与高亮。
-- `src/components/HelpV2/Commands.tsx`：Help V2 是可浏览的命令目录，展示描述时会附带来源信息。
-- `src/commands.ts`：Claude Code 内置 `/doctor`、`/release-notes` 等命令，Qwen Code 当前已实现 `/doctor`；本阶段不实现 `/release-notes`。
+- `src/types/command.ts`: The command model includes display/capability fields such as `argumentHint`, `whenToUse`, `aliases`, `loadedFrom`, `kind`, `immediate`, `isSensitive`, `userFacingName`, `supportsNonInteractive`.
+- `src/utils/suggestions/commandSuggestions.ts`: Completion ordering simultaneously considers exact hit, alias hit, prefix, fuzzy, and skill usage; on an alias hit it shows only the alias the user actually hit.
+- `src/utils/suggestions/commandSuggestions.ts`: mid-input slash uses `findMidInputSlashCommand()`, `getBestCommandMatch()`, and `findSlashCommandPositions()` to support ghost text and highlighting.
+- `src/components/HelpV2/Commands.tsx`: Help V2 is a browsable command directory that attaches source information when showing descriptions.
+- `src/commands.ts`: Claude Code has built-in commands like `/doctor` and `/release-notes`; Qwen Code currently already implements `/doctor`; this phase does not implement `/release-notes`.
 
-Phase 3 采用“体验对齐，不复制架构”的方式借鉴上述点。
+Phase 3 borrows from the above points with an "align the experience, do not copy the architecture" approach.
 
 ---
 
-## 3. 总体方案
+## 3. Overall Plan
 
-### 3.1 文件变更总览
+### 3.1 File Change Overview
 
-| 文件                                                    | 变更内容                                                                  |
-| ------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `packages/cli/src/ui/components/SuggestionsDisplay.tsx` | 扩展 `Suggestion` 类型，展示 source badge、argumentHint、aliasHit         |
-| `packages/cli/src/ui/hooks/useSlashCompletion.ts`       | 生成增强补全项；排序接入 recently used；保留 alias 命中信息               |
-| `packages/cli/src/ui/hooks/useCommandCompletion.tsx`    | mid-input ghost text 复用增强匹配；输出 argument/source 元数据供 UI 展示  |
-| `packages/cli/src/ui/utils/commandUtils.ts`             | 增加 slash token 高亮辅助函数，或扩展现有函数返回命令有效性               |
-| `packages/cli/src/ui/components/InputPrompt.tsx`        | 渲染有效 slash command token 高亮；保留 Tab 接受 ghost text               |
-| `packages/cli/src/ui/components/Help.tsx`               | 重构为 Claude Code 风格的分 tab 帮助面板，避免命令堆砌                    |
-| `packages/cli/src/ui/commands/helpCommand.ts`           | 如需 non-interactive/acp 帮助文本，扩展 action；否则仅保持 interactive UI |
-| `packages/cli/src/acp-integration/session/Session.ts`   | 在 ACP update 中暴露增强元数据                                            |
-| `packages/cli/src/ui/commands/*Command.ts`              | 为常用 built-in 命令补充 `argumentHint`                                   |
+| File                                                    | Change                                                                                                |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `packages/cli/src/ui/components/SuggestionsDisplay.tsx` | Extend the `Suggestion` type; display source badge, argumentHint, aliasHit                            |
+| `packages/cli/src/ui/hooks/useSlashCompletion.ts`       | Produce enriched completion items; wire ordering into recently used; preserve alias hit info          |
+| `packages/cli/src/ui/hooks/useCommandCompletion.tsx`    | Reuse the enriched matching for mid-input ghost text; emit argument/source metadata for the UI        |
+| `packages/cli/src/ui/utils/commandUtils.ts`             | Add a slash-token highlighting helper, or extend existing functions to return command validity        |
+| `packages/cli/src/ui/components/InputPrompt.tsx`        | Render highlighting for valid slash command tokens; keep Tab to accept ghost text                     |
+| `packages/cli/src/ui/components/Help.tsx`               | Refactor into a Claude Code-style tabbed help panel, avoiding the command dump                        |
+| `packages/cli/src/ui/commands/helpCommand.ts`           | If non-interactive/acp help text is needed, extend the action; otherwise keep just the interactive UI |
+| `packages/cli/src/acp-integration/session/Session.ts`   | Expose the enriched metadata in the ACP update                                                        |
+| `packages/cli/src/ui/commands/*Command.ts`              | Add `argumentHint` to common built-in commands                                                        |
 
-### 3.2 新增共享展示工具
+### 3.2 New Shared Display Utility
 
-建议新增 `packages/cli/src/services/commandMetadata.ts`，集中处理 Help、Completion、ACP 共同需要的展示逻辑：
+We suggest adding `packages/cli/src/services/commandMetadata.ts` to centralize the display logic shared by Help, Completion, and ACP:
 
 ```typescript
 export function getCommandSourceBadge(cmd: SlashCommand): string | null;
@@ -117,15 +117,15 @@ export function getCommandDisplayName(cmd: SlashCommand): string;
 export function getCommandSubcommandNames(cmd: SlashCommand): string[];
 ```
 
-不建议把这些展示函数放入 Loader，避免 Loader 承担 UI 逻辑。
+We do not recommend putting these display functions into the Loader, to avoid the Loader taking on UI logic.
 
 ---
 
-## 4. Phase 3.1：补全体验增强
+## 4. Phase 3.1: Completion Experience Enhancements
 
-### 4.1 扩展 `Suggestion` 数据结构
+### 4.1 Extend the `Suggestion` Data Structure
 
-当前：
+Current:
 
 ```typescript
 export interface Suggestion {
@@ -137,7 +137,7 @@ export interface Suggestion {
 }
 ```
 
-建议扩展为：
+Suggested extension:
 
 ```typescript
 export interface Suggestion {
@@ -158,24 +158,24 @@ export interface Suggestion {
 }
 ```
 
-`mode !== 'slash'` 的文件补全、reverse search 不需要填充这些字段。
+File completion and reverse search for `mode !== 'slash'` do not need these fields populated.
 
-### 4.2 source badge 展示
+### 4.2 source badge Display
 
-当前 `SuggestionsDisplay` 只对 `CommandKind.MCP_PROMPT` 追加 `[MCP]`。Phase 3 改为使用 `source` / `sourceLabel` 统一生成 badge：
+Currently `SuggestionsDisplay` only appends `[MCP]` for `CommandKind.MCP_PROMPT`. Phase 3 changes this to uniformly generate the badge from `source` / `sourceLabel`:
 
-| source / sourceLabel              | badge                                      |
-| --------------------------------- | ------------------------------------------ |
-| `builtin-command`                 | `[Built-in]`（可选：默认不展示，降低噪音） |
-| `bundled-skill` / `Skill`         | `[Skill]`                                  |
-| `skill-dir-command` / `User`      | `[User]`                                   |
-| `skill-dir-command` / `Project`   | `[Project]`                                |
-| `skill-dir-command` / `Custom`    | `[Custom]`                                 |
-| `plugin-command` / `Plugin: x`    | `[Plugin]` 或 `[Plugin: x]`                |
-| `plugin-command` / `Extension: x` | `[Extension]` 或 `[Extension: x]`          |
-| `mcp-prompt`                      | `[MCP]`                                    |
+| source / sourceLabel              | badge                                                      |
+| --------------------------------- | ---------------------------------------------------------- |
+| `builtin-command`                 | `[Built-in]` (optional: hidden by default to reduce noise) |
+| `bundled-skill` / `Skill`         | `[Skill]`                                                  |
+| `skill-dir-command` / `User`      | `[User]`                                                   |
+| `skill-dir-command` / `Project`   | `[Project]`                                                |
+| `skill-dir-command` / `Custom`    | `[Custom]`                                                 |
+| `plugin-command` / `Plugin: x`    | `[Plugin]` or `[Plugin: x]`                                |
+| `plugin-command` / `Extension: x` | `[Extension]` or `[Extension: x]`                          |
+| `mcp-prompt`                      | `[MCP]`                                                    |
 
-推荐实现：
+Recommended implementation:
 
 ```typescript
 function getCommandSourceBadge(cmd: SlashCommand): string | null {
@@ -199,11 +199,11 @@ function getCommandSourceBadge(cmd: SlashCommand): string | null {
 }
 ```
 
-> 是否展示 `[Built-in]` 由 UI 可读性决定。Help 中必须展示 Built-in 分组；补全菜单中可以省略 built-in badge，只对非内置来源展示 badge。
+> Whether to show `[Built-in]` is determined by UI readability. Help must show the Built-in group; the completion menu may omit the built-in badge and only show badges for non-built-in sources.
 
-### 4.3 argument hint 展示
+### 4.3 argument hint Display
 
-补全菜单中命令名后追加灰色 `argumentHint`：
+In the completion menu, append a gray `argumentHint` after the command name:
 
 ```text
 /model <model-id>              Switch model
@@ -211,32 +211,32 @@ function getCommandSourceBadge(cmd: SlashCommand): string | null {
 /review [pr-number] [--comment] [Skill] Review changed code
 ```
 
-实现建议：
+Implementation suggestions:
 
-- `useSlashCompletion` 在 `finalSuggestions` 中填充 `argumentHint: cmd.argumentHint`
-- `SuggestionsDisplay` 在 label 后以 `theme.text.secondary` 渲染 `argumentHint`
-- `commandColumnWidth` 计算包含 label + hint + badge，避免描述列错位
-- 子命令补全也支持 `argumentHint`
+- `useSlashCompletion` populates `argumentHint: cmd.argumentHint` in `finalSuggestions`
+- `SuggestionsDisplay` renders `argumentHint` after the label using `theme.text.secondary`
+- `commandColumnWidth` calculation includes label + hint + badge to avoid misaligning the description column
+- Subcommand completion also supports `argumentHint`
 
-需要先为常用 built-in 命令补充 `argumentHint`。建议首批：
+Common built-in commands need `argumentHint` added first. Suggested first batch:
 
-| 命令             | argumentHint            |
-| ---------------- | ----------------------- | ------------------ | -------- | ------------- | ------- |
-| `/model`         | `[--fast] [<model-id>]` |
-| `/approval-mode` | `<mode>`                |
-| `/language`      | `ui                     | output <language>` |
-| `/export`        | `md                     | html               | json     | jsonl [path]` |
-| `/memory`        | `show                   | add                | refresh` |
-| `/mcp`           | `desc                   | nodesc             | schema   | auth          | noauth` |
-| `/stats`         | `[model                 | tools]`            |
-| `/docs`          | 空或不设置              |
-| `/doctor`        | 空或不设置              |
+| Command          | argumentHint                         |
+| ---------------- | ------------------------------------ |
+| `/model`         | `[--fast] [<model-id>]`              |
+| `/approval-mode` | `<mode>`                             |
+| `/language`      | `ui\|output <language>`              |
+| `/export`        | `md\|html\|json\|jsonl [path]`       |
+| `/memory`        | `show\|add\|refresh`                 |
+| `/mcp`           | `desc\|nodesc\|schema\|auth\|noauth` |
+| `/stats`         | `[model\|tools]`                     |
+| `/docs`          | empty or unset                       |
+| `/doctor`        | empty or unset                       |
 
-### 4.4 recently used 排序
+### 4.4 recently used Ordering
 
-#### 4.4.1 状态存储
+#### 4.4.1 State Storage
 
-在 `useSlashCommandProcessor` 或 `AppContainer` 中维护 session 级最近使用状态：
+Maintain session-level recently-used state in `useSlashCommandProcessor` or `AppContainer`:
 
 ```typescript
 type RecentSlashCommand = {
@@ -246,20 +246,20 @@ type RecentSlashCommand = {
 };
 ```
 
-建议以 `Map<string, RecentSlashCommand>` 存储，key 使用最终命令名（即冲突处理后的 `cmd.name`）。
+We suggest storing it as `Map<string, RecentSlashCommand>`, keyed by the final command name (i.e., the post-conflict-resolution `cmd.name`).
 
-#### 4.4.2 记录时机
+#### 4.4.2 When to Record
 
-在 `useSlashCommandProcessor.handleSlashCommand` 成功解析到 `commandToExecute` 后记录使用：
+Record usage after `useSlashCommandProcessor.handleSlashCommand` successfully resolves `commandToExecute`:
 
-- 未找到命令不记录
-- hidden 命令可不记录
-- alias 调用按 canonical `commandToExecute.name` 记录
-- 子命令调用建议记录父命令和叶子命令完整路径，首期只记录叶子命令也可接受
+- Do not record when no command is found
+- hidden commands may be skipped
+- alias invocations are recorded under the canonical `commandToExecute.name`
+- For subcommand invocations, we suggest recording the full path of parent and leaf commands; recording only the leaf command in the first iteration is also acceptable
 
-#### 4.4.3 排序权重
+#### 4.4.3 Ordering Weights
 
-当前 `compareRankedCommandMatches()` 排序顺序是：
+The current ordering of `compareRankedCommandMatches()` is:
 
 1. matchStrength
 2. completionPriority
@@ -268,7 +268,7 @@ type RecentSlashCommand = {
 5. item length
 6. original index
 
-Phase 3 插入 `recentScore`：
+Phase 3 inserts `recentScore`:
 
 ```typescript
 return (
@@ -282,31 +282,31 @@ return (
 );
 ```
 
-`recentScore` 建议：
+Suggested `recentScore`:
 
 ```typescript
 const RECENT_DECAY_MS = 10 * 60 * 1000;
 const recentScore = count * 10 + Math.max(0, 10 - ageMs / RECENT_DECAY_MS);
 ```
 
-当 query 为空（用户只输入 `/`）时，recently used 命令置顶；当 query 非空时，只在同等匹配强度下加权，避免近期命令压过明显更精确的命令。
+When the query is empty (the user typed only `/`), recently-used commands are pinned to the top; when the query is non-empty, weighting applies only at equal match strength, to avoid recent commands overriding clearly more precise commands.
 
-### 4.5 alias 命中展示
+### 4.5 alias Hit Display
 
-当前 alias 已参与 `AsyncFzf` 和 prefix fallback，但 `formatSlashCommandLabel()` 总是显示所有 alias：
+Aliases already participate in `AsyncFzf` and the prefix fallback, but `formatSlashCommandLabel()` always shows all aliases:
 
 ```text
 help (?)
 compress (summarize)
 ```
 
-Phase 3 改为：
+Phase 3 changes this to:
 
-- 当用户输入命中主名：不额外展示 alias，或保持现有简洁格式
-- 当用户输入命中 alias：展示 `help (alias: ?)`
-- `Suggestion.matchedAlias` 由匹配阶段写入
+- When the user input hits the main name: do not show extra aliases, or keep the existing concise format
+- When the user input hits an alias: show `help (alias: ?)`
+- `Suggestion.matchedAlias` is written during the matching stage
 
-实现要点：
+Key implementation:
 
 ```typescript
 function findMatchedAlias(
@@ -319,26 +319,26 @@ function findMatchedAlias(
 }
 ```
 
-在 FZF 结果中，如果 `result.item` 来自 `altNames`，可直接将其作为 `matchedAlias`；prefix fallback 中同理。
+In FZF results, if `result.item` comes from `altNames`, it can be used directly as `matchedAlias`; the same applies in the prefix fallback.
 
 ---
 
-## 5. Phase 3.2：mid-input slash command 完整版
+## 5. Phase 3.2: mid-input slash command Full Version
 
-### 5.1 当前行为
+### 5.1 Current Behavior
 
-当前 `findMidInputSlashCommand()` 仅识别“由空白分隔的 `/xxx` token”，且要求 cursor 位于 token 末尾；`getBestSlashCommandMatch()` 只在 `modelInvocable` 命令中做字母序 prefix 匹配。
+Currently `findMidInputSlashCommand()` only recognizes "a `/xxx` token separated by whitespace" and requires the cursor to be at the end of the token; `getBestSlashCommandMatch()` only does alphabetical prefix matching among `modelInvocable` commands.
 
-这符合 Phase 2 基础版目标，但 Phase 3 需要补齐展示与高亮。
+This meets the Phase 2 basic goal, but Phase 3 needs to fill in display and highlighting.
 
-### 5.2 ghost text 增强
+### 5.2 ghost text Enhancement
 
-保留当前策略：mid-input slash 只提示 `modelInvocable` 命令，因为正文中的内置命令不会作为 slash command 执行。
+Keep the current strategy: mid-input slash only suggests `modelInvocable` commands, because built-in commands in the body are not executed as slash commands.
 
-增强点：
+Enhancements:
 
-- 匹配算法从字母序 prefix 改为复用 `useSlashCompletion` 的排序规则（至少考虑 `completionPriority` 和 recently used）
-- 返回结构扩展为：
+- Change the matching algorithm from alphabetical prefix to reusing the ordering rules of `useSlashCompletion` (at least considering `completionPriority` and recently used)
+- Extend the return structure to:
 
 ```typescript
 export type BestSlashCommandMatch = {
@@ -350,19 +350,19 @@ export type BestSlashCommandMatch = {
 };
 ```
 
-### 5.3 mid-input source badge 与 argument hint
+### 5.3 mid-input source badge and argument hint
 
-由于 ghost text 位置空间有限，不建议把 badge 和 hint 直接塞入 ghost text 主体。建议展示规则：
+Because the ghost text position has limited space, we do not recommend stuffing the badge and hint directly into the ghost text body. Suggested display rules:
 
-- ghost text 仍只渲染命令名后缀，例如输入 `please /rev` 显示 `iew`
-- 当 token 已完整匹配命令且命令有 `argumentHint` 时，在 cursor 后显示淡色参数提示，例如 `/review [pr-number] [--comment]`
-- source badge 仅在 dropdown 或状态提示中展示；如果 mid-input 不弹 dropdown，则可不强制显示 badge
+- ghost text still only renders the command name suffix; for example, typing `please /rev` shows `iew`
+- When the token already fully matches a command and the command has an `argumentHint`, show a dim argument hint after the cursor, e.g. `/review [pr-number] [--comment]`
+- source badge is shown only in the dropdown or status hint; if mid-input does not pop a dropdown, the badge does not have to be shown
 
-### 5.4 有效命令 token 高亮
+### 5.4 Valid Command Token Highlighting
 
-借鉴 Claude Code `findSlashCommandPositions()`，在 `InputPrompt.renderLineWithHighlighting()` 中对正文里的有效 slash command token 着色。
+Borrowing Claude Code's `findSlashCommandPositions()`, color the valid slash command tokens in the body within `InputPrompt.renderLineWithHighlighting()`.
 
-建议新增工具函数：
+Suggested new helper function:
 
 ```typescript
 export type SlashCommandToken = {
@@ -378,51 +378,51 @@ export function findSlashCommandTokens(
 ): SlashCommandToken[];
 ```
 
-规则：
+Rules:
 
-- token 必须位于字符串开头或前一个字符为空白
-- token 形如 `/[a-zA-Z][a-zA-Z0-9:_-]*`
-- 对 mid-input 高亮只判定 `modelInvocable` 命令为 valid
-- line-start token 可判定所有 interactive 可见命令为 valid
-- valid token 使用 accent 色；invalid token 保持普通文本，避免把路径 `/usr/bin` 误标为命令
+- A token must be at the start of the string or preceded by whitespace
+- A token has the form `/[a-zA-Z][a-zA-Z0-9:_-]*`
+- For mid-input highlighting, only `modelInvocable` commands are deemed valid
+- For line-start tokens, all interactive visible commands can be deemed valid
+- Valid tokens use the accent color; invalid tokens keep plain text, to avoid mislabeling a path like `/usr/bin` as a command
 
 ---
 
-## 6. Phase 3.3：Help 目录重构
+## 6. Phase 3.3: Help Directory Refactor
 
-### 6.1 当前问题
+### 6.1 Current Problems
 
-`Help.tsx` 当前输出：
+`Help.tsx` currently outputs:
 
 - Basics
-- 平铺 `Commands:`
-- `[MCP]` 说明
+- A flat `Commands:`
+- `[MCP]` explanation
 - Keyboard Shortcuts
 
-问题：
+Problems:
 
-- 所有来源混在一起，skill、custom、plugin、MCP 难以区分
-- 不展示 `argumentHint`
-- 不展示 `supportedModes`
-- 不展示 `modelInvocable`
-- 子命令只缩进一级，不展示来源/mode
+- All sources are mixed together; skill, custom, plugin, and MCP are hard to distinguish
+- Does not show `argumentHint`
+- Does not show `supportedModes`
+- Does not show `modelInvocable`
+- Subcommands are only indented one level, without showing source/mode
 
-### 6.2 分组设计
+### 6.2 Grouping Design
 
-按 `source` / `sourceLabel` 分组：
+Group by `source` / `sourceLabel`:
 
-1. **Built-in Commands**：`source === 'builtin-command'`
-2. **Bundled Skills**：`source === 'bundled-skill'`
-3. **Custom Commands**：`source === 'skill-dir-command'`，包含 `Custom` / `User` / `Project`
-4. **Plugin Commands**：`source === 'plugin-command'`，包含 `Plugin:*` / `Extension:*`
-5. **MCP Commands**：`source === 'mcp-prompt'`
-6. **Other Commands**：source 缺失的兼容兜底
+1. **Built-in Commands**: `source === 'builtin-command'`
+2. **Bundled Skills**: `source === 'bundled-skill'`
+3. **Custom Commands**: `source === 'skill-dir-command'`, including `Custom` / `User` / `Project`
+4. **Plugin Commands**: `source === 'plugin-command'`, including `Plugin:*` / `Extension:*`
+5. **MCP Commands**: `source === 'mcp-prompt'`
+6. **Other Commands**: compatibility fallback for missing source
 
-每组内部按命令名排序；hidden 命令不展示。
+Within each group, sort by command name; hidden commands are not shown.
 
-### 6.3 每条命令展示字段
+### 6.3 Display Fields Per Command
 
-格式建议：
+Suggested format:
 
 ```text
 /model [--fast] [<model-id>]  Switch model
@@ -432,40 +432,40 @@ export function findSlashCommandTokens(
   source: Skill  modes: interactive, non_interactive, acp  model: yes
 ```
 
-为避免 Help 过宽，建议压缩为单行：
+To avoid Help being too wide, we suggest compressing to a single line:
 
 ```text
  /review [pr-number] [--comment] [Skill] [all] [model] - Review changed code
 ```
 
-mode badge 建议：
+Suggested mode badges:
 
 | supportedModes                      | badge            |
 | ----------------------------------- | ---------------- |
 | `interactive` only                  | `[interactive]`  |
 | `interactive, non_interactive, acp` | `[all]`          |
 | `non_interactive, acp`              | `[headless]`     |
-| 其他组合                            | `[i] [ni] [acp]` |
+| other combinations                  | `[i] [ni] [acp]` |
 
-### 6.4 `/help` 是否扩展到 headless
+### 6.4 Whether `/help` Extends to headless
 
-路线图只要求 `/help` 输出按来源分组，没有明确要求 non-interactive/acp。当前 `/help` 是 `supportedModes: ['interactive']`。
+The roadmap only requires `/help` to output grouped by source; it does not explicitly require non-interactive/acp. Currently `/help` is `supportedModes: ['interactive']`.
 
-Phase 3 建议新增 headless 路径，但作为独立子任务：
+Phase 3 suggests adding a headless path, but as an independent subtask:
 
-- `supportedModes` 改为 all modes
-- interactive：继续渲染 `HistoryItemHelp`
-- non_interactive/acp：返回纯文本分组目录 `message`
+- Change `supportedModes` to all modes
+- interactive: continue rendering `HistoryItemHelp`
+- non_interactive/acp: return a plain-text grouped directory as `message`
 
-如果 scope 需要收敛，可先只重构 interactive `Help` 组件，headless `/help` 延后。
+If scope needs to be reduced, we can first refactor only the interactive `Help` component and defer headless `/help`.
 
 ---
 
-## 7. Phase 3.4：ACP available commands 元数据增强
+## 7. Phase 3.4: ACP available commands Metadata Enhancement
 
-### 7.1 当前 ACP 输出
+### 7.1 Current ACP Output
 
-`Session.sendAvailableCommandsUpdate()` 当前将 `SlashCommand[]` 映射为：
+`Session.sendAvailableCommandsUpdate()` currently maps `SlashCommand[]` to:
 
 ```typescript
 {
@@ -475,11 +475,11 @@ Phase 3 建议新增 headless 路径，但作为独立子任务：
 }
 ```
 
-其中 `argumentHint` 已通过 `input.hint` 暴露。
+Here `argumentHint` is already exposed through `input.hint`.
 
-### 7.2 增强方案
+### 7.2 Enhancement Plan
 
-ACP protocol 的 `AvailableCommand` 类型如果不能直接增加字段，使用 `_meta` 保持兼容：
+If the `AvailableCommand` type of the ACP protocol cannot have fields added directly, use `_meta` to maintain compatibility:
 
 ```typescript
 const availableCommands: AvailableCommand[] = slashCommands.map((cmd) => ({
@@ -499,7 +499,7 @@ const availableCommands: AvailableCommand[] = slashCommands.map((cmd) => ({
 }));
 ```
 
-如果 `AvailableCommand` 类型允许扩展字段，则优先输出为一等字段：
+If the `AvailableCommand` type allows extending fields, prefer emitting them as first-class fields:
 
 ```typescript
 {
@@ -514,17 +514,17 @@ const availableCommands: AvailableCommand[] = slashCommands.map((cmd) => ({
 }
 ```
 
-但仍建议保留 `_meta` 镜像一段时间，便于旧客户端渐进迁移。
+But we still suggest keeping the `_meta` mirror for a while, to ease gradual migration of older clients.
 
-### 7.3 subcommands 递归策略
+### 7.3 subcommands Recursion Strategy
 
-验收标准只要求 `subcommands` 名称列表。首期输出一级子命令即可：
+The acceptance criteria only require a `subcommands` name list. Emitting first-level subcommands in the first iteration is sufficient:
 
 ```typescript
 subcommands: cmd.subCommands?.map((sub) => sub.name) ?? [];
 ```
 
-后续如果 ACP 客户端需要多级树，可扩展为：
+Later, if ACP clients need a multi-level tree, it can be extended to:
 
 ```typescript
 type AcpSubcommandMeta = {
@@ -537,109 +537,109 @@ type AcpSubcommandMeta = {
 
 ---
 
-## 8. Phase 3.5：Claude Code 缺失命令补齐
+## 8. Phase 3.5: Filling in Claude Code Missing Commands
 
-### 8.1 `/doctor`：已实现，不重复实现
+### 8.1 `/doctor`: Already Implemented, Not Reimplemented
 
-当前 `doctorCommand` 已存在：
+The current `doctorCommand` already exists:
 
-- 文件：`packages/cli/src/ui/commands/doctorCommand.ts`
-- 注册：`BuiltinCommandLoader`
-- 模式：`['interactive', 'non_interactive', 'acp']`
-- interactive：展示 `HistoryItemDoctor`
-- non_interactive/acp：返回 JSON `message`
-- 诊断逻辑：`packages/cli/src/ui/commands/doctorChecks.ts`
+- File: `packages/cli/src/ui/commands/doctorCommand.ts`
+- Registration: `BuiltinCommandLoader`
+- Modes: `['interactive', 'non_interactive', 'acp']`
+- interactive: shows `HistoryItemDoctor`
+- non_interactive/acp: returns JSON `message`
+- Diagnostic logic: `packages/cli/src/ui/commands/doctorChecks.ts`
 
-Phase 3 只需在 Help 和补全中为 `/doctor` 正确展示来源、mode；如需优化，可将 headless JSON 改为更适合人读的 Markdown，但这不是必需项。
+Phase 3 only needs to correctly show the source and mode for `/doctor` in Help and completion; if optimization is desired, the headless JSON can be changed to more human-readable Markdown, but this is not required.
 
-### 8.2 `/release-notes`：不纳入本阶段
+### 8.2 `/release-notes`: Not Included in This Phase
 
-`/release-notes` 不再作为 Phase 3 需求。本阶段不新增命令、不注册 built-in、不编写相关测试，避免引入无明确产品需求的命令表面。
-
----
-
-## 9. 冲突策略确认与展示
-
-当前 `CommandService` 冲突策略：
-
-- extension/plugin 命令若与已存在命令同名，重命名为 `extensionName.commandName`
-- 若二次冲突，追加数字后缀：`extensionName.commandName1`
-- 非 extension 命令同名时，后加载覆盖前加载
-
-Phase 3 不改变执行语义，只在 Help/Completion 中清晰展示最终名称和来源。
-
-建议补充测试确保：
-
-- 被重命名的 plugin command 在补全中显示最终名称和 `[Plugin]` badge
-- Help 中按 Plugin Commands 分组展示最终名称
-- ACP 输出使用最终名称
-
-> 路线图中“built-in > bundled/skill-dir > plugin > mcp”的优先级，与当前实现“非 extension 后加载覆盖前加载”不完全一致。Phase 3 文档以当前 `CommandService` 源码为准，不在本阶段改冲突语义；如需严格调整优先级，应作为单独 Phase 处理，避免改变已有用户/项目命令覆盖行为。
+`/release-notes` is no longer a Phase 3 requirement. This phase adds no command, registers no built-in, and writes no related tests, avoiding introducing a command surface with no clear product need.
 
 ---
 
-## 10. 测试策略
+## 9. Conflict Strategy Confirmation and Display
 
-### 10.1 补全测试
+The current `CommandService` conflict strategy:
 
-更新或新增：
+- If an extension/plugin command has the same name as an existing command, it is renamed to `extensionName.commandName`
+- If there is a second conflict, a numeric suffix is appended: `extensionName.commandName1`
+- For same-named non-extension commands, the later-loaded overrides the earlier-loaded
+
+Phase 3 does not change execution semantics; it only clearly shows the final name and source in Help/Completion.
+
+We suggest adding tests to ensure:
+
+- A renamed plugin command shows its final name and the `[Plugin]` badge in completion
+- Help shows the final name under the Plugin Commands group
+- ACP output uses the final name
+
+> The roadmap's priority of "built-in > bundled/skill-dir > plugin > mcp" does not fully match the current implementation's "later-loaded non-extension overrides earlier-loaded". The Phase 3 doc takes the current `CommandService` source as authoritative and does not change conflict semantics in this phase; if a strict priority adjustment is needed, it should be handled as a separate Phase to avoid altering the existing user/project command override behavior.
+
+---
+
+## 10. Testing Strategy
+
+### 10.1 Completion Tests
+
+Update or add:
 
 - `packages/cli/src/ui/hooks/useSlashCompletion.test.ts`
 - `packages/cli/src/ui/hooks/useCommandCompletion.test.ts`
-- `packages/cli/src/ui/components/SuggestionsDisplay.test.tsx`（如当前无文件则新增）
+- `packages/cli/src/ui/components/SuggestionsDisplay.test.tsx` (add if no file currently exists)
 
-覆盖：
+Cover:
 
-- source badge：Skill/Custom/Plugin/MCP 正确展示
-- argumentHint：命令名后展示 hint，且列宽不破坏描述
-- recently used：只输入 `/` 时近期命令排在前面；输入明确 query 时精确命中优先
-- alias 命中：输入 `?` 展示 `help (alias: ?)`，输入 `he` 不展示 alias 命中提示
-- mid-input ghost：正文 `/rev` 提示 modelInvocable `/review` 后缀
-- mid-input 不提示 built-in：正文 `/sta` 不提示 `/stats`（除非未来设计允许内嵌 built-in 执行）
+- source badge: Skill/Custom/Plugin/MCP shown correctly
+- argumentHint: hint shown after the command name, and column width does not break the description
+- recently used: recent commands rank first when typing only `/`; exact matches take priority when an explicit query is typed
+- alias hit: typing `?` shows `help (alias: ?)`; typing `he` does not show an alias-hit hint
+- mid-input ghost: body `/rev` suggests the modelInvocable `/review` suffix
+- mid-input does not suggest built-in: body `/sta` does not suggest `/stats` (unless a future design allows embedded built-in execution)
 
-### 10.2 Help 测试
+### 10.2 Help Tests
 
-更新：`packages/cli/src/ui/components/Help.test.tsx`
+Update: `packages/cli/src/ui/components/Help.test.tsx`
 
-覆盖：
+Cover:
 
-- 按 Built-in/Bundled Skills/Custom/Plugin/MCP 分组
-- hidden 命令不展示
-- 子命令展示名称列表
-- `argumentHint`、source badge、mode badge、model badge 正确出现
-- altNames 仍可展示，但不干扰主命令名
+- Grouped by Built-in/Bundled Skills/Custom/Plugin/MCP
+- hidden commands not shown
+- Subcommands shown as a name list
+- `argumentHint`, source badge, mode badge, model badge appear correctly
+- altNames can still be shown but do not interfere with the main command name
 
-### 10.3 ACP 测试
+### 10.3 ACP Tests
 
-更新：`packages/cli/src/acp-integration/session/Session.test.ts`
+Update: `packages/cli/src/acp-integration/session/Session.test.ts`
 
-覆盖：
+Cover:
 
-- `availableCommands[].input.hint` 保持现有行为
-- 新增元数据包含 `argumentHint`、`source`、`sourceLabel`、`supportedModes`、`subcommands`、`modelInvocable`
-- 无 `argumentHint` 的命令 `input: null` 保持兼容
-- `getAvailableCommands(config, signal, 'acp')` 调用保持不变
+- `availableCommands[].input.hint` keeps existing behavior
+- New metadata includes `argumentHint`, `source`, `sourceLabel`, `supportedModes`, `subcommands`, `modelInvocable`
+- Commands without `argumentHint` keep `input: null` for compatibility
+- `getAvailableCommands(config, signal, 'acp')` calls remain unchanged
 
-### 10.4 新命令测试
+### 10.4 New Command Tests
 
-本阶段不新增 `/release-notes` 或其他 built-in 命令，因此不需要新增命令测试。仅保留 `/doctor` 既有回归测试。
+This phase adds no `/release-notes` or other built-in commands, so no new command tests are needed. We only keep the existing regression tests for `/doctor`.
 
-### 10.5 E2E 测试方案
+### 10.5 E2E Test Plan
 
-Phase 3 同时修改 TUI 补全、slash command 执行、ACP command metadata，单元测试不能覆盖完整用户路径。E2E 验证分三类进行：
+Phase 3 modifies TUI completion, slash command execution, and ACP command metadata simultaneously; unit tests cannot cover the full user path. E2E verification is done in four categories:
 
-1. **构建本地 CLI**：先运行 `npm run build && npm run bundle`，后续使用 `node dist/cli.js` 验证本地实现。
-2. **Interactive / tmux 场景**：用于验证补全菜单、ghost text、Tab 接受、Help 渲染等 TUI 行为。
-3. **Headless / JSON 场景**：用于验证 non-interactive slash command 输出，不依赖 TUI。
-4. **ACP integration 场景**：用于验证 `available_commands_update` 元数据。
+1. **Build the local CLI**: First run `npm run build && npm run bundle`, then use `node dist/cli.js` to verify the local implementation.
+2. **Interactive / tmux scenarios**: Used to verify TUI behaviors such as the completion menu, ghost text, Tab acceptance, and Help rendering.
+3. **Headless / JSON scenarios**: Used to verify non-interactive slash command output, independent of the TUI.
+4. **ACP integration scenarios**: Used to verify `available_commands_update` metadata.
 
-#### 10.5.1 E2E 前置步骤
+#### 10.5.1 E2E Prerequisites
 
 ```bash
 npm run build && npm run bundle
 ```
 
-Interactive 场景建议使用独立临时目录，避免污染当前仓库：
+For interactive scenarios, we suggest using a separate temporary directory to avoid polluting the current repo:
 
 ```bash
 tmux new-session -d -s qwen-slash-phase3 -x 200 -y 50 \
@@ -647,7 +647,7 @@ tmux new-session -d -s qwen-slash-phase3 -x 200 -y 50 \
 sleep 3
 ```
 
-发送输入时拆分文本和回车，避免 TUI 吞掉提交：
+When sending input, split the text and Enter to avoid the TUI swallowing the submission:
 
 ```bash
 tmux send-keys -t qwen-slash-phase3 "/help"
@@ -655,39 +655,39 @@ sleep 0.5
 tmux send-keys -t qwen-slash-phase3 Enter
 ```
 
-捕获输出：
+Capture output:
 
 ```bash
 tmux capture-pane -t qwen-slash-phase3 -p -S -100
 ```
 
-清理：
+Cleanup:
 
 ```bash
 tmux kill-session -t qwen-slash-phase3
 ```
 
-#### 10.5.2 E2E 测试清单
+#### 10.5.2 E2E Test Checklist
 
-| 场景                    | 模式             | 步骤                                                                                    | 预期结果                                                                                                                                  |
-| ----------------------- | ---------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| 补全 source badge       | interactive/tmux | 输入 `/`，观察补全菜单                                                                  | skill/custom/plugin/MCP 命令展示对应 source badge；built-in 可不展示 badge                                                                |
-| 补全 argument hint      | interactive/tmux | 输入 `/model`、`/export`                                                                | 命令名后展示 `argumentHint`；无参数命令不展示噪声 hint                                                                                    |
-| recently used 排序      | interactive/tmux | 先执行 `/help`，再输入 `/`                                                              | `/help` 在同等匹配条件下优先出现；精确 query 仍优先匹配 query                                                                             |
-| alias 命中展示          | interactive/tmux | 输入 `/?`                                                                               | 补全项展示 `help (alias: ?)`；输入 `/he` 时不误显示 alias 命中                                                                            |
-| mid-input ghost text    | interactive/tmux | 在正文中输入 `please /rev`                                                              | 出现 `/review` 的 ghost text 后缀，Tab 可接受                                                                                             |
-| mid-input token 高亮    | interactive/tmux | 输入包含 `/review` 的正文                                                               | 有效 model-invocable slash token 使用命令高亮；路径如 `/usr/bin` 不被高亮为命令                                                           |
-| Help 分组目录           | interactive/tmux | 执行 `/help`                                                                            | 输出包含 Built-in Commands、Bundled Skills、Custom Commands、Plugin Commands、MCP Commands 分组；每条命令展示 source/mode/hint            |
-| `/doctor` headless 回归 | headless/json    | 执行 `node dist/cli.js "/doctor" --approval-mode yolo --output-format json 2>/dev/null` | 返回 `message`，不触发 TUI-only 组件错误                                                                                                  |
-| ACP metadata            | integration      | 运行 ACP session 并触发 `available_commands_update`                                     | 每个 command 保留 `name`、`description`、`input.hint`，并包含 `argumentHint`、`source`、`supportedModes`、`subcommands`、`modelInvocable` |
+| Scenario                      | Mode             | Steps                                                                                  | Expected Result                                                                                                                                       |
+| ----------------------------- | ---------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| completion source badge       | interactive/tmux | Type `/`, observe the completion menu                                                  | skill/custom/plugin/MCP commands show the corresponding source badge; built-in may omit the badge                                                     |
+| completion argument hint      | interactive/tmux | Type `/model`, `/export`                                                               | `argumentHint` shown after the command name; commands with no parameters do not show a noisy hint                                                     |
+| recently used ordering        | interactive/tmux | First run `/help`, then type `/`                                                       | `/help` appears first under equal match conditions; an exact query still prioritizes matching the query                                               |
+| alias hit display             | interactive/tmux | Type `/?`                                                                              | The completion item shows `help (alias: ?)`; typing `/he` does not falsely show an alias hit                                                          |
+| mid-input ghost text          | interactive/tmux | Type `please /rev` in the body                                                         | The `/review` ghost text suffix appears, and Tab can accept it                                                                                        |
+| mid-input token highlight     | interactive/tmux | Type body containing `/review`                                                         | Valid model-invocable slash tokens use command highlighting; a path like `/usr/bin` is not highlighted as a command                                   |
+| Help grouped directory        | interactive/tmux | Run `/help`                                                                            | Output includes the Built-in Commands, Bundled Skills, Custom Commands, Plugin Commands, and MCP Commands groups; each command shows source/mode/hint |
+| `/doctor` headless regression | headless/json    | Run `node dist/cli.js "/doctor" --approval-mode yolo --output-format json 2>/dev/null` | Returns `message` without triggering a TUI-only component error                                                                                       |
+| ACP metadata                  | integration      | Run an ACP session and trigger `available_commands_update`                             | Each command keeps `name`, `description`, `input.hint`, and includes `argumentHint`, `source`, `supportedModes`, `subcommands`, `modelInvocable`      |
 
-#### 10.5.3 Headless 命令示例
+#### 10.5.3 Headless Command Examples
 
-`/release-notes` 不纳入本阶段；headless 回归仅保留 `/doctor` 等既有命令验证。
+`/release-notes` is not included in this phase; the headless regression only keeps verification of existing commands such as `/doctor`.
 
-### 10.6 回归测试命令
+### 10.6 Regression Test Commands
 
-按 AGENTS.md，优先运行单文件测试：
+Per AGENTS.md, prefer running single-file tests:
 
 ```bash
 cd packages/cli && npx vitest run src/ui/hooks/useSlashCompletion.test.ts
@@ -696,7 +696,7 @@ cd packages/cli && npx vitest run src/ui/components/Help.test.tsx
 cd packages/cli && npx vitest run src/acp-integration/session/Session.test.ts
 ```
 
-最终验证：
+Final verification:
 
 ```bash
 npm run build && npm run typecheck
@@ -705,64 +705,64 @@ npm run build && npm run bundle
 
 ---
 
-## 11. 验收标准
+## 11. Acceptance Criteria
 
-### 11.1 补全菜单
+### 11.1 Completion Menu
 
-- [ ] 补全菜单展示 source badge（至少 `[MCP]`、`[Skill]`、`[Custom]`、`[Plugin]`）
-- [ ] 补全菜单展示 `argumentHint`
-- [ ] session 内最近使用命令在只输入 `/` 时优先出现
-- [ ] alias 命中时展示 `alias: <alias>`，非 alias 命中不噪声展示
-- [ ] plugin/extension 冲突重命名后的命令在补全中展示最终名称和来源
+- [ ] The completion menu shows source badges (at least `[MCP]`, `[Skill]`, `[Custom]`, `[Plugin]`)
+- [ ] The completion menu shows `argumentHint`
+- [ ] Recently-used commands within the session appear first when typing only `/`
+- [ ] On an alias hit, show `alias: <alias>`; non-alias hits do not show noise
+- [ ] Commands renamed after a plugin/extension conflict show their final name and source in completion
 
 ### 11.2 mid-input slash
 
-- [ ] 正文中输入 `/review` 这类 model-invocable 命令时 ghost text 正确提示
-- [ ] Tab 可接受 mid-input ghost text
-- [ ] 有效 mid-input slash command token 高亮
-- [ ] built-in 命令不会在正文中被误提示为可执行内嵌命令
-- [ ] 参数提示在命令完整匹配且无 args 时显示
+- [ ] Ghost text is correctly suggested when typing a model-invocable command like `/review` in the body
+- [ ] Tab can accept the mid-input ghost text
+- [ ] Valid mid-input slash command tokens are highlighted
+- [ ] Built-in commands are not falsely suggested as executable embedded commands in the body
+- [ ] The argument hint is shown when the command matches fully and has no args
 
 ### 11.3 Help
 
-- [ ] `/help` 按来源分组展示命令
-- [ ] 每条命令展示名称、`argumentHint`、description、source、supportedModes 标记
-- [ ] model-invocable 命令有明确标记
-- [ ] 子命令以名称列表或缩进项展示
-- [ ] hidden 命令不展示
+- [ ] `/help` shows commands grouped by source
+- [ ] Each command shows its name, `argumentHint`, description, source, and supportedModes markers
+- [ ] Model-invocable commands have a clear marker
+- [ ] Subcommands are shown as a name list or indented items
+- [ ] hidden commands are not shown
 
 ### 11.4 ACP
 
-- [ ] ACP `available_commands_update` 继续包含 `name`、`description`、`input.hint`
-- [ ] ACP command 元数据包含 `argumentHint`、`source`、`supportedModes`、`subcommands`、`modelInvocable`
-- [ ] 旧客户端忽略新增字段时不受影响
+- [ ] ACP `available_commands_update` continues to include `name`, `description`, `input.hint`
+- [ ] ACP command metadata includes `argumentHint`, `source`, `supportedModes`, `subcommands`, `modelInvocable`
+- [ ] Older clients are unaffected when they ignore the new fields
 
-### 11.5 缺失命令
+### 11.5 Missing Commands
 
-- [ ] `/doctor` 仍可用，且 non-interactive 返回 `message`
-- [ ] 不新增 `/release-notes`，文档、测试和验收标准中均不再要求该命令
-
----
-
-## 12. 非目标
-
-以下内容不纳入 Phase 3：
-
-- 不实现 workflow command / dynamic skill / mcp skill 新 Loader
-- 不引入持久化 command usage tracking
-- 不改变 `SkillTool` 的模型调用协议
-- 不改变 MCP prompt 的模型调用路径
-- 不重构 command 执行器或 mode adapter
-- 不改变现有 user/project command 覆盖语义
+- [ ] `/doctor` is still usable, and non-interactive returns `message`
+- [ ] No `/release-notes` is added; the docs, tests, and acceptance criteria no longer require that command
 
 ---
 
-## 13. 建议实施顺序
+## 12. Non-Goals
 
-1. **补全数据结构与 badge/hint 展示**：先扩展 `Suggestion` 和 `SuggestionsDisplay`，风险低、反馈直观。
-2. **补充 built-in `argumentHint`**：让已有 ghost text 和 ACP `input.hint` 立即受益。
-3. **recently used 排序**：在 `useSlashCompletion` 引入 recent score，补测试。
-4. **alias 命中展示**：调整 FZF/prefix 匹配保留 `matchedAlias`。
-5. **Help 分 tab 重构**：按 Claude Code 风格提供 General / Commands / Custom Commands 等清晰面板，避免堆砌命令。
-6. **ACP 元数据增强**：扩展 `Session.sendAvailableCommandsUpdate()`，保持 `_meta` 兼容。
-7. **mid-input 高亮增强**：最后处理渲染层，避免与补全逻辑并行改动过大。
+The following are not included in Phase 3:
+
+- Do not implement new Loaders for workflow command / dynamic skill / mcp skill
+- Do not introduce persistent command usage tracking
+- Do not change the model invocation protocol of `SkillTool`
+- Do not change the model invocation path of MCP prompts
+- Do not refactor the command executor or mode adapter
+- Do not change the existing user/project command override semantics
+
+---
+
+## 13. Suggested Implementation Order
+
+1. **Completion data structure and badge/hint display**: First extend `Suggestion` and `SuggestionsDisplay`; low risk and intuitive feedback.
+2. **Add built-in `argumentHint`**: Lets the existing ghost text and ACP `input.hint` benefit immediately.
+3. **recently used ordering**: Introduce the recent score in `useSlashCompletion` and add tests.
+4. **alias hit display**: Adjust FZF/prefix matching to preserve `matchedAlias`.
+5. **Help tabbed refactor**: Provide clear panels like General / Commands / Custom Commands in Claude Code style, avoiding a command dump.
+6. **ACP metadata enhancement**: Extend `Session.sendAvailableCommandsUpdate()` while keeping `_meta` compatibility.
+7. **mid-input highlight enhancement**: Handle the rendering layer last, to avoid making the change too large alongside completion logic.

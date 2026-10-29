@@ -70,8 +70,7 @@ export const learnCommand: SlashCommand = {
       }
 
       const authType = config.getContentGeneratorConfig()?.authType;
-      const supportsVideoTransport =
-        authType === AuthType.USE_OPENAI || authType === AuthType.QWEN_OAUTH;
+      const supportsVideoTransport = authType === AuthType.USE_OPENAI;
       if (
         config.getEffectiveInputModalities().video !== true ||
         !supportsVideoTransport

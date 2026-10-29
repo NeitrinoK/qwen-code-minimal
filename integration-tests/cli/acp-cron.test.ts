@@ -410,6 +410,8 @@ async function initSession(
 (IS_SANDBOX ? describe.skip : describe)('acp cron integration', () => {
   it(
     'cron job fires and streams results via sessionUpdate after prompt returns',
+    // vitest 4 takes test options before the test function.
+    { timeout: 120_000, retry: 0 },
     async () => {
       const rig = new TestRig();
       await rig.setup('acp-cron-e2e');
@@ -519,6 +521,5 @@ async function initSession(
         await fakeServer.close();
       }
     },
-    { timeout: 120_000, retry: 0 },
   );
 });

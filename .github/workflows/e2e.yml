@@ -61,10 +61,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Configure npm for rate limiting'
         run: |-
           npm config set fetch-retry-mintimeout 20000
@@ -72,7 +68,7 @@ jobs:
           npm config set fetch-retries 5
           npm config set fetch-timeout 300000
 
-      # A bare `corepack pnpm install` has no retry: run 34700339334's
+      # A bare `npm ci` has no retry: run 34700339334's
       # build leg died at this step before any test ran, on a tree whose
       # install reproduces clean, and every leg behind `needs: [build]`
       # went down with it. The bounded
@@ -93,9 +89,9 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi
@@ -262,10 +258,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Use pre-installed Node.js (self-hosted)'
         if: "${{ runner.environment == 'self-hosted' }}"
         uses: './.github/actions/self-hosted-node'
@@ -305,9 +297,9 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi
@@ -451,10 +443,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Configure npm for rate limiting'
         run: |-
           npm config set fetch-retry-mintimeout 20000
@@ -469,9 +457,9 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi
@@ -554,10 +542,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       # The opentui renderer leg runs the CLI bundle under bun: the locked
       # @opentui/core loads its native renderer through bun:ffi, and the CI
       # node build cannot load node:ffi. The renderer matrix also pins
@@ -586,9 +570,9 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi
@@ -680,10 +664,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Configure npm for rate limiting'
         run: |-
           npm config set fetch-retry-mintimeout 20000
@@ -698,9 +678,9 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi
@@ -782,10 +762,6 @@ jobs:
           package-manager-cache: false
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Configure npm for rate limiting'
         run: |-
           npm config set fetch-retry-mintimeout 20000
@@ -800,9 +776,9 @@ jobs:
       - name: 'Install dependencies'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               if [[ "${attempt}" != "1" ]]; then
-                echo "::warning::corepack pnpm install failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
+                echo "::warning::npm ci failed $((attempt - 1)) time(s) before the retry absorbed it — count this toward the #11726 install-transient recurrence threshold."
               fi
               break
             fi

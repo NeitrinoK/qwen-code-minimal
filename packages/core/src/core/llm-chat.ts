@@ -63,8 +63,10 @@ import {
   clampOutputTokensToWindow,
   defaultOutputCeiling,
   DEFAULT_TOKEN_LIMIT,
+  ESCALATED_MAX_TOKENS,
   OUTPUT_TOKEN_CEILING,
   parsePositiveIntegerEnvValue,
+  tokenLimit,
 } from './tokenLimits.js';
 import { hasCycleInSchema } from '../tools/tools.js';
 import { ToolNames, canonicalToolName } from '../tools/tool-names.js';
@@ -125,6 +127,7 @@ import {
   isCompressionFailureStatus,
 } from './turn.js';
 import { getContextLengthExceededInfo } from '../utils/contextLengthError.js';
+import { isLikelyContextOverflow } from './overflowSelfHeal.js';
 import {
   getRequestPayloadTooLargeInfo,
   REQUEST_PAYLOAD_TOO_LARGE_NOOP_MESSAGE,
@@ -682,6 +685,12 @@ interface TryCompressOptions {
    * under the same gateway body limit.
    */
   requestPayloadTooLarge?: boolean;
+  /**
+   * Output tokens reserved by the model (e.g. max_tokens / escalated limit).
+   * Threaded to the compression service so the cheap-gate computes
+   * thresholds against the real available input budget.
+   */
+  reservedOutputTokens?: number;
 }
 
 // Model-output validation errors (protocol tag leaks, malformed tool calls)
@@ -2740,6 +2749,7 @@ export class LlmChat {
       trigger: options?.trigger,
       customInstructions: options?.customInstructions,
       requestPayloadTooLarge: options?.requestPayloadTooLarge,
+      reservedOutputTokens: options?.reservedOutputTokens,
       signal,
     });
     // The service owns the compression outcome; LlmChat owns the input
@@ -3082,6 +3092,24 @@ export class LlmChat {
       parsedEnvMaxTokensForClamp;
     const outputCeiling: number =
       explicitOutputCeiling ?? defaultOutputCeiling(model);
+    // Output budget reserved out of the context window when computing the
+    // auto/hard compaction thresholds (issue #5950). The subagent path sets
+    // params.config.maxOutputTokens explicitly; the interactive path leaves
+    // it undefined but will escalate to max(ESCALATED_MAX_TOKENS,
+    // tokenLimit(model, 'output')) on MAX_TOKENS. Pre-reserving that space
+    // prevents the dead zone between the adjusted auto threshold and an
+    // unadjusted hard threshold.
+    const hasUserMaxTokensOverrideForThreshold =
+      (cgConfigForThresholds?.samplingParams?.max_tokens !== undefined &&
+        cgConfigForThresholds?.samplingParams?.max_tokens !== null) ||
+      parsedEnvMaxTokensForClamp !== undefined;
+    const effectiveReservedOutput: number =
+      params.config?.maxOutputTokens ??
+      (hasUserMaxTokensOverrideForThreshold
+        ? (cgConfigForThresholds?.samplingParams?.max_tokens ??
+          parsedEnvMaxTokensForClamp ??
+          0)
+        : Math.max(ESCALATED_MAX_TOKENS, tokenLimit(model, 'output')));
     // Declared at function level so the MAX_TOKENS escalation path inside
     // the generator closure can re-clamp against the same window and prompt
     // estimate.
@@ -3090,6 +3118,15 @@ export class LlmChat {
     let promptTokensForClamp = 0;
 
     let currentUserContent: Content | undefined;
+    // Declared in the outer sendMessageStream scope (not the try block below)
+    // so the reactive-overflow gate inside the streaming generator can REUSE
+    // the same values computed once for the pre-send hard-tier rescue — the
+    // size-aware overflow check compares `effectiveTokens` against
+    // `rawContextLimit`. They are always assigned before the generator runs:
+    // the generator is only returned if the try block completes without
+    // throwing (a throw rethrows out of sendMessageStream before the return).
+    let rawContextLimit = DEFAULT_TOKEN_LIMIT;
+    let effectiveTokens = 0;
     try {
       // The send-lock above is held but the generator's `finally` (which
       // resolves it) has not run yet. Any setup error before returning the
@@ -3141,10 +3178,16 @@ export class LlmChat {
       // force=true already bypasses that breaker, while hard-rescue itself is
       // bounded by hardRescueFailureCount so persistent pre-send rescue
       // failures fall through to reactive overflow after a few strikes.
-      // Thresholds gate on the full window: the output clamp guarantees the
-      // response fits, so nothing needs to be pre-reserved for it.
+      // Thresholds gate on the input budget: `effectiveReservedOutput` is
+      // subtracted from the raw window so the hard tier fires before the
+      // prompt + reserved output overflow the model (issue #5950).
+      rawContextLimit = contextWindowForClamp;
+      const contextLimit = Math.max(
+        0,
+        rawContextLimit - effectiveReservedOutput,
+      );
       const { hard } = computeThresholds(
-        contextWindowForClamp,
+        contextLimit,
         this.config.getAutoCompactThreshold(),
       );
       const imageTokenEstimate = resolveSlimmingConfig(
@@ -3162,7 +3205,7 @@ export class LlmChat {
       // `getContextLengthExceededInfo` → `tryCompress` → RETRY branch)
       // is the documented safety net when this under-count causes
       // hard-rescue to miss.
-      const effectiveTokens = estimatePromptTokens(
+      effectiveTokens = estimatePromptTokens(
         this.lastPromptTokenCount > 0 ? [] : this.getHistoryShallow(true),
         userContent,
         this.lastPromptTokenCount,
@@ -3239,18 +3282,26 @@ export class LlmChat {
             // classified correctly while the pending user message preserves
             // any active tool-call / response pairing.
             trigger: shouldForceFromHard ? 'auto' : undefined,
+            reservedOutputTokens: effectiveReservedOutput,
           },
         );
       }
-      const localPromptTokensAfterCompression = shouldForceFromHard
-        ? estimatePromptTokens(
-            this.lastPromptTokenCount > 0 ? [] : this.getHistoryShallow(true),
-            userContent,
-            this.lastPromptTokenCount,
-            this.lastOutputTokenCount,
-            imageTokenEstimate,
-          )
+      const estimateLocalPromptTokens = () =>
+        estimatePromptTokens(
+          this.lastPromptTokenCount > 0 ? [] : this.getHistoryShallow(true),
+          userContent,
+          this.lastPromptTokenCount,
+          this.lastOutputTokenCount,
+          imageTokenEstimate,
+        );
+
+      let localPromptTokensAfterCompression = shouldForceFromHard
+        ? estimateLocalPromptTokens()
         : 0;
+      // Set when the hard-rescue fast-compaction fallback below rescues the
+      // send; guards the post-block recorder so it doesn't double-record
+      // the checkpoint that compressFast() already wrote.
+      let rescuedViaFast = false;
       if (
         shouldStopAfterHardRescue(
           shouldForceFromHard,
@@ -3258,76 +3309,114 @@ export class LlmChat {
           localPromptTokensAfterCompression,
         )
       ) {
-        const message = getHardRescueFailureMessage(
-          effectiveTokens,
-          hard,
-          compressionInfo,
-          localPromptTokensAfterCompression,
-        );
+        // Self-heal: LLM summary compaction couldn't get the prompt under the
+        // hard limit (it failed, NOOP'd, or the provider rejected the
+        // oversized summary call). Fall back to rule-based fast compaction
+        // (no model call) before rejecting — recovers oversized/resumed
+        // sessions that would otherwise be permanently stuck.
         if (shouldForceFromHard) {
-          this.hardRescueFailureCount =
-            hardRescueFailureCountBeforeHardRescue + 1;
-        }
-        if (
-          compressionInfo.compressionStatus === CompressionStatus.COMPRESSED &&
-          historyBeforeHardRescue
-        ) {
-          // Hard-rescue compression mutates in-memory history before this
-          // guard can compare the compressed prompt size. If the compressed
-          // prompt is still too large to send, restore the pre-compression
-          // state. The JSONL compression checkpoint is intentionally not
-          // written because the send is about to be rejected.
-          this.setHistory(
-            historyBeforeHardRescue,
-            completedToolCallIdsBeforeHardRescue,
-          );
-          // setHistory conservatively cleared loaded-skill tracking; the
-          // restored bodies re-arm it on their next invoke.
-          this.lastPromptTokenCount = lastPromptTokenCountBeforeHardRescue;
-          this.lastPromptTokenCountIsEstimated =
-            lastPromptTokenCountWasEstimatedBeforeHardRescue;
-          this.lastOutputTokenCount = lastOutputTokenCountBeforeHardRescue;
-          this.lastCachedContentTokenCount =
-            lastCachedContentTokenCountBeforeHardRescue;
-          this.tokenCountsRouteKey = tokenCountsRouteKeyBeforeHardRescue;
-          // Restore the retention map alongside the slots: the rescue's
-          // compression consumed/cleared entries mid-flight, and without
-          // the restore the resurrected route's count would survive
-          // nowhere — its next gate read would pass with 0 (#9506). The
-          // snapshot predates the rescue, so it already satisfies the
-          // invariant (no entry for the resurrected slot key).
-          this.tokenCountsByRouteKey.clear();
-          for (const [
-            retainedRouteKey,
-            retainedCounts,
-          ] of retainedTokenCountsBeforeHardRescue) {
-            this.tokenCountsByRouteKey.set(retainedRouteKey, retainedCounts);
+          const fast = this.compressFast();
+          if (fast.info.compressionStatus === CompressionStatus.COMPRESSED) {
+            localPromptTokensAfterCompression = estimateLocalPromptTokens();
+            if (localPromptTokensAfterCompression < hard) {
+              compressionInfo = fast.info;
+              // compressFast() already recorded its own chat_compression
+              // checkpoint internally (unlike tryCompress, it has no
+              // deferChatCompressionRecord option), so the post-block
+              // recorder below must be skipped for this rescue to avoid
+              // writing the same checkpoint twice.
+              rescuedViaFast = true;
+              this.hardRescueFailureCount = 0;
+              debugLogger.warn(
+                `[compaction] hard-rescue recovered via fast compaction: ` +
+                  `prompt_id=${prompt_id}, ` +
+                  `tokensAfterFast=${localPromptTokensAfterCompression}, hard=${hard}.`,
+              );
+            }
           }
-          this.telemetryService?.setLastPromptTokenCount(
-            lastPromptTokenCountBeforeHardRescue,
-          );
-          this.telemetryService?.setLastCachedContentTokenCount(
-            lastCachedContentTokenCountBeforeHardRescue,
-          );
         }
-        const compressionStatus =
-          CompressionStatus[compressionInfo.compressionStatus] ??
-          String(compressionInfo.compressionStatus);
-        debugLogger.warn(
-          `[compaction] hard-tier rescue stopped oversized prompt: ` +
-            `prompt_id=${prompt_id}, effectiveTokens=${effectiveTokens}, ` +
-            `hard=${hard}, localPromptTokensAfterCompression=` +
-            `${localPromptTokensAfterCompression}, compressionStatus=` +
-            `${compressionStatus}, newTokenCount=` +
-            `${compressionInfo.newTokenCount}, hardRescueFailureCount=` +
-            `${this.hardRescueFailureCount}, consecutiveFailures=` +
-            `${this.consecutiveFailures}. ${message}`,
-        );
-        throw new Error(message);
+
+        // Re-check after the fast attempt; only reject if STILL oversized.
+        if (
+          shouldStopAfterHardRescue(
+            shouldForceFromHard,
+            hard,
+            localPromptTokensAfterCompression,
+          )
+        ) {
+          const message = getHardRescueFailureMessage(
+            effectiveTokens,
+            hard,
+            compressionInfo,
+            localPromptTokensAfterCompression,
+          );
+          if (shouldForceFromHard) {
+            this.hardRescueFailureCount =
+              hardRescueFailureCountBeforeHardRescue + 1;
+          }
+          if (
+            compressionInfo.compressionStatus ===
+              CompressionStatus.COMPRESSED &&
+            historyBeforeHardRescue
+          ) {
+            // Hard-rescue compression mutates in-memory history before this
+            // guard can compare the compressed prompt size. If the compressed
+            // prompt is still too large to send, restore the pre-compression
+            // state. The JSONL compression checkpoint is intentionally not
+            // written because the send is about to be rejected.
+            this.setHistory(
+              historyBeforeHardRescue,
+              completedToolCallIdsBeforeHardRescue,
+            );
+            // setHistory conservatively cleared loaded-skill tracking; the
+            // restored bodies re-arm it on their next invoke.
+            this.lastPromptTokenCount = lastPromptTokenCountBeforeHardRescue;
+            this.lastPromptTokenCountIsEstimated =
+              lastPromptTokenCountWasEstimatedBeforeHardRescue;
+            this.lastOutputTokenCount = lastOutputTokenCountBeforeHardRescue;
+            this.lastCachedContentTokenCount =
+              lastCachedContentTokenCountBeforeHardRescue;
+            this.tokenCountsRouteKey = tokenCountsRouteKeyBeforeHardRescue;
+            // Restore the retention map alongside the slots: the rescue's
+            // compression consumed/cleared entries mid-flight, and without
+            // the restore the resurrected route's count would survive
+            // nowhere — its next gate read would pass with 0 (#9506). The
+            // snapshot predates the rescue, so it already satisfies the
+            // invariant (no entry for the resurrected slot key).
+            this.tokenCountsByRouteKey.clear();
+            for (const [
+              retainedRouteKey,
+              retainedCounts,
+            ] of retainedTokenCountsBeforeHardRescue) {
+              this.tokenCountsByRouteKey.set(retainedRouteKey, retainedCounts);
+            }
+            this.telemetryService?.setLastPromptTokenCount(
+              lastPromptTokenCountBeforeHardRescue,
+            );
+            this.telemetryService?.setLastCachedContentTokenCount(
+              lastCachedContentTokenCountBeforeHardRescue,
+            );
+          }
+          const compressionStatus =
+            CompressionStatus[compressionInfo.compressionStatus] ??
+            String(compressionInfo.compressionStatus);
+          debugLogger.warn(
+            `[compaction] hard-tier rescue stopped oversized prompt: ` +
+              `prompt_id=${prompt_id}, effectiveTokens=${effectiveTokens}, ` +
+              `hard=${hard}, localPromptTokensAfterCompression=` +
+              `${localPromptTokensAfterCompression}, compressionStatus=` +
+              `${compressionStatus}, newTokenCount=` +
+              `${compressionInfo.newTokenCount}, hardRescueFailureCount=` +
+              `${this.hardRescueFailureCount}, consecutiveFailures=` +
+              `${this.consecutiveFailures}. ${message}`,
+          );
+          throw new Error(message);
+        }
       }
       if (
         shouldForceFromHard &&
-        compressionInfo.compressionStatus === CompressionStatus.COMPRESSED
+        compressionInfo.compressionStatus === CompressionStatus.COMPRESSED &&
+        !rescuedViaFast
       ) {
         // Keep the pending question with the compressed answer on resume.
         this.chatRecordingService?.recordChatCompression({
@@ -3911,6 +4000,15 @@ export class LlmChat {
             // threshold; it recovers through the same one-shot path (#10380).
             const contextOverflow = getContextLengthExceededInfo(error);
             const requestPayloadOverflow = getRequestPayloadTooLargeInfo(error);
+            // Size-aware overflow: also treat an unrecognised provider error
+            // as a context overflow when the estimated prompt provably
+            // exceeds the window (e.g. an opaque gateway 400 that carries no
+            // overflow wording).
+            const sizeAwareOverflow = isLikelyContextOverflow({
+              textRecognized: contextOverflow.isExceeded,
+              estimatedPromptTokens: effectiveTokens,
+              contextWindow: rawContextLimit,
+            });
 
             // HTTP establishment failures already exhausted retryWithBackoff;
             // only server errors raised while reading the stream join replay.
@@ -3934,7 +4032,7 @@ export class LlmChat {
             const isContinuableStreamCut =
               isRetryableStreamTransportError(classification) ||
               (isRetryableStatuslessUpstreamError(classification) &&
-                !contextOverflow.isExceeded &&
+                !sizeAwareOverflow &&
                 !requestPayloadOverflow.isTooLarge);
             // Replay admits one class more than continuation does: a server
             // error raised while reading an established stream (#11634) is
@@ -4143,10 +4241,17 @@ export class LlmChat {
 
             // Both detectors were computed above the recovery gates, so that a
             // status-less upstream failure could be kept out of them.
-            if (
-              contextOverflow.isExceeded ||
-              requestPayloadOverflow.isTooLarge
-            ) {
+            if (sizeAwareOverflow || requestPayloadOverflow.isTooLarge) {
+              if (
+                !contextOverflow.isExceeded &&
+                !requestPayloadOverflow.isTooLarge
+              ) {
+                debugLogger.warn(
+                  `Size-detected context overflow (unrecognised provider error): ` +
+                    `estTokens=${effectiveTokens}, window=${rawContextLimit}; ` +
+                    `attempting reactive compression.`,
+                );
+              }
               // Server-limit fallback for omni media (server-feedback-driven
               // transport guard): a request carrying oss:// media that the
               // server rejected as over its input limit is retried with the
@@ -4279,6 +4384,7 @@ export class LlmChat {
                       requestRouteKey,
                       trigger: 'auto',
                       requestPayloadTooLarge: requestPayloadOverflow.isTooLarge,
+                      reservedOutputTokens: effectiveReservedOutput,
                     },
                   );
 
@@ -4388,6 +4494,38 @@ export class LlmChat {
                     'Reactive compression failed.',
                     compressionError,
                   );
+                }
+
+                // The LLM reactive compaction above did not recover (it
+                // NOOP'd, returned a failure status, or the provider
+                // rejected the oversized summary call itself). Fall back to
+                // rule-based fast compaction — no model call — and retry
+                // the send. This is the path that recovers when the summary
+                // request also 400s.
+                const reactiveFast = self.compressFast();
+                if (
+                  reactiveFast.info.compressionStatus ===
+                  CompressionStatus.COMPRESSED
+                ) {
+                  self.popPendingPartialAssistantTurn();
+                  requestContents = self.getRequestHistoryForRoute(
+                    currentUserContent,
+                    requestModalities,
+                  );
+                  debugLogger.info(
+                    `Reactive fast compaction recovered context overflow: ` +
+                      `${reactiveFast.info.originalTokenCount} -> ` +
+                      `${reactiveFast.info.newTokenCount} tokens.`,
+                  );
+                  yield {
+                    type: StreamEventType.COMPRESSED,
+                    info: reactiveFast.info,
+                  };
+                  resetTransportContinuation();
+                  yield { type: StreamEventType.RETRY };
+                  suppressNextRetryEvent = true;
+                  rearmQuietAcceptanceIfBudgetSpent();
+                  continue;
                 }
               } else {
                 attemptedPayloadRecovery =

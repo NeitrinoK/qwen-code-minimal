@@ -38,10 +38,6 @@ import { MessageType, StreamingState } from './types.js';
 import {
   type EditorType,
   type Config,
-  type IdeInfo,
-  type IdeContext,
-  IdeClient,
-  ideContextStore,
   createDebugLogger,
   describeDeliveryStatus,
   describeDropReason,
@@ -109,11 +105,7 @@ import {
   profileCheckpoint,
   finalizeStartupProfile,
 } from '../utils/startupProfiler.js';
-import {
-  AppEvent,
-  appEvents,
-  type StartupIdeConnectionStatus,
-} from '../utils/events.js';
+import { appEvents } from '../utils/events.js';
 import process from 'node:process';
 
 /**
@@ -136,9 +128,7 @@ const STARTUP_PROFILE_FINALIZE_CAP_MS = 35_000;
 import { useHistory } from './hooks/useHistoryManager.js';
 import { useMemoryMonitor } from './hooks/useMemoryMonitor.js';
 import { useWakeRepaint } from './hooks/use-wake-repaint.js';
-import type { MicrophonePermission } from './hooks/use-voice-input.js';
 import { useThemeCommand } from './hooks/useThemeCommand.js';
-import { useFeedbackDialog } from './hooks/useFeedbackDialog.js';
 import { useAuthCommand } from './auth/useAuth.js';
 import { useEditorSettings } from './hooks/useEditorSettings.js';
 import { usePreferredEditor } from './hooks/usePreferredEditor.js';
@@ -167,7 +157,11 @@ import {
   useVimModeState,
   useVimModeActions,
 } from './contexts/VimModeContext.js';
-import { ThoughtExpandedProvider } from './contexts/ThoughtExpandedContext.js';
+import { CompactModeProvider } from './contexts/CompactModeContext.js';
+import {
+  ThoughtExpandedProvider,
+  type ThoughtExpandedValue,
+} from './contexts/ThoughtExpandedContext.js';
 import { ToolDetailsExpandedProvider } from './contexts/ToolDetailsExpandedContext.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { calculatePromptWidths } from './components/InputPrompt.js';
@@ -208,14 +202,10 @@ import { useLoadingIndicator } from './hooks/useLoadingIndicator.js';
 import { useTerminalProgress } from './hooks/useTerminalProgress.js';
 import { useFolderTrust } from './hooks/useFolderTrust.js';
 import { useMcpApproval } from './hooks/useMcpApproval.js';
-import { useIdeTrustListener } from './hooks/useIdeTrustListener.js';
-import { type IdeIntegrationNudgeResult } from './IdeIntegrationNudge.js';
 import { type CommandMigrationNudgeResult } from './CommandFormatMigrationNudge.js';
 import { useCommandMigration } from './hooks/useCommandMigration.js';
 import { migrateTomlCommands } from '../services/command-migration-tool.js';
 import { sendNotification } from '../services/notificationService.js';
-import { type UpdateObject } from './utils/updateCheck.js';
-import { setUpdateHandler } from './handleAutoUpdate.js';
 import { registerCleanup, runExitCleanup } from '../utils/cleanup.js';
 import { exitCleanly } from '../utils/processUtils.js';
 import {
@@ -242,6 +232,11 @@ import {
   type RenderMode,
 } from './contexts/RenderModeContext.js';
 import { TerminalOutputProvider } from './contexts/TerminalOutputContext.js';
+import {
+  ThinkingViewerProvider,
+  type ThinkingViewerData,
+} from './contexts/ThinkingViewerContext.js';
+import { ThinkingViewer } from './components/ThinkingViewer.js';
 import { useAgentViewState } from './contexts/AgentViewContext.js';
 import {
   useBackgroundTaskViewState,
@@ -282,6 +277,7 @@ import {
   requestConsentInteractive,
   requestConsentOrFail,
 } from '../commands/extensions/consent.js';
+import { compactToggleHasVisualEffect } from './utils/mergeCompactToolGroups.js';
 import {
   findLastUserItemIndex,
   isSyntheticHistoryItem,
@@ -868,7 +864,6 @@ export const AppContainer = (props: AppContainerProps) => {
   const [modelSwitchedFromQuotaError, setModelSwitchedFromQuotaError] =
     useState<boolean>(false);
   const [historyRemountKey, setHistoryRemountKey] = useState(0);
-  const [updateInfo, setUpdateInfo] = useState<UpdateObject | null>(null);
   const [isTrustedFolder, setIsTrustedFolder] = useState<boolean | undefined>(
     config.isTrustedFolder(),
   );
@@ -881,32 +876,12 @@ export const AppContainer = (props: AppContainerProps) => {
   const { addSettingInputRequest, settingInputRequests } =
     useSettingInputRequests();
 
-  const { addPluginChoiceRequest, pluginChoiceRequests } =
-    usePluginChoiceRequests();
+  const { pluginChoiceRequests } = usePluginChoiceRequests();
 
   extensionManager.setRequestConsent(
     requestConsentOrFail.bind(null, (description) =>
       requestConsentInteractive(description, addConfirmUpdateExtensionRequest),
     ),
-  );
-
-  extensionManager.setRequestChoicePlugin(
-    (marketplace) =>
-      new Promise<string>((resolve, reject) => {
-        addPluginChoiceRequest({
-          marketplaceName: marketplace.name,
-          plugins: marketplace.plugins.map((p) => ({
-            name: p.name,
-            description: p.description,
-          })),
-          onSelect: (pluginName) => {
-            resolve(pluginName);
-          },
-          onCancel: () => {
-            reject(new Error('Plugin selection cancelled'));
-          },
-        });
-      }),
   );
 
   extensionManager.setRequestSetting(
@@ -961,6 +936,16 @@ export const AppContainer = (props: AppContainerProps) => {
   const [isConfigInitialized, setConfigInitialized] = useState(false);
 
   const [userMessages, setUserMessages] = useState<string[]>([]);
+
+  // Thinking viewer overlay state
+  const [thinkingViewerData, setThinkingViewerData] =
+    useState<ThinkingViewerData | null>(null);
+  const openThinkingViewer = useCallback((data: ThinkingViewerData) => {
+    setThinkingViewerData(data);
+  }, []);
+  const closeThinkingViewer = useCallback(() => {
+    setThinkingViewerData(null);
+  }, []);
 
   // Ctrl+O / Alt+T inline expansion toggle for thinking blocks (expands all at once).
   const [thoughtExpanded, setThoughtExpanded] = useState(false);
@@ -1094,11 +1079,6 @@ export const AppContainer = (props: AppContainerProps) => {
 
   // Layout measurements
   const mainControlsRef = useRef<DOMElement>(null);
-  // Dedup for the voice mic-permission notice. Held here rather than in
-  // Composer because dialogs (tool approvals, auth, settings) swap Composer
-  // out of the layout; a ref held there would reset on each swap and the
-  // notice would repeat on the next recording.
-  const voiceMicWarnedStatusRef = useRef<MicrophonePermission | null>(null);
   const lastTitleRef = useRef<string | null>(null);
   const [startupWarnings, setStartupWarnings] = useState(
     () => props.startupWarnings || [],
@@ -1332,12 +1312,6 @@ export const AppContainer = (props: AppContainerProps) => {
         debugLogger.error(`SessionEnd hook failed: ${err}`);
       }
     });
-
-    registerCleanup(async () => {
-      if (config.getShellExecutionSandbox?.()) return;
-      const ideClient = await IdeClient.getInstance();
-      await ideClient.disconnect();
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config]);
 
@@ -1484,20 +1458,6 @@ export const AppContainer = (props: AppContainerProps) => {
   // with it so the commit loop reads width and height consistently (both live).
   const availableTerminalHeightRef = useRef(0);
   const terminalWidthRef = useRef(0);
-  const updateHandlerRef = useRef<{
-    cleanup: () => void;
-    flush: () => void;
-  } | null>(null);
-
-  useEffect(() => {
-    const handler = setUpdateHandler(
-      historyManager.addItem,
-      setUpdateInfo,
-      isIdleRef,
-    );
-    updateHandlerRef.current = handler;
-    return () => handler?.cleanup();
-  }, [historyManager.addItem]);
 
   // Derive widths for InputPrompt using shared helper
   const { inputWidth, suggestionsWidth } = useMemo(() => {
@@ -1832,7 +1792,6 @@ export const AppContainer = (props: AppContainerProps) => {
     isModelDialogOpen,
     isFastModelMode,
     isAdvisorModelMode,
-    isVoiceModelMode,
     isVisionModelMode,
     isCompactionModelMode,
     isImageModelMode,
@@ -2505,13 +2464,11 @@ export const AppContainer = (props: AppContainerProps) => {
   cancelOngoingRequestRef.current = cancelOngoingRequest;
   clearPendingStateRef.current = clearPendingState;
 
-  // Now that streamingState is available, keep isIdleRef in sync and
-  // flush any deferred update notifications when the model finishes responding.
+  // Now that streamingState is available, keep isIdleRef in sync.
   isIdleRef.current = streamingState === StreamingState.Idle;
 
   useEffect(() => {
     if (streamingState === StreamingState.Idle) {
-      updateHandlerRef.current?.flush();
       // P7-trigger: a steered turn has finished — drop the `workflow active`
       // indicator until the next keyword prompt re-arms it.
       setWorkflowKeywordActive(false);
@@ -3910,28 +3867,6 @@ export const AppContainer = (props: AppContainerProps) => {
     }
   }, [promptSuggestion]);
 
-  const [idePromptAnswered, setIdePromptAnswered] = useState(false);
-  const [currentIDE, setCurrentIDE] = useState<IdeInfo | null>(null);
-  const [startupIdeConnectionStatus, setStartupIdeConnectionStatus] =
-    useState<StartupIdeConnectionStatus>({ state: 'idle' });
-
-  useEffect(() => {
-    if (config.getShellExecutionSandbox?.()) return;
-    const getIde = async () => {
-      const ideClient = await IdeClient.getInstance();
-      const currentIde = ideClient.getCurrentIde();
-      setCurrentIDE(currentIde || null);
-    };
-    getIde();
-  }, [config]);
-  const shouldShowIdePrompt = Boolean(
-    !config.getShellExecutionSandbox?.() &&
-      currentIDE &&
-      !config.getIdeMode() &&
-      !settings.merged.ide?.hasSeenNudge &&
-      !idePromptAnswered,
-  );
-
   // Command migration nudge
   const {
     showMigrationNudge: shouldShowCommandMigrationNudge,
@@ -3941,6 +3876,13 @@ export const AppContainer = (props: AppContainerProps) => {
 
   const [showToolDescriptions, setShowToolDescriptions] =
     useState<boolean>(false);
+
+  const [compactMode, setCompactMode] = useState<boolean>(
+    settings.merged.ui?.compactMode ?? false,
+  );
+  const [compactInline] = useState<boolean>(
+    settings.merged.ui?.compactInline ?? false,
+  );
 
   const configuredRenderMode = settings.merged.ui?.renderMode;
   const [renderMode, setRenderMode] = useState<RenderMode>(
@@ -3982,11 +3924,7 @@ export const AppContainer = (props: AppContainerProps) => {
   const [isRewindSelectorOpen, setIsRewindSelectorOpen] = useState(false);
   const [rewindEscPending, setRewindEscPending] = useState(false);
   const [constrainHeight, setConstrainHeight] = useState<boolean>(true);
-  const [ideContextState, setIdeContextState] = useState<
-    IdeContext | undefined
-  >();
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
-  const [showIdeRestartPrompt, setShowIdeRestartPrompt] = useState(false);
 
   const { isFolderTrustDialogOpen, handleFolderTrustSelect, isRestarting } =
     useFolderTrust(settings, setIsTrustedFolder);
@@ -3997,26 +3935,8 @@ export const AppContainer = (props: AppContainerProps) => {
     mcpApprovalRemaining,
     handleMcpApprovalSelect,
   } = useMcpApproval(config);
-  const {
-    needsRestart: ideNeedsRestart,
-    restartReason: ideTrustRestartReason,
-  } = useIdeTrustListener(!config.getShellExecutionSandbox?.());
-  const {
-    isFeedbackDialogOpen,
-    openFeedbackDialog,
-    closeFeedbackDialog,
-    temporaryCloseFeedbackDialog,
-    submitFeedback,
-  } = useFeedbackDialog({
-    config,
-    settings,
-    streamingState,
-    history: historyManager.history,
-    sessionStats,
-  });
   const dialogsVisible =
     showWelcomeBackDialog ||
-    shouldShowIdePrompt ||
     shouldShowCommandMigrationNudge ||
     isFolderTrustDialogOpen ||
     isMcpApprovalDialogOpen ||
@@ -4038,7 +3958,6 @@ export const AppContainer = (props: AppContainerProps) => {
     isAuthDialogOpen ||
     isAuthenticating ||
     isEditorDialogOpen ||
-    showIdeRestartPrompt ||
     isSubagentCreateDialogOpen ||
     isAgentsManagerDialogOpen ||
     isSkillsManagerDialogOpen ||
@@ -4063,7 +3982,6 @@ export const AppContainer = (props: AppContainerProps) => {
   const shouldShowStickyTodos =
     stickyTodos !== null &&
     !dialogsVisible &&
-    !isFeedbackDialogOpen &&
     streamingState === StreamingState.Responding;
   const stickyTodoWidth = Math.min(mainAreaWidth, 64);
   const stickyTodoMaxVisibleItems = getStickyTodoMaxVisibleItemsForMode(
@@ -4110,12 +4028,11 @@ export const AppContainer = (props: AppContainerProps) => {
     dialogsVisible,
     stickyTodosLayoutKey,
     liveAgentPanelLayoutKey,
-    // Composer and update notification height also shift with these; without
+    // Composer height also shifts with these; without
     // them the footer isn't re-measured during a streaming turn and the VP
     // viewport bottom clips.
     // (elapsedTime/currentLoadingPhrase excluded: they tick without changing rows.)
     streamingState,
-    updateInfo,
     agentViewState.activeView,
     // The agent tab footer grows with its own status row / queued messages /
     // input text, none of which the deps above track; AgentComposer syncs
@@ -4186,53 +4103,18 @@ export const AppContainer = (props: AppContainerProps) => {
   // render strands border characters on screen.
   useWakeRepaint(wakeRepaint);
 
-  useEffect(() => {
-    if (ideNeedsRestart) {
-      // IDE trust changed, force a restart.
-      setShowIdeRestartPrompt(true);
-    }
-  }, [ideNeedsRestart]);
-
-  useEffect(() => {
-    const unsubscribe = ideContextStore.subscribe(setIdeContextState);
-    setIdeContextState(ideContextStore.get());
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    const listener = (status: StartupIdeConnectionStatus) => {
-      setStartupIdeConnectionStatus(status);
-    };
-    appEvents.on(AppEvent.StartupIdeConnectionStatusChanged, listener);
-    return () => {
-      appEvents.off(AppEvent.StartupIdeConnectionStatusChanged, listener);
-    };
-  }, []);
-
   const handleEscapePromptChange = useCallback((showPrompt: boolean) => {
     setShowEscapePrompt(showPrompt);
   }, []);
 
   // --- Rewind selector callbacks ---
-  // IDE guard here is NOT redundant with the keyboard handler guard (line ~2375):
-  // /rewind calls openRewindSelector directly, bypassing the keyboard handler.
   const openRewindSelector = useCallback(() => {
     if (streamingState !== StreamingState.Idle) return;
     if (dialogsVisibleRef.current) return;
-    if (config.getIdeMode()) {
-      historyManager.addItem(
-        {
-          type: 'info',
-          text: 'Rewind is disabled in IDE mode.',
-        },
-        Date.now(),
-      );
-      return;
-    }
     const hasUserTurns = historyManager.history.some((h) => h.type === 'user');
     if (!hasUserTurns) return;
     setIsRewindSelectorOpen(true);
-  }, [streamingState, config, historyManager]);
+  }, [streamingState, historyManager]);
   openRewindSelectorRef.current = openRewindSelector;
 
   const closeRewindSelector = useCallback(() => {
@@ -4475,24 +4357,6 @@ export const AppContainer = (props: AppContainerProps) => {
 
   const handleDoubleEscRewind = useDoublePress(openRewindSelector, (pending) =>
     setRewindEscPending(pending),
-  );
-
-  const handleIdePromptComplete = useCallback(
-    (result: IdeIntegrationNudgeResult) => {
-      if (result.userSelection === 'yes') {
-        // Check whether the extension has been pre-installed
-        if (result.isExtensionPreInstalled) {
-          handleSlashCommand('/ide enable');
-        } else {
-          handleSlashCommand('/ide install');
-        }
-        settings.setValue(SettingScope.User, 'ide.hasSeenNudge', true);
-      } else if (result.userSelection === 'dismiss') {
-        settings.setValue(SettingScope.User, 'ide.hasSeenNudge', true);
-      }
-      setIdePromptAnswered(true);
-    },
-    [handleSlashCommand, settings],
   );
 
   const handleCommandMigrationComplete = useCallback(
@@ -4760,7 +4624,17 @@ export const AppContainer = (props: AppContainerProps) => {
         debugLogger.debug('[DEBUG] Keystroke:', JSON.stringify(key));
       }
 
-      // Ctrl+O / Alt+T: toggle inline expansion of thinking blocks.
+      // ThinkingViewer owns all input while open.
+      // Ctrl+C / Ctrl+D close the viewer and fall through to quit/exit.
+      if (thinkingViewerData) {
+        if (keyMatchers[Command.QUIT](key) || keyMatchers[Command.EXIT](key)) {
+          closeThinkingViewer();
+        } else {
+          return;
+        }
+      }
+
+      // Alt+T: toggle inline expansion of thinking blocks.
       if (keyMatchers[Command.TOGGLE_THINKING_EXPANDED](key)) {
         setThoughtExpanded((prev) => !prev);
         refreshStatic();
@@ -4857,8 +4731,7 @@ export const AppContainer = (props: AppContainerProps) => {
         // Input is empty and idle — double-ESC opens rewind selector
         if (
           streamingState === StreamingState.Idle &&
-          !dialogsVisibleRef.current &&
-          !config.getIdeMode()
+          !dialogsVisibleRef.current
         ) {
           if (escapeTimerRef.current) {
             clearTimeout(escapeTimerRef.current);
@@ -4913,12 +4786,6 @@ export const AppContainer = (props: AppContainerProps) => {
           handleSlashCommand(newValue ? '/mcp desc' : '/mcp nodesc');
         }
       } else if (
-        keyMatchers[Command.TOGGLE_IDE_CONTEXT_DETAIL](key) &&
-        config.getIdeMode() &&
-        ideContextState
-      ) {
-        handleSlashCommand('/ide status');
-      } else if (
         keyMatchers[Command.SHOW_MORE_LINES](key) &&
         buffer.text.length === 0 &&
         !enteringConstrainHeightMode
@@ -4927,6 +4794,17 @@ export const AppContainer = (props: AppContainerProps) => {
       } else if (keyMatchers[Command.TOGGLE_SHELL_INPUT_FOCUS](key)) {
         if (activePtyId || embeddedShellFocused) {
           setEmbeddedShellFocused((prev) => !prev);
+        }
+      } else if (keyMatchers[Command.TOGGLE_COMPACT_MODE](key)) {
+        const newValue = !compactMode;
+        setCompactMode(newValue);
+        void settings.setValue(SettingScope.User, 'ui.compactMode', newValue);
+        // Skip the expensive clearTerminal + Static remount when no past
+        // item would render differently (no tool_group / gemini_thought*).
+        // Future items pick up the new mode naturally because Static is
+        // append-only.
+        if (compactToggleHasVisualEffect(historyRef.current)) {
+          refreshStatic();
         }
       } else if (keyMatchers[Command.PROMOTE_SHELL_TO_BACKGROUND](key)) {
         // Ctrl+B: promote a running foreground shell command to a
@@ -4996,7 +4874,6 @@ export const AppContainer = (props: AppContainerProps) => {
       showToolDescriptions,
       setShowToolDescriptions,
       config,
-      ideContextState,
       handleExit,
       ctrlCPressedOnce,
       setCtrlCPressedOnce,
@@ -5021,11 +4898,15 @@ export const AppContainer = (props: AppContainerProps) => {
       // debugKeystrokeLogging is read at call time, so no stale closure risk.
       settings,
       isAuthenticating,
+      compactMode,
+      setCompactMode,
       setRenderMode,
       refreshStatic,
       handleDoubleEscRewind,
       vimEnabled,
       vimMode,
+      thinkingViewerData,
+      closeThinkingViewer,
       setThoughtExpanded,
     ],
   );
@@ -5120,7 +5001,6 @@ export const AppContainer = (props: AppContainerProps) => {
       isModelDialogOpen,
       isFastModelMode,
       isAdvisorModelMode,
-      isVoiceModelMode,
       isVisionModelMode,
       isCompactionModelMode,
       isImageModelMode,
@@ -5159,7 +5039,6 @@ export const AppContainer = (props: AppContainerProps) => {
       inputWidth,
       suggestionsWidth,
       isInputActive,
-      shouldShowIdePrompt,
       shouldShowCommandMigrationNudge,
       commandMigrationTomlFiles,
       isFolderTrustDialogOpen: isFolderTrustDialogOpen ?? false,
@@ -5169,7 +5048,6 @@ export const AppContainer = (props: AppContainerProps) => {
       mcpApprovalRemaining,
       isTrustedFolder,
       constrainHeight,
-      ideContextState,
       showToolDescriptions,
       ctrlCPressedOnce,
       ctrlDPressedOnce,
@@ -5203,12 +5081,6 @@ export const AppContainer = (props: AppContainerProps) => {
       terminalWidth,
       terminalHeight,
       mainControlsRef,
-      voiceMicWarnedStatusRef,
-      currentIDE,
-      startupIdeConnectionStatus,
-      updateInfo,
-      showIdeRestartPrompt,
-      ideTrustRestartReason,
       isRestarting,
       extensionsUpdateState,
       activePtyId,
@@ -5229,8 +5101,6 @@ export const AppContainer = (props: AppContainerProps) => {
       // Hooks dialog
       isHooksDialogOpen,
       isStatsDialogOpen,
-      // Feedback dialog
-      isFeedbackDialogOpen,
       // Per-task token tracking
       taskStartTokens,
       taskStartStreamingChars,
@@ -5269,7 +5139,6 @@ export const AppContainer = (props: AppContainerProps) => {
       isModelDialogOpen,
       isFastModelMode,
       isAdvisorModelMode,
-      isVoiceModelMode,
       isVisionModelMode,
       isCompactionModelMode,
       isImageModelMode,
@@ -5308,7 +5177,6 @@ export const AppContainer = (props: AppContainerProps) => {
       inputWidth,
       suggestionsWidth,
       isInputActive,
-      shouldShowIdePrompt,
       shouldShowCommandMigrationNudge,
       commandMigrationTomlFiles,
       isFolderTrustDialogOpen,
@@ -5318,7 +5186,6 @@ export const AppContainer = (props: AppContainerProps) => {
       mcpApprovalRemaining,
       isTrustedFolder,
       constrainHeight,
-      ideContextState,
       showToolDescriptions,
       ctrlCPressedOnce,
       ctrlDPressedOnce,
@@ -5350,12 +5217,6 @@ export const AppContainer = (props: AppContainerProps) => {
       terminalWidth,
       terminalHeight,
       mainControlsRef,
-      voiceMicWarnedStatusRef,
-      currentIDE,
-      startupIdeConnectionStatus,
-      updateInfo,
-      showIdeRestartPrompt,
-      ideTrustRestartReason,
       isRestarting,
       currentModel,
       extensionsUpdateState,
@@ -5378,8 +5239,6 @@ export const AppContainer = (props: AppContainerProps) => {
       // Hooks dialog
       isHooksDialogOpen,
       isStatsDialogOpen,
-      // Feedback dialog
-      isFeedbackDialogOpen,
       // Per-task token tracking
       taskStartTokens,
       taskStartStreamingChars,
@@ -5432,7 +5291,6 @@ export const AppContainer = (props: AppContainerProps) => {
       closePermissionsDialog,
       setShellModeActive,
       vimHandleInput,
-      handleIdePromptComplete,
       handleCommandMigrationComplete,
       handleFolderTrustSelect,
       handleMcpApprovalSelect,
@@ -5482,11 +5340,6 @@ export const AppContainer = (props: AppContainerProps) => {
       openHelpDialog,
       closeHelpDialog,
       setHelpTab,
-      // Feedback dialog
-      openFeedbackDialog,
-      closeFeedbackDialog,
-      temporaryCloseFeedbackDialog,
-      submitFeedback,
       // Rewind selector
       openRewindSelector,
       closeRewindSelector,
@@ -5525,7 +5378,6 @@ export const AppContainer = (props: AppContainerProps) => {
       closePermissionsDialog,
       setShellModeActive,
       vimHandleInput,
-      handleIdePromptComplete,
       handleCommandMigrationComplete,
       handleFolderTrustSelect,
       handleMcpApprovalSelect,
@@ -5572,11 +5424,6 @@ export const AppContainer = (props: AppContainerProps) => {
       openHelpDialog,
       closeHelpDialog,
       setHelpTab,
-      // Feedback dialog
-      openFeedbackDialog,
-      closeFeedbackDialog,
-      temporaryCloseFeedbackDialog,
-      submitFeedback,
       // Rewind selector
       openRewindSelector,
       closeRewindSelector,
@@ -5587,12 +5434,17 @@ export const AppContainer = (props: AppContainerProps) => {
     ],
   );
 
+  const compactModeValue = useMemo(
+    () => ({ compactMode, compactInline, setCompactMode }),
+    [compactMode, compactInline, setCompactMode],
+  );
+
   const renderModeValue = useMemo(
     () => ({ renderMode, setRenderMode }),
     [renderMode, setRenderMode],
   );
 
-  const thoughtExpandedValue = useMemo(
+  const thoughtExpandedValue = useMemo<ThoughtExpandedValue>(
     () => ({
       allExpanded: thoughtExpanded,
       expandedHeadIds: expandedThoughtHeadIds,
@@ -5609,6 +5461,11 @@ export const AppContainer = (props: AppContainerProps) => {
     [expandedToolBatchIds, expandToolBatch],
   );
 
+  const thinkingViewerValue = useMemo(
+    () => ({ openThinkingViewer }),
+    [openThinkingViewer],
+  );
+
   return (
     <VirtualViewportContext.Provider value={useTerminalBuffer}>
       <UIStateContext.Provider value={uiState}>
@@ -5620,21 +5477,33 @@ export const AppContainer = (props: AppContainerProps) => {
                 startupWarnings,
               }}
             >
-              <ThoughtExpandedProvider value={thoughtExpandedValue}>
-                <ToolDetailsExpandedProvider value={toolDetailsExpandedValue}>
-                  <RenderModeProvider value={renderModeValue}>
-                    <TerminalOutputProvider value={writeRaw}>
-                      <ShellFocusContext.Provider value={isFocused}>
-                        <ContextMenuProvider
-                          onMenuChange={handleContextMenuChange}
-                        >
-                          <App />
-                        </ContextMenuProvider>
-                      </ShellFocusContext.Provider>
-                    </TerminalOutputProvider>
-                  </RenderModeProvider>
-                </ToolDetailsExpandedProvider>
-              </ThoughtExpandedProvider>
+              <CompactModeProvider value={compactModeValue}>
+                <ThoughtExpandedProvider value={thoughtExpandedValue}>
+                  <ToolDetailsExpandedProvider value={toolDetailsExpandedValue}>
+                    <RenderModeProvider value={renderModeValue}>
+                      <TerminalOutputProvider value={writeRaw}>
+                        <ThinkingViewerProvider value={thinkingViewerValue}>
+                          <ShellFocusContext.Provider value={isFocused}>
+                            <ContextMenuProvider
+                              onMenuChange={handleContextMenuChange}
+                            >
+                              {thinkingViewerData ? (
+                                <ThinkingViewer
+                                  data={thinkingViewerData}
+                                  onClose={closeThinkingViewer}
+                                  useAlternateScreen={!useTerminalBuffer}
+                                />
+                              ) : (
+                                <App />
+                              )}
+                            </ContextMenuProvider>
+                          </ShellFocusContext.Provider>
+                        </ThinkingViewerProvider>
+                      </TerminalOutputProvider>
+                    </RenderModeProvider>
+                  </ToolDetailsExpandedProvider>
+                </ThoughtExpandedProvider>
+              </CompactModeProvider>
             </AppContext.Provider>
           </ConfigContext.Provider>
         </UIActionsContext.Provider>

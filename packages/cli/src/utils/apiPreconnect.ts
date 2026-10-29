@@ -35,19 +35,17 @@ let preconnectInFlight: Promise<void> | undefined;
  */
 const DEFAULT_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com',
-  'qwen-oauth': 'https://coding.dashscope.aliyuncs.com',
   anthropic: 'https://api.anthropic.com',
-  dashscope: 'https://dashscope.aliyuncs.com',
 };
 
 /**
  * All known default base URLs, including all registered provider endpoints.
  * Used by isDefaultBaseUrl() to accept any supported default endpoint.
  */
-const ALL_DEFAULT_URLS: string[] = [
-  ...Object.values(DEFAULT_BASE_URLS),
-  ...getAllProviderBaseUrls(),
-];
+function getAllDefaultUrls(): string[] {
+  // Computed per call: hub providers are registered after module load.
+  return [...Object.values(DEFAULT_BASE_URLS), ...getAllProviderBaseUrls()];
+}
 
 /**
  * Check if preconnect should be skipped due to environment conditions
@@ -78,7 +76,7 @@ function isDefaultBaseUrl(baseUrl: string): boolean {
     .toLowerCase()
     .replace(/^https?:\/\//, '')
     .replace(/\/+$/, '');
-  return ALL_DEFAULT_URLS.some((defaultUrl) => {
+  return getAllDefaultUrls().some((defaultUrl) => {
     const normalizedDefault = defaultUrl
       .toLowerCase()
       .replace(/^https?:\/\//, '')
@@ -127,7 +125,7 @@ function getPreconnectTargetUrl(
  * Use HEAD request to establish TCP+TLS connection without sending actual request body.
  * Uses the shared undici dispatcher to ensure connection pool is shared with SDK clients.
  *
- * @param authType - Authentication type (openai, qwen-oauth, anthropic, etc.)
+ * @param authType - Authentication type (openai, anthropic, etc.)
  * @param options - Configuration options
  */
 export function preconnectApi(
@@ -135,6 +133,8 @@ export function preconnectApi(
   options: {
     resolvedBaseUrl?: string;
     proxy?: string;
+    noProxy?: string[];
+    caCertificates?: string[];
   } = {},
 ): void {
   if (preconnectFired) {

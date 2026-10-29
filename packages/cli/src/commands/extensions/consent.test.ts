@@ -4,18 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import stripAnsi from 'strip-ansi';
-import {
-  extensionConsentString,
-  requestConsentOrFail,
-  requestChoicePluginNonInteractive,
-} from './consent.js';
-import type {
-  ExtensionConfig,
-  ClaudeMarketplaceConfig,
-} from '@qwen-code/qwen-code-core';
-import prompts from 'prompts';
+import { extensionConsentString, requestConsentOrFail } from './consent.js';
+import type { ExtensionConfig } from '@qwen-code/qwen-code-core';
 
 vi.mock('../../i18n/index.js', () => ({
   t: vi.fn((str: string, params?: Record<string, string>) => {
@@ -293,10 +285,10 @@ describe('extensionConsentString', () => {
 });
 
 describe('requestConsentOrFail', () => {
-  let mockRequestConsent: ReturnType<typeof vi.fn>;
+  let mockRequestConsent: Mock<(consent: string) => Promise<boolean>>;
 
   beforeEach(() => {
-    mockRequestConsent = vi.fn();
+    mockRequestConsent = vi.fn<(consent: string) => Promise<boolean>>();
     vi.clearAllMocks();
   });
 
@@ -418,74 +410,5 @@ describe('requestConsentOrFail', () => {
 
       expect(mockRequestConsent).not.toHaveBeenCalled();
     });
-  });
-});
-
-describe('requestChoicePluginNonInteractive', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('should throw error when plugins array is empty', async () => {
-    const marketplace: ClaudeMarketplaceConfig = {
-      name: 'test-marketplace',
-      owner: { name: 'Test Owner', email: 'test@example.com' },
-      plugins: [],
-    };
-
-    await expect(
-      requestChoicePluginNonInteractive(marketplace),
-    ).rejects.toThrow('No plugins available in this marketplace.');
-  });
-
-  it('should return selected plugin name', async () => {
-    const marketplace: ClaudeMarketplaceConfig = {
-      name: 'test-marketplace',
-      owner: { name: 'Test Owner', email: 'test@example.com' },
-      plugins: [
-        {
-          name: 'plugin1',
-          description: 'Plugin 1',
-          version: '1.0.0',
-          source: 'src1',
-        },
-        {
-          name: 'plugin2',
-          description: 'Plugin 2',
-          version: '1.0.0',
-          source: 'src2',
-        },
-      ],
-    };
-
-    vi.mocked(prompts).mockResolvedValueOnce({ plugin: 'plugin2' });
-
-    const result = await requestChoicePluginNonInteractive(marketplace);
-
-    expect(result).toBe('plugin2');
-    expect(prompts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'select',
-        name: 'plugin',
-        choices: expect.arrayContaining([
-          expect.objectContaining({ value: 'plugin1' }),
-          expect.objectContaining({ value: 'plugin2' }),
-        ]),
-      }),
-    );
-  });
-
-  it('should throw error when selection is cancelled', async () => {
-    const marketplace: ClaudeMarketplaceConfig = {
-      name: 'test-marketplace',
-      owner: { name: 'Test Owner', email: 'test@example.com' },
-      plugins: [{ name: 'plugin1', version: '1.0.0', source: 'src1' }],
-    };
-
-    vi.mocked(prompts).mockResolvedValueOnce({ plugin: undefined });
-
-    await expect(
-      requestChoicePluginNonInteractive(marketplace),
-    ).rejects.toThrow('Plugin selection cancelled.');
   });
 });

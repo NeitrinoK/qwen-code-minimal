@@ -272,7 +272,7 @@ export function resolveMetadataKey(config: ProviderConfig): string | undefined {
 
 /**
  * Namespace prefix used for all provider metadata in settings.
- * e.g. `providerMetadata.coding-plan.version`
+ * e.g. `providerMetadata.token-plan.version`
  */
 export const PROVIDER_METADATA_NS = 'providerMetadata';
 
@@ -599,8 +599,6 @@ export function computeModelListVersion(models: ProviderModelConfig[]): string {
 const DEFAULT_BASE_URLS: Partial<Record<AuthType, string>> = {
   [AuthType.USE_OPENAI]: 'https://api.openai.com/v1',
   [AuthType.USE_OPENAI_RESPONSES]: 'https://api.openai.com',
-  [AuthType.USE_ANTHROPIC]: 'https://api.anthropic.com/v1',
-  [AuthType.USE_GEMINI]: 'https://generativelanguage.googleapis.com',
 };
 
 /** Resolve the placeholder/default base URL for a chosen protocol. */
@@ -811,9 +809,8 @@ export function providerMatchesCredentials(
   if (typeof config.envKey === 'string') {
     configEnvKey = config.envKey;
   } else if (typeof config.envKey === 'function' && baseUrl) {
-    // buildInstallPlan derives the persisted env key from `inputs.protocol`
-    // (which may be USE_ANTHROPIC / USE_GEMINI for a custom provider), not
-    // the config's default `config.protocol`. So when we don't know which
+    // buildInstallPlan derives the persisted env key from `inputs.protocol`,
+    // not the config's default `config.protocol`. So when we don't know which
     // protocol the user originally chose, try every option the provider
     // offers and match if any of them derives `envKey`.
     const protocols = config.protocolOptions?.length

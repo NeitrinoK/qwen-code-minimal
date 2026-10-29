@@ -308,6 +308,19 @@ function setupGoalClient() {
       makeSnapshot: vi.fn(async () => undefined),
       getSnapshots: vi.fn(() => []),
     })),
+    getStaticSystemPrefix: vi.fn(() => undefined),
+    setStaticSystemPrefix: vi.fn(),
+    getAutoMemoryPrompt: vi.fn(() => ''),
+    getAskQuestionMenuEnforced: vi.fn(() => false),
+    getWritingPlansEnforced: vi.fn(() => false),
+    hasInvokedSkill: vi.fn(() => false),
+    consumeInlineAnnouncedSkillKeys: vi.fn(() => []),
+    getDebugLogger: vi.fn(() => ({
+      debug: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+    })),
   } as unknown as Config;
   const client = new LlmClient(config);
   client['chat'] = {

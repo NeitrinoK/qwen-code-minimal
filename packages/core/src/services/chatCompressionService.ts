@@ -8,7 +8,6 @@ import type { Content, GenerateContentConfig } from '@google/genai';
 import type { Config } from '../config/config.js';
 import { ApprovalMode } from '../config/config.js';
 import type { GenerateTextResult } from '../core/baseLlmClient.js';
-import { AuthType } from '../core/contentGenerator.js';
 import type { LlmChat } from '../core/llm-chat.js';
 import {
   type ChatCompressionInfo,
@@ -315,6 +314,13 @@ export interface CompressOptions {
    * rejected the main request.
    */
   requestPayloadTooLarge?: boolean;
+  /**
+   * Output tokens reserved by the model (e.g. max_tokens / escalated limit).
+   * When provided, the cheap-gate subtracts this from the context window
+   * before computing thresholds so auto-compression fires based on the
+   * real available input budget rather than the full window.
+   */
+  reservedOutputTokens?: number;
 }
 
 /**
@@ -379,17 +385,9 @@ function buildCompressionSystemPrompt(
 
 function supportsCompressionCacheSharing(config: Config): boolean {
   const provider = config.getContentGeneratorConfig();
-  // Google GenAI prefix caching is implicit. `enableCacheControl` configures
-  // explicit provider cache markers, so it must not disable Gemini/Vertex
-  // cache sharing as an unrelated side effect.
-  if (
-    provider.authType === AuthType.USE_GEMINI ||
-    provider.authType === AuthType.USE_VERTEX_AI
-  ) {
-    return true;
-  }
+  // Only the OpenAI-compatible provider survives in this fork. `enableCacheControl`
+  // configures explicit provider cache markers.
   if (provider.enableCacheControl === false) return false;
-  if (provider.authType === AuthType.USE_ANTHROPIC) return true;
   return supportsOpenAIPrefixCaching(provider);
 }
 
@@ -488,7 +486,7 @@ export class ChatCompressionService {
       if (effectiveTokens < auto) {
         // Screenshot-overflow trigger: even below the token threshold,
         // compact once tool-returned images accumulate past the configured
-        // count, so tool-driven visual sessions don't drown the model in stale
+        // count, so image-heavy sessions don't drown the model in stale
         // screenshots. Only counted in the would-be-NOOP path and only when
         // enabled, so the common case pays nothing. Counts NESTED tool media
         // only (countToolResponseImages), not user-pasted top-level images.
@@ -499,7 +497,8 @@ export class ChatCompressionService {
         if (!screenshotOverflow) {
           debugLogger.debug(
             `[compaction] cheap-gate NOOP: effectiveTokens=${effectiveTokens}, ` +
-              `auto=${auto}, contextLimit=${contextLimit}`,
+              `auto=${auto}, contextLimit=${contextLimit}, ` +
+              `reservedOutputTokens=${opts.reservedOutputTokens ?? 0}`,
           );
           return {
             newHistory: null,
@@ -852,7 +851,6 @@ export class ChatCompressionService {
         const mainSystemInstruction = generationConfig.systemInstruction;
         delete generationConfig.systemInstruction;
         delete generationConfig.abortSignal;
-        const authType = config.getContentGeneratorConfig().authType;
         const sharedResult = await config.getBaseLlmClient().generateText({
           contents: [
             ...sideQueryHistory,
@@ -869,25 +867,6 @@ export class ChatCompressionService {
           systemInstruction: mainSystemInstruction,
           config: {
             ...generationConfig,
-            ...(authType === AuthType.USE_ANTHROPIC
-              ? {
-                  thinkingConfig: {
-                    ...generationConfig.thinkingConfig,
-                    // Manual Anthropic thinking requires budget_tokens to be
-                    // strictly below max_tokens. Preserve thinking for cache
-                    // compatibility while keeping this bounded request valid.
-                    thinkingBudget: COMPACT_MAX_OUTPUT_TOKENS - 1,
-                  },
-                }
-              : authType === AuthType.USE_GEMINI ||
-                  authType === AuthType.USE_VERTEX_AI
-                ? {
-                    thinkingConfig: {
-                      ...generationConfig.thinkingConfig,
-                      includeThoughts: false,
-                    },
-                  }
-                : {}),
             maxOutputTokens: COMPACT_MAX_OUTPUT_TOKENS,
           },
           abortSignal,

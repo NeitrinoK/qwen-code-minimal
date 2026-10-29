@@ -58,10 +58,10 @@ describe('resolveModelId', () => {
     expect(
       resolveModelId(undefined, {
         currentModel: 'main-model',
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
       }),
     ).toEqual({
-      authType: AuthType.USE_ANTHROPIC,
+      authType: 'other-provider' as AuthType,
       modelId: 'main-model',
     });
   });
@@ -162,7 +162,7 @@ describe('resolveModelId with configured model context', () => {
             : [
                 {
                   id: 'deepseek-v4-flash',
-                  authType: AuthType.USE_ANTHROPIC,
+                  authType: 'other-provider' as AuthType,
                 },
               ],
       }),
@@ -175,9 +175,9 @@ describe('resolveModelId with configured model context', () => {
   it('resolves bare model IDs to another configured auth type when current auth does not own them', () => {
     expect(
       resolveModelId('deepseek-v4-flash', {
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
         getAvailableModels: (authTypes) =>
-          authTypes?.includes(AuthType.USE_ANTHROPIC)
+          authTypes?.includes('other-provider' as AuthType)
             ? []
             : [{ id: 'deepseek-v4-flash', authType: AuthType.USE_OPENAI }],
       }),
@@ -190,11 +190,11 @@ describe('resolveModelId with configured model context', () => {
   it('falls back to current auth type for bare model IDs with no configured match', () => {
     expect(
       resolveModelId('unknown-model', {
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
         getAvailableModels: () => [],
       }),
     ).toEqual({
-      authType: AuthType.USE_ANTHROPIC,
+      authType: 'other-provider' as AuthType,
       modelId: 'unknown-model',
     });
   });
@@ -202,7 +202,7 @@ describe('resolveModelId with configured model context', () => {
   it('resolves fast through an authType-prefixed fast model', () => {
     expect(
       resolveModelId('fast', {
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
         fastModel: 'openai:deepseek-v4-flash',
       }),
     ).toEqual({
@@ -214,11 +214,11 @@ describe('resolveModelId with configured model context', () => {
   it('falls back to current auth type for bare fast models without configured model context', () => {
     expect(
       resolveModelId('fast', {
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
         fastModel: 'deepseek-v4-flash',
       }),
     ).toEqual({
-      authType: AuthType.USE_ANTHROPIC,
+      authType: 'other-provider' as AuthType,
       modelId: 'deepseek-v4-flash',
     });
   });
@@ -234,7 +234,7 @@ describe('resolveModelId with configured model context', () => {
             : [
                 {
                   id: 'deepseek-v4-flash',
-                  authType: AuthType.USE_ANTHROPIC,
+                  authType: 'other-provider' as AuthType,
                 },
               ],
       }),
@@ -247,10 +247,10 @@ describe('resolveModelId with configured model context', () => {
   it('resolves bare fast models to their configured auth type when current auth does not own them', () => {
     expect(
       resolveModelId('fast', {
-        currentAuthType: AuthType.USE_ANTHROPIC,
+        currentAuthType: 'other-provider' as AuthType,
         fastModel: 'deepseek-v4-flash',
         getAvailableModels: (authTypes) =>
-          authTypes?.includes(AuthType.USE_ANTHROPIC)
+          authTypes?.includes('other-provider' as AuthType)
             ? []
             : [{ id: 'deepseek-v4-flash', authType: AuthType.USE_OPENAI }],
       }),

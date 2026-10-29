@@ -33,6 +33,24 @@ export function getPendingSkillsRoot(projectRoot: string): string {
   return path.join(projectRoot, PENDING_SKILLS_RELATIVE_DIR);
 }
 
+export const DISABLED_SKILLS_RELATIVE_DIR = path.join(
+  '.qwen',
+  'disabled-skills',
+);
+
+/**
+ * Root for auto-skills that outcome-tracking heuristics
+ * (`skill-deactivation.ts`) deactivated for consistently hurting more than
+ * helping. Deliberately a SIBLING of `.qwen/skills/` — same rationale as
+ * `getPendingSkillsRoot` — so `loadSkillsFromDir` never discovers a
+ * deactivated skill (it scans the skills root only). Deactivation is
+ * implemented as an `fs.rename`, never a delete: moving a directory back
+ * out of this root fully restores the skill.
+ */
+export function getDisabledSkillsRoot(projectRoot: string): string {
+  return path.join(projectRoot, DISABLED_SKILLS_RELATIVE_DIR);
+}
+
 export function isProjectSkillPath(
   filePath: string,
   projectRoot: string,

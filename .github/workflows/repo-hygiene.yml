@@ -112,16 +112,12 @@ jobs:
           node-version: '22.x'
           package-manager-cache: false
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Install dependencies and build'
         env:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               break
             fi
             if [[ "${attempt}" == "3" ]]; then exit 1; fi
@@ -314,17 +310,13 @@ jobs:
           node-version: '22.x'
           package-manager-cache: false
 
-      - name: 'Cache pnpm store (hosted)'
-        if: "${{ steps.dedup.outputs.open_prs_present == 'false' && runner.environment == 'github-hosted' }}"
-        uses: './.github/actions/pnpm-store-cache'
-
       - name: 'Install dependencies and build'
         if: "${{ steps.dedup.outputs.open_prs_present == 'false' }}"
         env:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then break; fi
+            if npm ci --no-audit --progress=false; then break; fi
             if [[ "${attempt}" == "3" ]]; then exit 1; fi
             sleep $((attempt * 15))
           done

@@ -192,9 +192,11 @@ describe('getEnvironmentContext', () => {
     // Mock the locale to ensure consistent English date formatting
     vi.stubGlobal('Intl', {
       ...global.Intl,
-      DateTimeFormat: vi.fn().mockImplementation(() => ({
-        format: vi.fn().mockReturnValue('Tuesday, August 5, 2025'),
-      })),
+      DateTimeFormat: vi.fn().mockImplementation(function () {
+        return {
+          format: vi.fn().mockReturnValue('Tuesday, August 5, 2025'),
+        };
+      }),
     });
 
     mockConfig = workspaceConfig();
@@ -1020,6 +1022,7 @@ describe('buildAvailableSkillsReminder', () => {
   beforeEach(() => {
     mockConfig = {
       getSkillManager: vi.fn().mockReturnValue(mockSkillManager),
+      getSkillEnforcementEnabled: vi.fn().mockReturnValue(true),
     } as unknown as Partial<Config>;
   });
 

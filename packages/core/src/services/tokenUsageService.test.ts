@@ -42,7 +42,6 @@ describe('tokenUsageService', () => {
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
     vi.useRealTimers();
     setDebugLogSession(null);
     resetTokenUsageFailureLogging();
@@ -77,7 +76,7 @@ describe('tokenUsageService', () => {
       model,
       options.durationMs ?? 100,
       promptId,
-      options.authType ?? AuthType.USE_GEMINI,
+      options.authType ?? AuthType.USE_OPENAI,
       usageData,
       undefined,
       options.subagentName,
@@ -86,35 +85,11 @@ describe('tokenUsageService', () => {
     return event;
   }
 
-  const fakeConfig = () =>
-    makeFakeConfig({
+  it('maps an API response event to a privacy-preserving usage record', () => {
+    const config = makeFakeConfig({
       sessionId: 'session-1',
       targetDir: path.join(tempDir, 'project'),
     });
-
-  /** Usage with only prompt, candidates and total token counts. */
-  const usage = (
-    promptTokenCount: number,
-    candidatesTokenCount: number,
-    totalTokenCount: number,
-  ): GenerateContentResponseUsageMetadata => ({
-    promptTokenCount,
-    candidatesTokenCount,
-    totalTokenCount,
-  });
-
-  const recordUsage = (
-    config: ReturnType<typeof makeFakeConfig>,
-    ...event: Parameters<typeof createEvent>
-  ) => recordTokenUsageFromApiResponse(config, createEvent(...event));
-
-  const may25 = { period: 'day', value: '2026-05-25' } as const;
-
-  const silenceStderr = () =>
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-
-  it('maps an API response event to a privacy-preserving usage record', () => {
-    const config = fakeConfig();
     const event = createEvent(
       'qwen-model',
       'prompt-1',
@@ -126,7 +101,7 @@ describe('tokenUsageService', () => {
         totalTokenCount: 35,
       },
       {
-        authType: AuthType.QWEN_OAUTH,
+        authType: AuthType.USE_OPENAI,
         subagentName: 'agent-a',
       },
     );
@@ -140,7 +115,7 @@ describe('tokenUsageService', () => {
       localMonth: '2026-05',
       sessionId: 'session-1',
       model: 'qwen-model',
-      authType: AuthType.QWEN_OAUTH,
+      authType: AuthType.USE_OPENAI,
       source: 'agent-a',
       inputTokens: 10,
       outputTokens: 20,
@@ -156,57 +131,88 @@ describe('tokenUsageService', () => {
   });
 
   it('uses current local date when API timestamps are missing or invalid', () => {
-    const config = fakeConfig();
-    const invalidEvent = createEvent('model-a', 'prompt-1', usage(1, 2, 3));
-    invalidEvent['event.timestamp'] = 'not-a-date';
-    const missingEvent = createEvent('model-b', 'prompt-2', usage(1, 2, 3));
-    Reflect.deleteProperty(missingEvent, 'event.timestamp');
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
+    const invalidTimestampEvent = createEvent('model-a', 'prompt-1', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
+    invalidTimestampEvent['event.timestamp'] = 'not-a-date';
+    const missingTimestampEvent = createEvent('model-b', 'prompt-2', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
+    Reflect.deleteProperty(missingTimestampEvent, 'event.timestamp');
 
-    const invalidRecord = apiResponseEventToTokenUsageRecord(
+    const invalidTimestampRecord = apiResponseEventToTokenUsageRecord(
       config,
-      invalidEvent,
+      invalidTimestampEvent,
     );
-    const missingRecord = apiResponseEventToTokenUsageRecord(
+    const missingTimestampRecord = apiResponseEventToTokenUsageRecord(
       config,
-      missingEvent,
+      missingTimestampEvent,
     );
 
-    expect(invalidRecord.localDate).toBe('2026-05-25');
-    expect(invalidRecord.localMonth).toBe('2026-05');
-    expect(missingRecord.timestamp).toBe('2026-05-25T10:00:00.000Z');
-    expect(missingRecord.localDate).toBe('2026-05-25');
-    expect(missingRecord.localMonth).toBe('2026-05');
+    expect(invalidTimestampRecord.localDate).toBe('2026-05-25');
+    expect(invalidTimestampRecord.localMonth).toBe('2026-05');
+    expect(missingTimestampRecord.timestamp).toBe('2026-05-25T10:00:00.000Z');
+    expect(missingTimestampRecord.localDate).toBe('2026-05-25');
+    expect(missingTimestampRecord.localMonth).toBe('2026-05');
   });
 
   it('persists API usage to monthly JSONL and aggregates daily totals', async () => {
-    const config = fakeConfig();
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
 
-    await recordUsage(config, 'model-a', 'prompt-1', {
-      promptTokenCount: 10,
-      candidatesTokenCount: 20,
-      cachedContentTokenCount: 5,
-      thoughtsTokenCount: 2,
-      totalTokenCount: 32,
-    });
-    await recordUsage(
+    await recordTokenUsageFromApiResponse(
       config,
-      'model-b',
-      'prompt-2',
-      {
-        promptTokenCount: 7,
-        candidatesTokenCount: 8,
-        cachedContentTokenCount: 1,
-        thoughtsTokenCount: 0,
-        totalTokenCount: 15,
-      },
-      {
-        authType: AuthType.USE_VERTEX_AI,
-        timestamp: '2026-05-25T12:00:00.000Z',
-      },
+      createEvent('model-a', 'prompt-1', {
+        promptTokenCount: 10,
+        candidatesTokenCount: 20,
+        cachedContentTokenCount: 5,
+        thoughtsTokenCount: 2,
+        totalTokenCount: 32,
+      }),
     );
-    await recordUsage(config, 'model-a', 'prompt-3', usage(100, 100, 200), {
-      timestamp: '2026-05-26T12:00:00.000Z',
-    });
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        'model-b',
+        'prompt-2',
+        {
+          promptTokenCount: 7,
+          candidatesTokenCount: 8,
+          cachedContentTokenCount: 1,
+          thoughtsTokenCount: 0,
+          totalTokenCount: 15,
+        },
+        {
+          authType: AuthType.USE_OPENAI,
+          timestamp: '2026-05-25T12:00:00.000Z',
+        },
+      ),
+    );
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        'model-a',
+        'prompt-3',
+        {
+          promptTokenCount: 100,
+          candidatesTokenCount: 100,
+          totalTokenCount: 200,
+        },
+        {
+          timestamp: '2026-05-26T12:00:00.000Z',
+        },
+      ),
+    );
 
     const fileContent = await readFile(
       getTokenUsageFilePath('2026-05'),
@@ -214,7 +220,10 @@ describe('tokenUsageService', () => {
     );
     expect(fileContent.trim().split('\n')).toHaveLength(3);
 
-    const summary = await queryTokenUsage(may25);
+    const summary = await queryTokenUsage({
+      period: 'day',
+      value: '2026-05-25',
+    });
 
     expect(summary.totals).toMatchObject({
       requests: 2,
@@ -230,29 +239,42 @@ describe('tokenUsageService', () => {
       'model-b',
     ]);
     expect(summary.byAuthType.map((group) => group.key)).toEqual([
-      AuthType.USE_GEMINI,
-      AuthType.USE_VERTEX_AI,
+      AuthType.USE_OPENAI,
     ]);
   });
 
   it('swallows best-effort write errors and surfaces non-ENOENT failures', async () => {
-    const config = fakeConfig();
-    const event = createEvent('model-a', 'prompt-1', usage(1, 2, 3));
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
+    const event = createEvent('model-a', 'prompt-1', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
     const error = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
     const writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(error);
-    const stderrSpy = silenceStderr();
+    const stderrSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
 
-    expect(() =>
-      recordTokenUsageFromApiResponseBestEffort(config, event),
-    ).not.toThrow();
+    try {
+      expect(() =>
+        recordTokenUsageFromApiResponseBestEffort(config, event),
+      ).not.toThrow();
 
-    expect(writeSpy).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => {
-      expect(stderrSpy).toHaveBeenCalledWith(
-        '[token-usage] Write failed (ENOSPC):',
-        'disk full',
-      );
-    });
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => {
+        expect(stderrSpy).toHaveBeenCalledWith(
+          '[token-usage] Write failed (ENOSPC):',
+          'disk full',
+        );
+      });
+    } finally {
+      writeSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
   });
 
   it('swallows synchronous best-effort record conversion errors', () => {
@@ -263,44 +285,55 @@ describe('tokenUsageService', () => {
         });
       },
     } as unknown as ReturnType<typeof makeFakeConfig>;
-    const event = createEvent('model-a', 'prompt-1', usage(1, 2, 3));
+    const event = createEvent('model-a', 'prompt-1', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
     const writeSpy = vi.spyOn(jsonl, 'writeLine');
-    const stderrSpy = silenceStderr();
+    const stderrSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
 
-    expect(() =>
-      recordTokenUsageFromApiResponseBestEffort(config, event),
-    ).not.toThrow();
+    try {
+      expect(() =>
+        recordTokenUsageFromApiResponseBestEffort(config, event),
+      ).not.toThrow();
 
-    expect(writeSpy).not.toHaveBeenCalled();
-    expect(stderrSpy).toHaveBeenCalledWith(
-      '[token-usage] Write failed (EACCES):',
-      'session unavailable',
-    );
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(stderrSpy).toHaveBeenCalledWith(
+        '[token-usage] Write failed (EACCES):',
+        'session unavailable',
+      );
+    } finally {
+      writeSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
   });
 
   it('suppresses repeated console.error for same error code within 60s cooldown, re-fires after cooldown', async () => {
-    const config = fakeConfig();
-    const event = createEvent('model-a', 'prompt-1', usage(1, 2, 3));
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
+    const event = createEvent('model-a', 'prompt-1', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
     const error = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
 
     let fakeNow = 1000000;
     __overrideNowForTesting(() => fakeNow);
 
-    const stderrSpy = silenceStderr();
-
-    /** Fails the next write with `err`, records best-effort, then runs `check`. */
-    async function failNextWrite(err: Error, check: () => Promise<void>) {
-      const writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(err);
-      try {
-        recordTokenUsageFromApiResponseBestEffort(config, event);
-        await check();
-      } finally {
-        writeSpy.mockRestore();
-      }
-    }
+    const stderrSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
 
     // --- First failure: should log ---
-    await failNextWrite(error, async () => {
+    let writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(error);
+    try {
+      recordTokenUsageFromApiResponseBestEffort(config, event);
       await vi.waitFor(() => {
         expect(stderrSpy).toHaveBeenCalledTimes(1);
       });
@@ -308,19 +341,27 @@ describe('tokenUsageService', () => {
         '[token-usage] Write failed (ENOSPC):',
         'disk full',
       );
-    });
+    } finally {
+      writeSpy.mockRestore();
+    }
 
     // --- Second failure, same code, within cooldown: suppressed ---
-    await failNextWrite(error, async () => {
+    writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(error);
+    try {
+      recordTokenUsageFromApiResponseBestEffort(config, event);
       await vi.runAllTimers();
       // Still only 1 call — the second was suppressed
       expect(stderrSpy).toHaveBeenCalledTimes(1);
-    });
+    } finally {
+      writeSpy.mockRestore();
+    }
 
     const eaccesError = Object.assign(new Error('permission denied'), {
       code: 'EACCES',
     });
-    await failNextWrite(eaccesError, async () => {
+    writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(eaccesError);
+    try {
+      recordTokenUsageFromApiResponseBestEffort(config, event);
       await vi.waitFor(() => {
         expect(stderrSpy).toHaveBeenCalledTimes(2);
       });
@@ -328,11 +369,15 @@ describe('tokenUsageService', () => {
         '[token-usage] Write failed (EACCES):',
         'permission denied',
       );
-    });
+    } finally {
+      writeSpy.mockRestore();
+    }
 
     // --- Advance time past cooldown: should log again with suppression count ---
     fakeNow += 61_000;
-    await failNextWrite(error, async () => {
+    writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(error);
+    try {
+      recordTokenUsageFromApiResponseBestEffort(config, event);
       await vi.waitFor(() => {
         expect(stderrSpy).toHaveBeenCalledTimes(3);
       });
@@ -340,41 +385,98 @@ describe('tokenUsageService', () => {
         '[token-usage] Write failed (ENOSPC):',
         'disk full (1 similar suppressed since last log)',
       );
-    });
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    stderrSpy.mockRestore();
   });
 
   it('does not surface best-effort ENOENT write failures to stderr', async () => {
-    const config = fakeConfig();
-    const event = createEvent('model-a', 'prompt-1', usage(1, 2, 3));
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
+    const event = createEvent('model-a', 'prompt-1', {
+      promptTokenCount: 1,
+      candidatesTokenCount: 2,
+      totalTokenCount: 3,
+    });
     const error = Object.assign(new Error('missing directory'), {
       code: 'ENOENT',
     });
     const writeSpy = vi.spyOn(jsonl, 'writeLine').mockRejectedValueOnce(error);
-    const stderrSpy = silenceStderr();
+    const stderrSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
 
-    recordTokenUsageFromApiResponseBestEffort(config, event);
+    try {
+      recordTokenUsageFromApiResponseBestEffort(config, event);
 
-    expect(writeSpy).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => {
       expect(writeSpy).toHaveBeenCalledTimes(1);
-    });
-    expect(stderrSpy).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(writeSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      writeSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
   });
 
   it('aggregates monthly model, auth type, model/auth, and source groups', async () => {
-    const config = fakeConfig();
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
 
-    await recordUsage(config, 'model-a', 'prompt-1', usage(1, 2, 3), {
-      authType: AuthType.USE_GEMINI,
-      subagentName: 'agent-a',
-    });
-    await recordUsage(config, 'model-a', 'prompt-2', usage(4, 5, 9), {
-      authType: AuthType.USE_VERTEX_AI,
-      subagentName: 'agent-a',
-    });
-    await recordUsage(config, 'model-b', 'prompt-3', usage(6, 7, 13), {
-      authType: AuthType.USE_GEMINI,
-    });
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        'model-a',
+        'prompt-1',
+        {
+          promptTokenCount: 1,
+          candidatesTokenCount: 2,
+          totalTokenCount: 3,
+        },
+        {
+          authType: AuthType.USE_OPENAI,
+          subagentName: 'agent-a',
+        },
+      ),
+    );
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        'model-a',
+        'prompt-2',
+        {
+          promptTokenCount: 4,
+          candidatesTokenCount: 5,
+          totalTokenCount: 9,
+        },
+        {
+          authType: AuthType.USE_OPENAI,
+          subagentName: 'agent-a',
+        },
+      ),
+    );
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        'model-b',
+        'prompt-3',
+        {
+          promptTokenCount: 6,
+          candidatesTokenCount: 7,
+          totalTokenCount: 13,
+        },
+        {
+          authType: AuthType.USE_OPENAI,
+        },
+      ),
+    );
 
     const summary = await queryTokenUsage({
       period: 'month',
@@ -387,23 +489,18 @@ describe('tokenUsageService', () => {
       expect.objectContaining({ key: 'model-a', totalTokens: 12 }),
     ]);
     expect(summary.byAuthType).toEqual([
-      expect.objectContaining({ key: AuthType.USE_GEMINI, totalTokens: 16 }),
-      expect.objectContaining({ key: AuthType.USE_VERTEX_AI, totalTokens: 9 }),
+      expect.objectContaining({ key: AuthType.USE_OPENAI, totalTokens: 25 }),
     ]);
     expect(summary.byModelAndAuthType).toEqual([
       expect.objectContaining({
-        key: `model-b|${AuthType.USE_GEMINI}`,
+        key: `model-b|${AuthType.USE_OPENAI}`,
         model: 'model-b',
-        authType: AuthType.USE_GEMINI,
+        authType: AuthType.USE_OPENAI,
         totalTokens: 13,
       }),
       expect.objectContaining({
-        key: `model-a|${AuthType.USE_VERTEX_AI}`,
-        totalTokens: 9,
-      }),
-      expect.objectContaining({
-        key: `model-a|${AuthType.USE_GEMINI}`,
-        totalTokens: 3,
+        key: `model-a|${AuthType.USE_OPENAI}`,
+        totalTokens: 12,
       }),
     ]);
     expect(summary.bySource).toEqual([
@@ -413,32 +510,50 @@ describe('tokenUsageService', () => {
   });
 
   it('falls back to component totals when API total is missing', async () => {
-    const config = fakeConfig();
-
-    await recordUsage(config, 'model-a', 'prompt-1', {
-      promptTokenCount: 10,
-      candidatesTokenCount: 20,
-      cachedContentTokenCount: 5,
-      thoughtsTokenCount: 7,
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
     });
 
-    const summary = await queryTokenUsage(may25);
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent('model-a', 'prompt-1', {
+        promptTokenCount: 10,
+        candidatesTokenCount: 20,
+        cachedContentTokenCount: 5,
+        thoughtsTokenCount: 7,
+      }),
+    );
+
+    const summary = await queryTokenUsage({
+      period: 'day',
+      value: '2026-05-25',
+    });
 
     expect(summary.totals.totalTokens).toBe(37);
     expect(summary.totals.cachedTokens).toBe(5);
   });
 
   it('uses cached tokens as fallback input when prompt tokens are missing', async () => {
-    const config = fakeConfig();
-
-    await recordUsage(config, 'model-a', 'prompt-1', {
-      promptTokenCount: 0,
-      candidatesTokenCount: 20,
-      cachedContentTokenCount: 5,
-      thoughtsTokenCount: 7,
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
     });
 
-    const summary = await queryTokenUsage(may25);
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent('model-a', 'prompt-1', {
+        promptTokenCount: 0,
+        candidatesTokenCount: 20,
+        cachedContentTokenCount: 5,
+        thoughtsTokenCount: 7,
+      }),
+    );
+
+    const summary = await queryTokenUsage({
+      period: 'day',
+      value: '2026-05-25',
+    });
 
     expect(summary.totals.totalTokens).toBe(32);
     expect(summary.totals.inputTokens).toBe(5);
@@ -469,12 +584,16 @@ describe('tokenUsageService', () => {
     });
     const readSpy = vi.spyOn(jsonl, 'read').mockRejectedValueOnce(error);
 
-    await expect(
-      queryTokenUsage({ period: 'month', value: '2026-05' }),
-    ).rejects.toThrow('permission denied');
-    expect(readSpy).toHaveBeenCalledWith(getTokenUsageFilePath('2026-05'), {
-      throwOnNonEnoentError: true,
-    });
+    try {
+      await expect(
+        queryTokenUsage({ period: 'month', value: '2026-05' }),
+      ).rejects.toThrow('permission denied');
+      expect(readSpy).toHaveBeenCalledWith(getTokenUsageFilePath('2026-05'), {
+        throwOnNonEnoentError: true,
+      });
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   it('tolerates malformed JSONL lines while querying', async () => {
@@ -496,7 +615,10 @@ describe('tokenUsageService', () => {
       'utf-8',
     );
 
-    const summary = await queryTokenUsage(may25);
+    const summary = await queryTokenUsage({
+      period: 'day',
+      value: '2026-05-25',
+    });
 
     expect(summary.totals.totalTokens).toBe(3);
     expect(summary.totals.requests).toBe(1);
@@ -518,17 +640,35 @@ describe('tokenUsageService', () => {
       'utf-8',
     );
 
-    const summary = await queryTokenUsage(may25);
+    const summary = await queryTokenUsage({
+      period: 'day',
+      value: '2026-05-25',
+    });
 
     expect(summary.totals.totalTokens).toBe(3);
     expect(summary.totals.requests).toBe(1);
   });
 
   it('exports summaries as JSON and escaped CSV', async () => {
-    const config = fakeConfig();
-    await recordUsage(config, '=cmd|quoted', 'prompt-1', usage(1, 2, 3), {
-      authType: 'auth"quoted',
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
     });
+    await recordTokenUsageFromApiResponse(
+      config,
+      createEvent(
+        '=cmd|quoted',
+        'prompt-1',
+        {
+          promptTokenCount: 1,
+          candidatesTokenCount: 2,
+          totalTokenCount: 3,
+        },
+        {
+          authType: 'auth"quoted',
+        },
+      ),
+    );
 
     const json = await exportTokenUsageSummary({
       period: 'day',
@@ -542,7 +682,9 @@ describe('tokenUsageService', () => {
     });
     expect(JSON.parse(json)).not.toHaveProperty('coordination');
 
-    const csv = formatTokenUsageSummaryAsCsv(await queryTokenUsage(may25));
+    const csv = formatTokenUsageSummaryAsCsv(
+      await queryTokenUsage({ period: 'day', value: '2026-05-25' }),
+    );
     expect(csv).toContain('day,2026-05-25,total,total,,,,1,1,2,0,0,3,100');
     expect(csv).toContain(
       "day,2026-05-25,model,'=cmd|quoted,'=cmd|quoted,,,1,1,2,0,0,3,100",
@@ -564,17 +706,6 @@ describe('tokenUsageService', () => {
       totalTokens: 3,
       apiDurationMs: 100,
     });
-    const formulaKeys = [
-      '=SUM(A1)',
-      ' =SUM(A1)',
-      '+SUM(A1)',
-      ' +SUM(A1)',
-      '-SUM(A1)',
-      ' -SUM(A1)',
-      '@SUM(A1)',
-      ' @SUM(A1)',
-      '\tSUM(A1)',
-    ];
     const csv = formatTokenUsageSummaryAsCsv({
       period: 'day',
       value: '2026-05-25',
@@ -588,25 +719,64 @@ describe('tokenUsageService', () => {
         totalTokens: 27,
         apiDurationMs: 900,
       },
-      byModel: formulaKeys.map(group),
+      byModel: [
+        '=SUM(A1)',
+        ' =SUM(A1)',
+        '+SUM(A1)',
+        ' +SUM(A1)',
+        '-SUM(A1)',
+        ' -SUM(A1)',
+        '@SUM(A1)',
+        ' @SUM(A1)',
+        '\tSUM(A1)',
+      ].map(group),
       byAuthType: [],
       byModelAndAuthType: [],
       bySource: [],
     });
 
-    // Each formula-like key (even after leading whitespace) gets a ' prefix.
-    for (const key of formulaKeys)
-      expect(csv).toContain(
-        `day,2026-05-25,model,'${key},'${key},,,1,1,2,0,0,3,100`,
-      );
+    expect(csv).toContain(
+      "day,2026-05-25,model,'=SUM(A1),'=SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,' =SUM(A1),' =SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,'+SUM(A1),'+SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,' +SUM(A1),' +SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,'-SUM(A1),'-SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,' -SUM(A1),' -SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,'@SUM(A1),'@SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,' @SUM(A1),' @SUM(A1),,,1,1,2,0,0,3,100",
+    );
+    expect(csv).toContain(
+      "day,2026-05-25,model,'\tSUM(A1),'\tSUM(A1),,,1,1,2,0,0,3,100",
+    );
   });
 
   it('persists best-effort records asynchronously without blocking callers', async () => {
-    const config = fakeConfig();
+    const config = makeFakeConfig({
+      sessionId: 'session-1',
+      targetDir: path.join(tempDir, 'project'),
+    });
 
     recordTokenUsageFromApiResponseBestEffort(
       config,
-      createEvent('model-a', 'prompt-1', usage(1, 2, 3)),
+      createEvent('model-a', 'prompt-1', {
+        promptTokenCount: 1,
+        candidatesTokenCount: 2,
+        totalTokenCount: 3,
+      }),
     );
 
     const fileContent = await vi.waitFor(() =>
@@ -616,15 +786,21 @@ describe('tokenUsageService', () => {
   });
 
   it('validates period values', async () => {
-    const rejects = (period: 'day' | 'month', value: string, message: string) =>
-      expect(queryTokenUsage({ period, value })).rejects.toThrow(message);
-    await rejects('day', '2026-05', 'Expected YYYY-MM-DD');
-    await rejects('day', '2026-02-29', 'Expected YYYY-MM-DD');
+    await expect(
+      queryTokenUsage({ period: 'day', value: '2026-05' }),
+    ).rejects.toThrow('Expected YYYY-MM-DD');
+    await expect(
+      queryTokenUsage({ period: 'day', value: '2026-02-29' }),
+    ).rejects.toThrow('Expected YYYY-MM-DD');
     await expect(
       queryTokenUsage({ period: 'day', value: '2024-02-29' }),
     ).resolves.toMatchObject({ value: '2024-02-29' });
-    await rejects('month', '2026-05-25', 'Expected YYYY-MM');
-    await rejects('month', '2026-13', 'Expected YYYY-MM');
+    await expect(
+      queryTokenUsage({ period: 'month', value: '2026-05-25' }),
+    ).rejects.toThrow('Expected YYYY-MM');
+    await expect(
+      queryTokenUsage({ period: 'month', value: '2026-13' }),
+    ).rejects.toThrow('Expected YYYY-MM');
     expect(() => getTokenUsageFilePath('2026-00')).toThrow('Expected YYYY-MM');
   });
 });

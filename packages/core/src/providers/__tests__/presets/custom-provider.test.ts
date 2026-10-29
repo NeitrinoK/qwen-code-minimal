@@ -32,18 +32,6 @@ describe('generateCustomEnvKey', () => {
     );
   });
 
-  it('produces different keys for different protocols', () => {
-    const k1 = generateCustomEnvKey(
-      AuthType.USE_OPENAI,
-      'https://api.example.com',
-    );
-    const k2 = generateCustomEnvKey(
-      AuthType.USE_ANTHROPIC,
-      'https://api.example.com',
-    );
-    expect(k1).not.toBe(k2);
-  });
-
   it('produces different keys for different base URLs', () => {
     const k1 = generateCustomEnvKey(AuthType.USE_OPENAI, 'https://api.a.com');
     const k2 = generateCustomEnvKey(AuthType.USE_OPENAI, 'https://api.b.com');
@@ -99,12 +87,8 @@ describe('customProvider', () => {
     });
   });
 
-  it('offers multiple protocol options', () => {
-    expect(customProvider.protocolOptions).toEqual([
-      AuthType.USE_OPENAI,
-      AuthType.USE_ANTHROPIC,
-      AuthType.USE_GEMINI,
-    ]);
+  it('offers the OpenAI protocol option', () => {
+    expect(customProvider.protocolOptions).toEqual([AuthType.USE_OPENAI]);
   });
 
   it('builds an OpenAI Responses install plan', () => {
@@ -176,8 +160,9 @@ describe('customProvider', () => {
     });
   });
 
-  it('shows protocol, baseUrl, models, and advancedConfig steps', () => {
-    expect(shouldShowStep(customProvider, 'protocol')).toBe(true);
+  it('shows baseUrl, apiKey, models, and advancedConfig steps', () => {
+    // With a single protocol option, the protocol selection step is hidden.
+    expect(shouldShowStep(customProvider, 'protocol')).toBe(false);
     expect(shouldShowStep(customProvider, 'baseUrl')).toBe(true);
     expect(shouldShowStep(customProvider, 'apiKey')).toBe(true);
     expect(shouldShowStep(customProvider, 'models')).toBe(true);
@@ -186,21 +171,21 @@ describe('customProvider', () => {
 
   it('creates an install plan with custom inputs', () => {
     const plan = buildInstallPlan(customProvider, {
-      protocol: AuthType.USE_ANTHROPIC,
+      protocol: AuthType.USE_OPENAI,
       baseUrl: 'https://my-proxy.com/v1',
       apiKey: 'sk-my-key',
-      modelIds: ['claude-3'],
+      modelIds: ['custom-model'],
       advancedConfig: { enableThinking: true, maxTokens: 8192 },
     });
 
-    expect(plan.authType).toBe(AuthType.USE_ANTHROPIC);
+    expect(plan.authType).toBe(AuthType.USE_OPENAI);
     const envKey = Object.keys(plan.env ?? {})[0]!;
     expect(envKey).toMatch(new RegExp(`^${CUSTOM_API_KEY_ENV_PREFIX}`));
     expect(plan.env?.[envKey]).toBe('sk-my-key');
-    expect(plan.modelProviders?.[0]?.authType).toBe(AuthType.USE_ANTHROPIC);
+    expect(plan.modelProviders?.[0]?.authType).toBe(AuthType.USE_OPENAI);
 
     const models = plan.modelProviders?.[0]?.models;
-    expect(models?.[0]).toMatchObject({ id: 'claude-3' });
+    expect(models?.[0]).toMatchObject({ id: 'custom-model' });
     expect(models?.[0]?.generationConfig?.extra_body).toEqual({
       enable_thinking: true,
     });

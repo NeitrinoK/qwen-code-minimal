@@ -1485,6 +1485,9 @@ describe('SettingsDialog', () => {
       // Wait for the dialog to render
       await wait();
 
+      // Navigate to a real string setting in the current schema. Hard-coding an
+      // index is brittle because schema-driven ordering/removals shift rows, so
+      // resolve the position from the live dialog key list.
       const stringSettingIndex = getDialogSettingKeys().indexOf(
         'general.outputLanguage',
       );

@@ -2,31 +2,31 @@
 
 **Status:** Draft · 2026-05-14
 
-## 背景
+## Background
 
-> 本节描述本 PR 落地**之前**的状态（pre-redesign behavior）。下文出现的 `COMPRESSION_TOKEN_THRESHOLD`、`thinkingConfig.includeThoughts = true`、`hasFailedCompressionAttempt`、以及具体的 file:line 引用都对应 PR #4345 合入前的代码——合入后这些符号 / 行号会不再有效。
+> This section describes the state **before** this PR lands (pre-redesign behavior). The `COMPRESSION_TOKEN_THRESHOLD`, `thinkingConfig.includeThoughts = true`, `hasFailedCompressionAttempt`, and the specific file:line references that appear below all correspond to the code before PR #4345 was merged — after the merge these symbols / line numbers will no longer be valid.
 
-当前 qwen-code 的自动压缩仅使用单一比例阈值 `COMPRESSION_TOKEN_THRESHOLD = 0.7`（`chatCompressionService.ts:33`），所有窗口大小共用同一比例。对比 claude-code 的「绝对 token 梯子」（autoCompact.ts:62-65），qwen-code 存在三个具体问题：
+The current auto-compaction in qwen-code uses only a single ratio threshold `COMPRESSION_TOKEN_THRESHOLD = 0.7` (`chatCompressionService.ts:33`), with all window sizes sharing the same ratio. Compared with claude-code's "absolute token ladder" (autoCompact.ts:62-65), qwen-code has three specific problems:
 
-1. **大窗口下预留过多**：1M 模型 70% 阈值在 700K 触发，剩余 300K 远超摘要 + 输出实际所需的 ~33K
-2. **失败 1 次永久锁**：`hasFailedCompressionAttempt = true` 之后整个 session 不再尝试 auto-compact（geminiChat.ts:504），比 claude-code 的「连续 3 次熔断」更严苛
-3. **tip 系统与 auto 阈值脱钩**：`tipRegistry.ts` 里的三条 `context-*` tip 使用固定的 50/80/95 百分比，与 auto-compact 阈值（70%）完全独立。这意味着在「auto 正常工作」的主路径上 80% / 95% tip 极少触发，而在「auto 失败 / 反应式兜底」的边缘路径上又缺乏与阈值对齐的语义
-4. **压缩调用本身没有输出预算控制**：[chatCompressionService.ts:374-376](packages/core/src/services/chatCompressionService.ts:374) 显式开启 `thinkingConfig.includeThoughts = true`（注释：「Compression quality drives every subsequent main turn」），同时 sideQuery 调用未设 `maxOutputTokens` 上限。代码注释（[:436-437](packages/core/src/services/chatCompressionService.ts:436)）也承认 `compressionOutputTokenCount may include non-persisted tokens (thoughts)`。在压缩接近窗口顶时，总输出可能膨胀，使 buffer 预留缺乏可预测上限。<br/><br/>更糟糕的是跨 provider 行为不一致：Anthropic 的 thinking budget 与 max_tokens 完全独立；OpenAI 的 reasoning tokens 不受 max_completion_tokens 限制；Gemini 的行为又因模型版本而异。这意味着「单靠加 maxOutputTokens 就能控制总输出」在 qwen-code 这种多 provider 项目里不成立
+1. **Over-reservation on large windows**: a 1M model with a 70% threshold triggers at 700K, leaving 300K — far more than the ~33K actually needed for the summary + output
+2. **Permanent lock after a single failure**: once `hasFailedCompressionAttempt = true`, the entire session no longer attempts auto-compact (geminiChat.ts:504), which is stricter than claude-code's "3 consecutive failures circuit breaker"
+3. **The tip system is decoupled from the auto threshold**: the three `context-*` tips in `tipRegistry.ts` use fixed 50/80/95 percentages, completely independent of the auto-compact threshold (70%). This means that on the "auto works normally" main path the 80% / 95% tips rarely fire, while on the "auto failed / reactive fallback" edge path there is no threshold-aligned semantics
+4. **The compression call itself has no output budget control**: [chatCompressionService.ts:374-376](packages/core/src/services/chatCompressionService.ts:374) explicitly enables `thinkingConfig.includeThoughts = true` (comment: "Compression quality drives every subsequent main turn"), while the sideQuery call sets no `maxOutputTokens` cap. The code comment ([:436-437](packages/core/src/services/chatCompressionService.ts:436)) also acknowledges that `compressionOutputTokenCount may include non-persisted tokens (thoughts)`. When compression happens near the top of the window, total output can balloon, leaving the buffer reservation without a predictable upper bound.<br/><br/>Worse, the behavior is inconsistent across providers: Anthropic's thinking budget is fully independent of max_tokens; OpenAI's reasoning tokens are not limited by max_completion_tokens; and Gemini's behavior varies by model version. This means that "just adding maxOutputTokens is enough to control total output" does not hold in a multi-provider project like qwen-code
 
-5. **阈值判断使用的 `lastPromptTokenCount` 系统性下偏。** [geminiChat.ts:1217-1232](packages/core/src/core/geminiChat.ts:1217) 表明这个数来自上一轮 API response 的 `usageMetadata.totalTokenCount`。两个 gap：(a) 不包含本轮即将加入的 user message，每次 cheap-gate 判断都比真实 prompt 小一段；(b) 首轮初始值是 0，`--continue` 恢复巨大 session / sub-agent 继承大量历史时第一次 send 永远绕过所有阈值。对比 claude-code 的 `tokenCountWithEstimation`（[query.ts:638](src/query.ts:638)）走「最后一条 assistant API usage + 之后新增 message 估算」的双轨制能闭合这两个 gap
+5. **The `lastPromptTokenCount` used for threshold decisions is systematically biased low.** [geminiChat.ts:1217-1232](packages/core/src/core/geminiChat.ts:1217) shows that this number comes from the previous turn's API response `usageMetadata.totalTokenCount`. Two gaps: (a) it does not include the user message about to be added in the current turn, so every cheap-gate decision is short by a slice compared to the real prompt; (b) the initial value on the first turn is 0, so when `--continue` restores a huge session / a sub-agent inherits a large amount of history, the first send always bypasses all thresholds. By contrast, claude-code's `tokenCountWithEstimation` ([query.ts:638](src/query.ts:638)) uses a dual-track approach of "last assistant API usage + estimation of subsequently added messages" that closes both gaps
 
-## 设计目标
+## Design Goals
 
-- 引入「比例 + 绝对」混合阈值，让大窗口模型由绝对值接管，小窗口仍走比例兜底
-- 新增 warn / hard 两层（auto 保留为主触发点），形成三层梯子
-- 把 tip 系统重写为跟随新阈值的触发条件
-- 失败处理从「1 次永久锁」升级为「3 次熔断 + 自动恢复」
-- **压缩调用关闭 thinking 并加 `maxOutputTokens` 上限**：与 claude-code 对齐，让总输出受单一参数约束、buffer 预算可预测；接受压缩质量可能下降的代价
-- **加 token 估算补偿**：消除 `lastPromptTokenCount` 的「滞后一轮」和「首轮为 0」两个系统性下偏，让阈值判断更贴近真实 prompt 大小
-- 删除 settings 里的 `contextPercentageThreshold` 配置入口（内部 PCT 常量保留）
-- **不引入** env 覆盖通道、**不**新增显式 enabled 开关
+- Introduce a "ratio + absolute" hybrid threshold, so that large-window models are taken over by the absolute value while small windows still fall back to the ratio
+- Add warn / hard layers (auto remains the primary trigger point), forming a three-tier ladder
+- Rewrite the tip system into trigger conditions that follow the new thresholds
+- Upgrade failure handling from "permanent lock after 1 failure" to "3-failure circuit breaker + automatic recovery"
+- **Disable thinking for the compression call and add a `maxOutputTokens` cap**: align with claude-code, so that total output is constrained by a single parameter and the buffer budget is predictable; accept the cost of potentially lower compression quality
+- **Add token estimation compensation**: eliminate the two systematic low-biases of `lastPromptTokenCount` — "lagging one turn" and "first turn is 0" — so that threshold decisions are closer to the real prompt size
+- Remove the `contextPercentageThreshold` configuration entry point in settings (the internal PCT constant is kept)
+- **Do not introduce** an env override channel, and **do not** add an explicit enabled switch
 
-## 三层阈值梯子
+## Three-Tier Threshold Ladder
 
 ```
                        window  (raw context window)
@@ -51,41 +51,41 @@ warn_threshold = max((PCT - WARN_OFFSET) * window, auto_threshold - WARN_BUFFER)
                           0
 ```
 
-### 三层语义
+### Tier Semantics
 
-| 层       | 触发条件                       | 行为                                                     |
-| -------- | ------------------------------ | -------------------------------------------------------- |
-| **warn** | `tokenCount >= warn_threshold` | UI 提示「距自动压缩还剩 X tokens」，不改变 send 行为     |
-| **auto** | `tokenCount >= auto_threshold` | 在 send 前 `tryCompress(force=false)`，正常压缩流程      |
-| **hard** | `tokenCount >= hard_threshold` | 在 send 前 `tryCompress(force=true)`，重置失败锁强制压缩 |
+| Tier     | Trigger condition              | Behavior                                                                              |
+| -------- | ------------------------------ | ------------------------------------------------------------------------------------- |
+| **warn** | `tokenCount >= warn_threshold` | UI prompt "X tokens left until auto-compaction", does not change send behavior        |
+| **auto** | `tokenCount >= auto_threshold` | `tryCompress(force=false)` before send, normal compression flow                       |
+| **hard** | `tokenCount >= hard_threshold` | `tryCompress(force=true)` before send, resets the failure lock and forces compression |
 
-`hard` 层等同于把现有 reactive overflow（geminiChat.ts:711）的兜底逻辑提前到 send 前，避免一次失败的 oversized request round-trip。
+The `hard` tier is equivalent to moving the fallback logic of the existing reactive overflow (geminiChat.ts:711) earlier, to before send, avoiding one round-trip of a failed oversized request.
 
-## 内部常量
+## Internal Constants
 
 ```ts
 // chatCompressionService.ts
-const DEFAULT_PCT = 0.7; // auto 比例兜底
-const WARN_PCT_OFFSET = 0.1; // warn 比例 = PCT - WARN_OFFSET = 0.6
-const COMPACT_MAX_OUTPUT_TOKENS = 20_000; // 压缩 sideQuery 输出硬上限（thinking + summary 合计）
-const SUMMARY_RESERVE = 20_000; // 阈值梯子从窗口顶减去的输出预留 = maxOutput
-const AUTOCOMPACT_BUFFER = 13_000; // auto 与 effectiveWindow 间距
-const WARN_BUFFER = 20_000; // warn 与 auto 间距
-const HARD_BUFFER = 3_000; // hard 与 effectiveWindow 间距
-const MAX_CONSECUTIVE_FAILURES = 3; // 失败熔断阈值
+const DEFAULT_PCT = 0.7; // auto ratio fallback
+const WARN_PCT_OFFSET = 0.1; // warn ratio = PCT - WARN_OFFSET = 0.6
+const COMPACT_MAX_OUTPUT_TOKENS = 20_000; // hard cap on compression sideQuery output (thinking + summary combined)
+const SUMMARY_RESERVE = 20_000; // output reservation subtracted from the top of the window by the threshold ladder = maxOutput
+const AUTOCOMPACT_BUFFER = 13_000; // gap between auto and effectiveWindow
+const WARN_BUFFER = 20_000; // gap between warn and auto
+const HARD_BUFFER = 3_000; // gap between hard and effectiveWindow
+const MAX_CONSECUTIVE_FAILURES = 3; // failure circuit-breaker threshold
 ```
 
-数值来源：全部沿用 claude-code 的实测值（[autoCompact.ts:30,62-65](src/services/compact/autoCompact.ts:30)）。
+Source of the values: all carried over from claude-code's measured values ([autoCompact.ts:30,62-65](src/services/compact/autoCompact.ts:30)).
 
-`SUMMARY_RESERVE = COMPACT_MAX_OUTPUT_TOKENS` 是关键关系：模型受 `maxOutputTokens` 硬限制约束，输出不可能超出 20K，因此 reserve 不需要额外 safety margin。注意：本设计关闭 thinking 后该等式成立（output budget 全部给 summary）；若保留 thinking，`thinking + summary` 共享预算（Gemini SDK / 多数 provider 的 `maxOutputTokens` 语义），模型自行在两者间分配，此时 summary 的实际可用空间小于 20K（见「风险与注意事项」第 1、2 条）。
+`SUMMARY_RESERVE = COMPACT_MAX_OUTPUT_TOKENS` is the key relationship: the model is constrained by the `maxOutputTokens` hard limit, so output cannot exceed 20K, and therefore the reserve does not need an extra safety margin. Note: this design's equality holds once thinking is disabled (the entire output budget goes to the summary); if thinking is kept, `thinking + summary` share the budget (the `maxOutputTokens` semantics of the Gemini SDK / most providers), the model allocates between the two on its own, and in that case the summary's actually available space is less than 20K (see "Risks and Caveats" items 1 and 2).
 
-## 计算函数
+## Computation Function
 
 ```ts
 export interface CompactionThresholds {
   warn: number;
   auto: number;
-  hard: number; // 当 hard < auto 时等于 auto（小窗口退化）
+  hard: number; // equals auto when hard < auto (small-window degeneration)
   effectiveWindow: number;
 }
 
@@ -99,93 +99,93 @@ export function computeThresholds(window: number): CompactionThresholds {
   const warn = Math.max((DEFAULT_PCT - WARN_PCT_OFFSET) * window, absWarn);
 
   const rawHard = effectiveWindow - HARD_BUFFER;
-  const hard = Math.max(rawHard, auto); // 小窗口下退化为 auto
+  const hard = Math.max(rawHard, auto); // degenerates to auto on small windows
 
   return { warn, auto, hard, effectiveWindow };
 }
 ```
 
-### 实测数据
+### Measured Data
 
-| 窗口 | warn        | auto        | hard         | 备注                            |
-| ---- | ----------- | ----------- | ------------ | ------------------------------- |
-| 32K  | 19.2K (pct) | 22.4K (pct) | 22.4K (退化) | 比例兜底                        |
-| 64K  | 38.4K (pct) | 44.8K (pct) | 44.8K (退化) | 比例兜底                        |
-| 128K | 76.8K (pct) | 95K (abs)   | 105K (abs)   | 混合（warn=pct, auto/hard=abs） |
-| 200K | 147K (abs)  | 167K (abs)  | 177K (abs)   | 绝对接管                        |
-| 256K | 203K (abs)  | 223K (abs)  | 233K (abs)   | 绝对接管                        |
-| 1M   | 947K (abs)  | 967K (abs)  | 977K (abs)   | 全绝对                          |
+| Window | warn        | auto        | hard          | Notes                            |
+| ------ | ----------- | ----------- | ------------- | -------------------------------- |
+| 32K    | 19.2K (pct) | 22.4K (pct) | 22.4K (degen) | ratio fallback                   |
+| 64K    | 38.4K (pct) | 44.8K (pct) | 44.8K (degen) | ratio fallback                   |
+| 128K   | 76.8K (pct) | 95K (abs)   | 105K (abs)    | hybrid (warn=pct, auto/hard=abs) |
+| 200K   | 147K (abs)  | 167K (abs)  | 177K (abs)    | absolute takes over              |
+| 256K   | 203K (abs)  | 223K (abs)  | 233K (abs)    | absolute takes over              |
+| 1M     | 947K (abs)  | 967K (abs)  | 977K (abs)    | fully absolute                   |
 
-`(pct)` 表示该层由比例公式决定，`(abs)` 表示由绝对值公式决定。
+`(pct)` means the tier is determined by the ratio formula, `(abs)` means it is determined by the absolute-value formula.
 
-## 用户配置
+## User Configuration
 
-### ChatCompressionSettings 变更
+### ChatCompressionSettings Changes
 
 ```ts
 // packages/core/src/config/config.ts:217
 export interface ChatCompressionSettings {
-  /** 保留（与本设计无关，由 compactionInputSlimming 使用） */
+  /** Kept (unrelated to this design, used by compactionInputSlimming) */
   imageTokenEstimate?: number;
 }
 ```
 
-**删除：** `contextPercentageThreshold` 字段。理由：
+**Removed:** the `contextPercentageThreshold` field. Rationale:
 
-1. 新公式下，对主流窗口（>= 128K）该字段几乎无影响——绝对值接管
-2. 小窗口下用户配置反而可能让阈值"更早"压缩，与节省 token 直觉相反
-3. claude-code 没有暴露此字段，无类似的用户面配置先例
+1. Under the new formula, for mainstream windows (>= 128K) this field has almost no effect — the absolute value takes over
+2. On small windows, user configuration could instead cause the threshold to compress "earlier", which is counter to the intuition of saving tokens
+3. claude-code does not expose this field, so there is no comparable precedent for a user-facing configuration
 
-### Breaking change 处理
+### Breaking Change Handling
 
-**用户面：** 启动时 `Config` 加载发现 `chatCompression.contextPercentageThreshold` 存在：
+**User-facing:** when `Config` loading at startup finds that `chatCompression.contextPercentageThreshold` is present:
 
-- 写入 stderr 一行警告：`"chatCompression.contextPercentageThreshold has been removed and is now controlled by built-in thresholds."`
-- **不**报错、**不**阻塞启动
-- 字段值被忽略
+- Write one warning line to stderr: `"chatCompression.contextPercentageThreshold has been removed and is now controlled by built-in thresholds."`
+- Does **not** error out and does **not** block startup
+- The field value is ignored
 
-**SDK 面（R5.4）：** `CompressOptions` 的 `hasFailedCompressionAttempt: boolean` 字段重命名为 `consecutiveFailures: number`。两点差异：
+**SDK-facing (R5.4):** the `hasFailedCompressionAttempt: boolean` field of `CompressOptions` is renamed to `consecutiveFailures: number`. Two differences:
 
-|      | 旧字段                         | 新字段                                                               |
-| ---- | ------------------------------ | -------------------------------------------------------------------- |
-| 名称 | `hasFailedCompressionAttempt`  | `consecutiveFailures`                                                |
-| 类型 | `boolean`                      | `number`                                                             |
-| 语义 | `true` = 永久禁用 auto-compact | `>= MAX_CONSECUTIVE_FAILURES`（默认 3）= 暂时禁用直到 force 成功重置 |
+|           | Old field                                 | New field                                                                                         |
+| --------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Name      | `hasFailedCompressionAttempt`             | `consecutiveFailures`                                                                             |
+| Type      | `boolean`                                 | `number`                                                                                          |
+| Semantics | `true` = permanently disable auto-compact | `>= MAX_CONSECUTIVE_FAILURES` (default 3) = temporarily disable until a force succeeds and resets |
 
-仓库内只有 `GeminiChat.tryCompress` 一个内部消费方，所以内部 migration 风险低；但 `@qwen-code/qwen-code-core` 是 published package、`CompressOptions` 在 d.ts 里可见，下游 SDK 直接调 `service.compress({ ..., hasFailedCompressionAttempt: true })` 的代码会拿到 TS 编译错误。**迁移指引：** 把 `true` 改为 `MAX_CONSECUTIVE_FAILURES`（或任意 >= 3 的整数），`false` 改为 `0`。如果调用方维护自己的失败计数，直接传入即可。
+Within the repo there is only one internal consumer, `GeminiChat.tryCompress`, so the internal migration risk is low; but `@qwen-code/qwen-code-core` is a published package, `CompressOptions` is visible in the d.ts, so downstream SDK code that directly calls `service.compress({ ..., hasFailedCompressionAttempt: true })` will get a TS compile error. **Migration guide:** change `true` to `MAX_CONSECUTIVE_FAILURES` (or any integer >= 3), and change `false` to `0`. If the caller maintains its own failure count, just pass it in directly.
 
-## Token 估算补偿
+## Token Estimation Compensation
 
-qwen-code 的 `lastPromptTokenCount` 来自上一轮 API response 的 `usageMetadata.totalTokenCount`（[geminiChat.ts:1217-1232](packages/core/src/core/geminiChat.ts:1217)）。这导致：
+qwen-code's `lastPromptTokenCount` comes from the previous turn's API response `usageMetadata.totalTokenCount` ([geminiChat.ts:1217-1232](packages/core/src/core/geminiChat.ts:1217)). This leads to:
 
-1. **滞后一轮**：cheap-gate 用 `lastPromptTokenCount` 判断，但本次 send 实际 prompt = 它 + 本轮 user message。少算的部分可能让阈值判断 false-negative
-2. **首轮为 0**：初始值是 0，第一次 send 时无论历史多大都不会触发任何阈值（含 `--continue` 恢复 / sub-agent 继承场景）
+1. **Lagging one turn**: the cheap-gate uses `lastPromptTokenCount` to decide, but the actual prompt of this send = it + this turn's user message. The under-counted part may cause a false-negative in the threshold decision
+2. **First turn is 0**: the initial value is 0, so on the first send no threshold fires no matter how large the history is (including `--continue` restore / sub-agent inheritance scenarios)
 
-引入轻量本地估算函数 `estimatePromptTokens`，在 send 前 cheap-gate / hard 判断时补足这两段缺失：
+Introduce a lightweight local estimation function `estimatePromptTokens` to fill in these two missing pieces during the cheap-gate / hard decision before send:
 
 ```ts
-// chatCompressionService.ts（或新文件 packages/core/src/services/tokenEstimation.ts）
+// chatCompressionService.ts (or a new file packages/core/src/services/tokenEstimation.ts)
 
-const BYTES_PER_TOKEN = 4; // 通用 char/4 估算（claude-code 同此）
-const BYTES_PER_TOKEN_JSON = 2; // JSON / tool_call input 更密集
+const BYTES_PER_TOKEN = 4; // general char/4 estimation (same as claude-code)
+const BYTES_PER_TOKEN_JSON = 2; // JSON / tool_call input is denser
 
 /**
- * 估算一组 Content 的 token 数，用于补偿 API usage metadata 的滞后。
- * 对 image / document 复用现有 imageTokenEstimate（默认 1600）。
+ * Estimate the token count of a set of Content, used to compensate for the lag in API usage metadata.
+ * For image / document, reuse the existing imageTokenEstimate (default 1600).
  */
 export function estimateContentTokens(
   contents: Content[],
   imageTokenEstimate = DEFAULT_IMAGE_TOKEN_ESTIMATE,
 ): number {
-  // 复用 estimateContentChars（compactionInputSlimming.ts），再除以 bytesPerToken
-  // 内部对 functionCall / functionResponse 用 BYTES_PER_TOKEN_JSON
+  // Reuse estimateContentChars (compactionInputSlimming.ts), then divide by bytesPerToken
+  // Internally use BYTES_PER_TOKEN_JSON for functionCall / functionResponse
   // ...
 }
 
 /**
- * cheap-gate 与 hard 判断的统一入口。
- * 主路径：lastPromptTokenCount 准 + 本轮 user message 估算
- * 首轮路径：full history 估算
+ * Unified entry point for the cheap-gate and hard decisions.
+ * Main path: lastPromptTokenCount is accurate + estimate this turn's user message
+ * First-turn path: estimate full history
  */
 export function estimatePromptTokens(
   history: Content[],
@@ -199,19 +199,19 @@ export function estimatePromptTokens(
 }
 ```
 
-应用位置：
+Application sites:
 
-- `chatCompressionService.compress()` 的 cheap-gate：把 `originalTokenCount` 来源换成 `estimatePromptTokens(history, userMessage, lastPromptTokenCount)`
-- `geminiChat.sendMessageStream` 入口的 hard 判断（见下一节）
+- The cheap-gate of `chatCompressionService.compress()`: change the source of `originalTokenCount` to `estimatePromptTokens(history, userMessage, lastPromptTokenCount)`
+- The hard decision at the entry of `geminiChat.sendMessageStream` (see the next section)
 
-**估算只用于提前触发，不用于「跳过触发」。** 因为 char/4 是粗略下界估计，作为 false-positive 一侧是安全的（宁可早一点压），作为 false-negative 则不可靠。
+**Estimation is used only to trigger earlier, never to "skip triggering".** Because char/4 is a rough lower-bound estimate, it is safe on the false-positive side (better to compress a little early), but unreliable on the false-negative side.
 
-## 触发链路改动
+## Trigger Path Changes
 
 ### chatCompressionService.ts
 
-1. **导出 `computeThresholds`**，供 cheap-gate / UI / 命令复用
-2. **`compress()` cheap-gate** (line 221-249)：
+1. **Export `computeThresholds`**, for reuse by the cheap-gate / UI / commands
+2. **`compress()` cheap-gate** (line 221-249):
    ```ts
    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !force) {
      return NOOP;
@@ -224,32 +224,32 @@ export function estimatePromptTokens(
    );
    if (!force && effectiveTokens < auto) return NOOP;
    ```
-3. **`compress()` 的 runSideQuery 调用** (line 356-380)：关闭 thinking + 加 `maxOutputTokens`：
+3. **The runSideQuery call in `compress()`** (line 356-380): disable thinking + add `maxOutputTokens`:
 
    ```ts
    const summaryResult = await runSideQuery(config, {
      // ...
      config: {
-       thinkingConfig: { includeThoughts: false }, // 关闭 thinking（与 claude-code 一致）
-       maxOutputTokens: COMPACT_MAX_OUTPUT_TOKENS, // 硬上限 20K
+       thinkingConfig: { includeThoughts: false }, // disable thinking (consistent with claude-code)
+       maxOutputTokens: COMPACT_MAX_OUTPUT_TOKENS, // hard cap 20K
      },
      // ...
    });
    ```
 
-   或者直接删掉 `thinkingConfig` 让 `runSideQuery` 默认值（[sideQuery.ts:118](packages/core/src/utils/sideQuery.ts:118) 默认 `includeThoughts: false`）接管。
+   Or just delete `thinkingConfig` and let `runSideQuery`'s default value ([sideQuery.ts:118](packages/core/src/utils/sideQuery.ts:118) defaults to `includeThoughts: false`) take over.
 
-   关 thinking 后，`maxOutputTokens` 直接约束总输出（不存在 thinking 单独 budget 的问题），`SUMMARY_RESERVE = maxOutput = 20K` 是干净的硬关系。
+   With thinking disabled, `maxOutputTokens` directly constrains the total output (there is no separate thinking budget problem), and `SUMMARY_RESERVE = maxOutput = 20K` is a clean hard relationship.
 
-   同时更新 [chatCompressionService.ts:374-376](packages/core/src/services/chatCompressionService.ts:374) 的注释，从「Compression quality drives every subsequent main turn — keep reasoning on」改为说明「为保证跨 provider 可预测的输出上限，与 claude-code 设计对齐」。
+   Also update the comment at [chatCompressionService.ts:374-376](packages/core/src/services/chatCompressionService.ts:374), changing it from "Compression quality drives every subsequent main turn — keep reasoning on" to explain "to guarantee a predictable output cap across providers, aligned with the claude-code design".
 
-   token math 一段（[:436-437](packages/core/src/services/chatCompressionService.ts:436)）的 "may include non-persisted tokens (thoughts)" 注释也可以同步清理
+   The "may include non-persisted tokens (thoughts)" comment in the token math section ([:436-437](packages/core/src/services/chatCompressionService.ts:436)) can also be cleaned up at the same time
 
-### geminiChat.ts: `sendMessageStream` 入口（line 562）
+### geminiChat.ts: `sendMessageStream` entry (line 562)
 
 ```ts
-// 替换前：tryCompress(force=false)
-// 替换后：用估算 token 判断是否触发 hard，决定 force 标志
+// Before: tryCompress(force=false)
+// After: use the estimated token count to decide whether to trigger hard, determining the force flag
 
 const { hard } = computeThresholds(contextLimit);
 const effectiveTokens = estimatePromptTokens(
@@ -260,7 +260,7 @@ const effectiveTokens = estimatePromptTokens(
 const shouldForceFromHard = effectiveTokens >= hard;
 
 if (shouldForceFromHard) {
-  // 重置熔断器，等同 force compress
+  // Reset the circuit breaker, equivalent to force compress
   this.consecutiveFailures = 0;
 }
 
@@ -272,47 +272,47 @@ compressionInfo = await this.tryCompress(
 );
 ```
 
-### 失败处理升级 (`geminiChat.ts:504-510`)
+### Failure Handling Upgrade (`geminiChat.ts:504-510`)
 
 ```ts
-// 替换前
+// Before
 hasFailedCompressionAttempt: boolean;
 
-// 替换后
-consecutiveFailures: number;  // 默认 0
+// After
+consecutiveFailures: number;  // default 0
 
-// 失败分支
+// Failure branch
 } else if (isCompressionFailureStatus(info.compressionStatus)) {
   if (!force) {
     this.consecutiveFailures += 1;
   }
 }
 
-// 成功分支
+// Success branch
 this.consecutiveFailures = 0;
 ```
 
-`force=true` 调用失败不计入计数（保持现有 reactive / manual 不"占额"的语义）。
+A failed `force=true` call does not count toward the counter (preserving the existing semantics that reactive / manual calls do not "use up quota").
 
-## UI 改动
+## UI Changes
 
-### tipRegistry.ts 重写三条 context-\* tip
+### tipRegistry.ts: rewrite the three context-\* tips
 
-三层阈值正好与三条 tip 一一对应。映射关系（按 token 数从低到高）：
+The three threshold tiers map one-to-one onto the three tips. The mapping (by token count from low to high):
 
-| Tip ID             | 当前条件                                      | 新条件                                                              | 文案变化                                                          |
-| ------------------ | --------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `compress-intro`   | `pct >= 50 && < 80 && sessionPromptCount > 5` | `tokenCount >= warn && tokenCount < auto && sessionPromptCount > 5` | 保持不变                                                          |
-| `context-high`     | `pct >= 80 && < 95`                           | `tokenCount >= auto && tokenCount < hard`                           | 保持不变                                                          |
-| `context-critical` | `pct >= 95`                                   | `tokenCount >= hard`                                                | 加一句「Auto-compact will force on next send.」反映新 hard 层行为 |
+| Tip ID             | Current condition                             | New condition                                                       | Copy change                                                                              |
+| ------------------ | --------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `compress-intro`   | `pct >= 50 && < 80 && sessionPromptCount > 5` | `tokenCount >= warn && tokenCount < auto && sessionPromptCount > 5` | unchanged                                                                                |
+| `context-high`     | `pct >= 80 && < 95`                           | `tokenCount >= auto && tokenCount < hard`                           | unchanged                                                                                |
+| `context-critical` | `pct >= 95`                                   | `tokenCount >= hard`                                                | add a line "Auto-compact will force on next send." reflecting the new hard-tier behavior |
 
-**对触发频率的影响：**
+**Impact on trigger frequency:**
 
-- 主路径（auto 正常工作）：`tokenCount` 跨越 auto 后立即触发压缩，下一轮 tokenCount 回落，所以 `context-high` 仅在「触发到压缩生效之间」短暂可见
-- 边缘路径（auto 失败 / 熔断 / reactive 来不及）：`tokenCount` 持续上涨，会依次穿过 warn → auto → hard 触发三条 tip，跟用户视角的"上下文越来越紧"一致
-- `context-critical` 触发时 hard 层已经在 send 前 force compress（spec 触发链路改动一节），所以这条 tip 实际上是「post-rescue 告知」而非「pre-rescue 警告」，文案补一句说明
+- Main path (auto works normally): once `tokenCount` crosses auto, compression triggers immediately, the next turn's tokenCount drops back, so `context-high` is only briefly visible "between triggering and compression taking effect"
+- Edge path (auto failed / circuit-broken / reactive too late): `tokenCount` keeps rising and passes through warn → auto → hard in turn, triggering all three tips, consistent with the user's view of "context getting tighter and tighter"
+- When `context-critical` fires, the hard tier has already force-compressed before send (the "trigger path changes" section of the spec), so this tip is actually a "post-rescue notice" rather than a "pre-rescue warning", and the copy adds a line to explain this
 
-`TipContext` 接口增加：
+The `TipContext` interface adds:
 
 ```ts
 export interface TipContext {
@@ -321,116 +321,116 @@ export interface TipContext {
   sessionPromptCount: number;
   sessionCount: number;
   platform: string;
-  // 新增：让 isRelevant 函数能拿到阈值。
-  // computeThresholds 在调用方算好后注入，避免 tipRegistry 直接依赖 core。
+  // New: let the isRelevant function get the thresholds.
+  // computeThresholds is computed by the caller and injected, to avoid tipRegistry depending on core directly.
   thresholds?: CompactionThresholds;
 }
 ```
 
-`AppContainer.tsx:1150` 构造 `TipContext` 时同步注入。
+Inject it at the same time when `AppContainer.tsx:1150` constructs `TipContext`.
 
-### /context 命令同步 (`contextCommand.ts:177-183`)
+### /context Command Sync (`contextCommand.ts:177-183`)
 
 ```ts
-// 替换硬编码 (1 - threshold) * contextWindowSize
+// Replace the hardcoded (1 - threshold) * contextWindowSize
 const { warn, auto, hard, effectiveWindow } =
   computeThresholds(contextWindowSize);
 
-// 显示四行：
+// Display four lines:
 //   Effective window:   180K   (window − 20K reserve)
 //   Warn threshold:     147K   (...)
-//   Auto threshold:     167K   ← 当前位置
+//   Auto threshold:     167K   ← current position
 //   Hard threshold:     177K
-// 标记当前 token count 落在哪个 tier
+// Mark which tier the current token count falls into
 ```
 
-### Footer 持续提示（可选 follow-up）
+### Footer Persistent Prompt (optional follow-up)
 
-本 spec 不强制实现 footer 持续提示，理由：
+This spec does not require implementing a footer persistent prompt, for the following reasons:
 
-- 现有 tip 系统已经能在 history 里给出提示
-- Footer 持续提示需要改 ink 渲染、增加重绘频率
-- 可作为本 spec 后置 follow-up（独立 PR）
+- The existing tip system can already surface prompts in the history
+- A footer persistent prompt requires changing ink rendering and increasing the redraw frequency
+- It can be a post-spec follow-up (a separate PR)
 
-如果后续要做，建议触发条件 `tokenCount >= warn && tokenCount < auto`，超过 auto 后隐藏（压缩已开始）。
+If it is done later, the recommended trigger condition is `tokenCount >= warn && tokenCount < auto`, hidden once auto is exceeded (compression has already begun).
 
-## 测试覆盖
+## Test Coverage
 
-### 单元测试（chatCompressionService.test.ts）
+### Unit Tests (chatCompressionService.test.ts)
 
-- `computeThresholds(32K)` → 比例兜底分支（warn/auto 均 pct，hard 退化）
-- `computeThresholds(128K)` → 混合分支（warn=pct，auto=abs，hard=abs）
-- `computeThresholds(200K)` → 绝对接管分支（warn/auto/hard 均 abs）
-- `computeThresholds(1M)` → 全绝对分支
-- `computeThresholds(window=10K)` → 极小窗口（绝对值全负），公式不崩
-- 三层阈值始终满足 `warn <= auto <= hard`
-- max() 公式在边界点（pct \* window == abs）稳定
+- `computeThresholds(32K)` → ratio fallback branch (both warn/auto are pct, hard degenerates)
+- `computeThresholds(128K)` → hybrid branch (warn=pct, auto=abs, hard=abs)
+- `computeThresholds(200K)` → absolute-takeover branch (warn/auto/hard all abs)
+- `computeThresholds(1M)` → fully-absolute branch
+- `computeThresholds(window=10K)` → extremely small window (absolute values all negative), the formula does not break
+- The three thresholds always satisfy `warn <= auto <= hard`
+- The max() formula is stable at the boundary point (pct \* window == abs)
 
-### 单元测试（tokenEstimation.test.ts）
+### Unit Tests (tokenEstimation.test.ts)
 
-- `estimateContentTokens` 对纯文本 / json / functionCall / functionResponse / image / document 分别走对应 bytesPerToken
-- `estimatePromptTokens` 在 `lastPromptTokenCount > 0` 时走「主路径」，等于 0 时走「首轮路径」
-- 大 user message 在 cheap-gate 阶段被加上去后能跨越 auto 阈值
-- 估算与真实 API usage 的偏差在 ±30% 以内（用真实历史样本回归）
+- `estimateContentTokens` uses the corresponding bytesPerToken for plain text / json / functionCall / functionResponse / image / document respectively
+- `estimatePromptTokens` takes the "main path" when `lastPromptTokenCount > 0`, and the "first-turn path" when it equals 0
+- A large user message, once added in the cheap-gate stage, can cross the auto threshold
+- The deviation between the estimate and the real API usage is within ±30% (regression against real history samples)
 
-### 集成测试（geminiChat.test.ts / chatCompressionService.test.ts）
+### Integration Tests (geminiChat.test.ts / chatCompressionService.test.ts)
 
-- 3 次连续失败后 cheap-gate NOOP；下一次 force 后恢复
-- 单次失败不再永久锁
-- 估算 token 跨越 hard 后 send 自动 force compress
-- 压缩 sideQuery 调用 `maxOutputTokens = COMPACT_MAX_OUTPUT_TOKENS` 正确透传到 `runSideQuery`，`thinkingConfig.includeThoughts` 为 `false`（或被 sideQuery 默认值接管）
-- **首轮覆盖**：构造一个 `lastPromptTokenCount = 0` 但 history 巨大的 chat（模拟 `--continue` 恢复），首次 send 时 auto 阈值能被估算路径触发
+- After 3 consecutive failures the cheap-gate NOOPs; recovery after the next force
+- A single failure no longer permanently locks
+- After the estimated token count crosses hard, send automatically force-compresses
+- The compression sideQuery call passes `maxOutputTokens = COMPACT_MAX_OUTPUT_TOKENS` correctly through to `runSideQuery`, and `thinkingConfig.includeThoughts` is `false` (or taken over by the sideQuery default)
+- **First-turn coverage**: construct a chat with `lastPromptTokenCount = 0` but a huge history (simulating `--continue` restore); on the first send the auto threshold can be triggered via the estimation path
 
-### 兼容性测试
+### Compatibility Tests
 
-- 设置 `contextPercentageThreshold = 0.5` 启动 → stderr 警告 + 字段被忽略，行为以内部 PCT 常量为准
+- Starting with `contextPercentageThreshold = 0.5` set → stderr warning + the field is ignored, and behavior follows the internal PCT constant
 
-### Tip 系统测试（tipRegistry.test.ts）
+### Tip System Tests (tipRegistry.test.ts)
 
-- 三条 context-\* tip 在跨越 warn/auto/hard 时正确触发，且区间不重叠
-- 主路径下 auto 阈值触发压缩后 `context-high` 不持续可见
-- 边缘路径（熔断 + token 继续涨）下三条 tip 依次触发
-- TipContext 缺 `thresholds` 时（fallback）行为合理
+- The three context-\* tips trigger correctly when crossing warn/auto/hard, and the ranges do not overlap
+- On the main path, after the auto threshold triggers compression, `context-high` is not persistently visible
+- On the edge path (circuit-broken + token keeps rising), the three tips trigger in turn
+- Behavior is reasonable when TipContext lacks `thresholds` (fallback)
 
-## 实施分阶段
+## Implementation Phasing
 
-| Phase | 内容                                                                                         | 独立性             |
-| ----- | -------------------------------------------------------------------------------------------- | ------------------ |
-| 1     | 内部常量 + `computeThresholds` + cheap-gate 改动（不含估算补偿）                             | 可独立合并         |
-| 2     | 失败处理升级（1 → 3 熔断）                                                                   | 可独立合并         |
-| 3     | hard 层 force compress 提前                                                                  | 依赖 P1 + P7       |
-| 4     | 配置面变更 + breaking change 警告                                                            | 依赖 P1            |
-| 5     | UI（tip 重写 + /context）                                                                    | 依赖 P1            |
-| 6     | 压缩 sideQuery 关 thinking + 加 `maxOutputTokens` 上限                                       | 独立可先于 P1 落地 |
-| 7     | Token 估算补偿（`estimateContentTokens` + `estimatePromptTokens`，应用到 cheap-gate / hard） | 独立可与 P1 并行   |
+| Phase | Content                                                                                                        | Independence                             |
+| ----- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 1     | Internal constants + `computeThresholds` + cheap-gate change (without estimation compensation)                 | can be merged independently              |
+| 2     | Failure handling upgrade (1 → 3 circuit breaker)                                                               | can be merged independently              |
+| 3     | Move the hard-tier force compress earlier                                                                      | depends on P1 + P7                       |
+| 4     | Configuration-surface change + breaking-change warning                                                         | depends on P1                            |
+| 5     | UI (tip rewrite + /context)                                                                                    | depends on P1                            |
+| 6     | Compression sideQuery: disable thinking + add `maxOutputTokens` cap                                            | independent, can land before P1          |
+| 7     | Token estimation compensation (`estimateContentTokens` + `estimatePromptTokens`, applied to cheap-gate / hard) | independent, can run in parallel with P1 |
 
-每个 Phase 可独立 PR。建议合并顺序 **P6 → P7 → P1 → P2 → P4 → P3 → P5**：先给压缩调用打上 `maxOutputTokens` 上限（让 buffer 假设可信）；再加估算补偿（让 token 数判断更可靠）；再把阈值基础设施落地；再做失败熔断、配置面变更；最后才打开 hard 层主动救场（这时已有可靠的 token 数 + 熔断器）。每个 PR 都能独立验证、独立回滚。
+Each Phase can be a separate PR. The recommended merge order is **P6 → P7 → P1 → P2 → P4 → P3 → P5**: first put a `maxOutputTokens` cap on the compression call (so the buffer assumption is trustworthy); then add estimation compensation (so the token-count decision is more reliable); then land the threshold infrastructure; then do the failure circuit breaker and configuration-surface change; and only last open the hard tier for proactive rescue (by which point there is already a reliable token count + circuit breaker). Each PR can be verified independently and rolled back independently.
 
-## 风险与注意事项
+## Risks and Caveats
 
-1. **关 thinking 可能影响摘要质量。** 原作者注释 "Compression quality drives every subsequent main turn — keep reasoning on" 表达过对此的担忧。本 spec 的判断是「可预测的 token 上限」优先于「最大化质量」，但落地后需要观察 telemetry 里 `compression_input_token_count` / `compression_output_token_count` 的分布，以及主对话在压缩后的质量变化（用户反馈、`COMPRESSION_FAILED_*` 状态率）。如果质量下降明显，再考虑回退到 thinking 开启 + provider-specific thinkingBudget 控制。
+1. **Disabling thinking may affect summary quality.** The original author's comment "Compression quality drives every subsequent main turn — keep reasoning on" expressed this concern. This spec's judgment is that "a predictable token cap" takes priority over "maximizing quality", but after landing we need to observe the distribution of `compression_input_token_count` / `compression_output_token_count` in telemetry, as well as the change in main-conversation quality after compression (user feedback, `COMPRESSION_FAILED_*` status rate). If quality drops noticeably, consider rolling back to thinking enabled + provider-specific thinkingBudget control.
 
-2. **`maxOutputTokens` 触顶可能导致 summary 被截断。** 关 thinking 后，20K 直接限制 summary 主体；claude-code 实测 p99.99 ≈ 17K，留 ~3K 安全冗余。但 qwen-code 的压缩 prompt 与 claude-code 不同，分布需要观测。建议在压缩失败分支（[chatCompressionService.ts:464-491](packages/core/src/services/chatCompressionService.ts:464)）追加「检测到 finish_reason = MAX_TOKENS」的 NOOP 路径，避免持久化半截 summary。
+2. **Hitting the `maxOutputTokens` cap may cause the summary to be truncated.** With thinking disabled, 20K directly limits the summary body; claude-code measured p99.99 ≈ 17K, leaving ~3K of safety margin. But qwen-code's compression prompt differs from claude-code's, so the distribution needs to be observed. It is recommended to add a "detected finish_reason = MAX_TOKENS" NOOP path in the compression failure branch ([chatCompressionService.ts:464-491](packages/core/src/services/chatCompressionService.ts:464)), to avoid persisting a half-finished summary.
 
-3. **跨 provider 的 maxOutputTokens 映射差异。** OpenAI compat (dashscope) → `max_tokens`、Anthropic → `max_tokens`、Gemini SDK → `maxOutputTokens`。当前 qwen-code 已有这层映射（[contentGenerator.ts:94](packages/core/src/core/contentGenerator.ts:94) 等），需要在 P6 实现时验证 sideQuery 路径上 `maxOutputTokens` 字段确实贯穿到所有 provider 的请求体。
+3. **Differences in the cross-provider maxOutputTokens mapping.** OpenAI compat (dashscope) → `max_tokens`, Anthropic → `max_tokens`, Gemini SDK → `maxOutputTokens`. qwen-code already has this mapping layer ([contentGenerator.ts:94](packages/core/src/core/contentGenerator.ts:94) etc.); when implementing P6, we need to verify that on the sideQuery path the `maxOutputTokens` field really threads through to the request body of every provider.
 
-4. **Token 估算是粗略下界，不应反向用作"跳过触发"的依据。** `char/4` 与各 provider 真实 tokenizer 偏差可能 ±30%。本 spec 只用估算来「让阈值更早触发」（false-positive 方向，宁可早压不可晚压）。所有「降低 token 计数 / 跳过压缩」的代码路径仍应使用 `lastPromptTokenCount`（API 权威值）。
+4. **Token estimation is a rough lower bound and should not be used in reverse as the basis for "skip triggering".** `char/4` may deviate ±30% from each provider's real tokenizer. This spec uses the estimate only to "trigger the threshold earlier" (the false-positive direction, better to compress early than late). All code paths that "reduce the token count / skip compression" should still use `lastPromptTokenCount` (the authoritative API value).
 
-5. **估算函数与现有 `estimateContentChars` 的关系。** [compactionInputSlimming.ts](packages/core/src/services/compactionInputSlimming.ts) 已经有 `estimateContentChars`（用于压缩 split point 计算），新增的 `estimateContentTokens` 应复用它（除以 bytesPerToken）而非新写一套，避免两套估算口径出现分歧。
+5. **The relationship between the estimation function and the existing `estimateContentChars`.** [compactionInputSlimming.ts](packages/core/src/services/compactionInputSlimming.ts) already has `estimateContentChars` (used for compression split-point calculation), and the new `estimateContentTokens` should reuse it (dividing by bytesPerToken) rather than writing a separate one, to avoid the two estimation conventions diverging.
 
-## 不在本 spec 范围
+## Out of Scope for This Spec
 
-- Env 变量覆盖通道（D 方案）：维持「配置面最小」原则
-- Footer 常驻可视化：留作 follow-up
-- 摘要 prompt 改进、`MIN_COMPRESSION_FRACTION` 调整：与阈值设计正交
+- Env-variable override channel (option D): maintain the "minimal configuration surface" principle
+- Persistent footer visualization: left as a follow-up
+- Summary prompt improvements, `MIN_COMPRESSION_FRACTION` adjustments: orthogonal to the threshold design
 
-## 开放问题（等 review）
+## Open Questions (pending review)
 
-1. **breaking change 强度**：警告 + 忽略字段 vs 启动报错。当前选警告，需要确认对企业部署/团队配置是否够友好
+1. **Strength of the breaking change**: warn + ignore the field vs. error out at startup. Currently warn is chosen; needs confirmation on whether it is friendly enough for enterprise deployments / team configurations
 
-## 已结案
+## Resolved
 
-2. **小窗口（≤ ~76.7K）下 hard 与 auto 退化为同一值** — 决定**不在 `/context` 明示**。理由：
-   - 塌缩范围不只是 32K，所有 `effectiveWindow - HARD_BUFFER ≤ 0.7 × window` 的窗口都塌缩（包括 64K）
-   - 用户行为不变：塌缩窗口上 `currentTier` 跳过 `'auto'` 直接报 `'hard'`（`contextCommand.ts:43-44` 先判 `>= hard`），`context-high` band（`auto ≤ t < hard`）变成空带，少一档提示在小窗口上是合理的——窗口本身就小，用户大概率手动管理上下文
-   - 如果未来有真实用户报告"小窗口看不到中间档提示"，再决定加 UI 标注或调整 `context-high` 触发条件（这是 UI 工作，不是 spec 工作）。当前选不增加 UI 复杂度
+2. **On small windows (≤ ~76.7K), hard and auto degenerate to the same value** — decided **not to make it explicit in `/context`**. Rationale:
+   - The collapse range is not only 32K; all windows where `effectiveWindow - HARD_BUFFER ≤ 0.7 × window` collapse (including 64K)
+   - User behavior does not change: on a collapsed window `currentTier` skips `'auto'` and reports `'hard'` directly (`contextCommand.ts:43-44` checks `>= hard` first), and the `context-high` band (`auto ≤ t < hard`) becomes an empty band; having one fewer prompt tier on small windows is reasonable — the window itself is small, and the user most likely manages context manually
+   - If a real user later reports "can't see the middle-tier prompt on small windows", then decide whether to add a UI annotation or adjust the `context-high` trigger condition (this is UI work, not spec work). For now we choose not to add UI complexity

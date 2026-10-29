@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const {
   spawnSyncMock,
@@ -379,12 +379,16 @@ describe('scripts/cli-entry.js production entry', () => {
 
     beforeEach(() => {
       Object.defineProperty(process, 'platform', { value: 'linux' });
+      // cli-entry imports cli.js by file URL; vitest 4 only matches a
+      // doMock for a missing module under the specifier actually imported.
       vi.doMock(cliPath, () => ({}));
+      vi.doMock(pathToFileURL(cliPath).href, () => ({}));
       delete process.env.NODE_COMPILE_CACHE;
     });
 
     afterEach(() => {
       vi.doUnmock(cliPath);
+      vi.doUnmock(pathToFileURL(cliPath).href);
       if (inheritedCompileCache === undefined) {
         delete process.env.NODE_COMPILE_CACHE;
       } else {

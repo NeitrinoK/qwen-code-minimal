@@ -11,12 +11,16 @@ const mockLogAuth = vi.fn();
 vi.mock('@qwen-code/qwen-code-core', () => ({
   getErrorMessage: (e: unknown) => (e instanceof Error ? e.message : String(e)),
   logAuth: (...args: unknown[]) => mockLogAuth(...args),
-  AuthEvent: vi.fn().mockImplementation((type, method, status, message?) => ({
-    type,
-    method,
-    status,
-    message,
-  })),
+  AuthEvent: vi
+    .fn()
+    .mockImplementation(function (type, method, status, message?) {
+      return {
+        type,
+        method,
+        status,
+        message,
+      };
+    }),
 }));
 
 describe('performInitialAuth', () => {

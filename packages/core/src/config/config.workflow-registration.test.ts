@@ -89,8 +89,6 @@ const baseParams: ConfigParameters = {
   targetDir: '/tmp',
   debugMode: false,
   model: 'test-model',
-  telemetry: { enabled: false },
-  usageStatisticsEnabled: false,
   overrideExtensions: [],
 };
 

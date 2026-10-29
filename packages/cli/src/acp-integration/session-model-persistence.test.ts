@@ -482,35 +482,6 @@ describe('session-model-persistence', () => {
     );
   });
 
-  it('requires cached credentials when restoring Qwen OAuth from another auth', async () => {
-    const switchModel = vi.fn().mockResolvedValue(undefined);
-    const config = {
-      getModel: vi.fn().mockReturnValue('settings-default'),
-      getAuthType: vi.fn().mockReturnValue(AuthType.USE_OPENAI),
-      getCurrentModelRegistryBaseUrl: vi.fn().mockReturnValue(undefined),
-      getContentGeneratorConfig: vi.fn().mockReturnValue({}),
-      switchModel,
-    } as unknown as Config;
-
-    await applyRestoredSessionModel(
-      config,
-      recordingProjection({
-        lastCompletedUuid: 'leaf',
-        turnParentUuids: [null],
-        sessionModel: {
-          modelId: 'coder-model',
-          authType: AuthType.QWEN_OAUTH,
-        },
-      }),
-    );
-
-    expect(switchModel).toHaveBeenCalledWith(
-      AuthType.QWEN_OAUTH,
-      'coder-model',
-      { requireCachedCredentials: true },
-    );
-  });
-
   it('switches when recorded authType differs even if the model id matches', async () => {
     const switchModel = vi.fn().mockResolvedValue(undefined);
     const config = {
@@ -528,15 +499,15 @@ describe('session-model-persistence', () => {
         turnParentUuids: [null],
         sessionModel: {
           modelId: 'coder-model',
-          authType: AuthType.QWEN_OAUTH,
+          authType: AuthType.USE_OPENAI_RESPONSES,
         },
       }),
     );
 
     expect(switchModel).toHaveBeenCalledWith(
-      AuthType.QWEN_OAUTH,
+      AuthType.USE_OPENAI_RESPONSES,
       'coder-model',
-      { requireCachedCredentials: true },
+      undefined,
     );
   });
 
@@ -597,7 +568,7 @@ describe('session-model-persistence', () => {
         turnParentUuids: [null],
         sessionModel: {
           modelId: 'coder-model',
-          authType: AuthType.QWEN_OAUTH,
+          authType: AuthType.USE_OPENAI_RESPONSES,
         },
       }),
       authenticate,
@@ -606,9 +577,9 @@ describe('session-model-persistence', () => {
     expect(authenticate).toHaveBeenCalledTimes(2);
     expect(switchModel).toHaveBeenNthCalledWith(
       1,
-      AuthType.QWEN_OAUTH,
+      AuthType.USE_OPENAI_RESPONSES,
       'coder-model',
-      { requireCachedCredentials: true },
+      undefined,
     );
     expect(switchModel).toHaveBeenNthCalledWith(
       2,
@@ -739,7 +710,7 @@ describe('session-model-persistence', () => {
         turnParentUuids: [null],
         sessionModel: {
           modelId: 'coder-model',
-          authType: AuthType.QWEN_OAUTH,
+          authType: AuthType.USE_OPENAI_RESPONSES,
         },
       }),
       authenticate,
@@ -748,9 +719,9 @@ describe('session-model-persistence', () => {
     expect(authenticate).toHaveBeenCalledTimes(2);
     expect(switchModel).toHaveBeenNthCalledWith(
       1,
-      AuthType.QWEN_OAUTH,
+      AuthType.USE_OPENAI_RESPONSES,
       'coder-model',
-      { requireCachedCredentials: true },
+      undefined,
     );
     expect(switchModel).toHaveBeenNthCalledWith(
       2,
@@ -853,7 +824,7 @@ describe('session-model-persistence', () => {
           turnParentUuids: [null],
           sessionModel: {
             modelId: 'coder-model',
-            authType: AuthType.QWEN_OAUTH,
+            authType: AuthType.USE_OPENAI_RESPONSES,
           },
         }),
         authenticate,
@@ -899,7 +870,7 @@ describe('session-model-persistence', () => {
           turnParentUuids: [null],
           sessionModel: {
             modelId: 'coder-model',
-            authType: AuthType.QWEN_OAUTH,
+            authType: AuthType.USE_OPENAI_RESPONSES,
           },
         }),
         authenticate,

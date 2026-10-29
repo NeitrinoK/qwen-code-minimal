@@ -66,6 +66,7 @@ vi.mock('@opentui/react/jsx-dev-runtime', () => mocks.buildJsxRuntime());
 import type { Config } from '@qwen-code/qwen-code-core';
 import type { LoadedSettings } from '../../config/settings.js';
 import { OpenTuiBanner } from './opentui-header.js';
+import { shortAsciiLogo } from '../components/AsciiArt.js';
 import { getActiveOpenTuiTheme, getOpenTuiTheme } from './theme-parity.js';
 import { C, applyOpenTuiTheme, applyThemeMode } from './theme.js';
 
@@ -190,26 +191,17 @@ describe('wordmark gradient', () => {
       <OpenTuiBanner config={fakeConfig()} settings={fakeSettings()} />,
     );
     const rows = logoRows(container);
-    expect(rows.map((row) => row.length)).toEqual([36, 37, 37, 37, 37, 37]);
-
-    // The 36-column line rebalances its two segments to 17/18, so its middle
-    // stop lands at index 17; the 37-column lines balance to 18/18 and land at
-    // 18. Index 1 therefore differs between the two — a single shared ramp
-    // cannot produce both.
-    expect(rows[0]!.slice(0, 4)).toEqual([
-      '#4796e4',
-      '#4b94e3',
-      '#4e93e1',
-      '#5291e0',
-    ]);
-    expect(rows[0]![17]).toBe('#847ace');
-    expect(rows[1]!.slice(0, 4)).toEqual([
-      '#4796e4',
-      '#4a94e3',
-      '#4e93e2',
-      '#5191e0',
-    ]);
-    expect(rows[1]![18]).toBe('#847ace');
+    // One rendered row per logo line, each as wide as its own line.
+    const logoLines = shortAsciiLogo.split('\n').filter((line) => line.length);
+    expect(rows.map((row) => row.length)).toEqual(
+      logoLines.map((line) => [...line].length),
+    );
+    // Every line starts on the first stop and ends on the last: each line runs
+    // its own ramp rather than slicing one shared ramp.
+    for (const row of rows) {
+      expect(row[0]).toBe('#4796e4');
+      expect(row.at(-1)).toBe('#c3677f');
+    }
   });
 
   it('reaches the last stop on every line, including the shorter first one', () => {
@@ -264,7 +256,9 @@ describe('wordmark gradient', () => {
         <OpenTuiBanner config={fakeConfig()} settings={fakeSettings()} />,
       );
       const rows = logoRows(container);
-      expect(rows).toHaveLength(6);
+      expect(rows).toHaveLength(
+        shortAsciiLogo.split('\n').filter((line) => line.length).length,
+      );
       for (const row of rows) {
         for (const cell of row) {
           expect(cell).toBeNull();

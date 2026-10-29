@@ -36,7 +36,6 @@ import { writeStdoutLine } from '../../utils/stdioHelpers.js';
  */
 const PREVIEW_CONFIG_STUB = {
   getShouldUseNodePtyShell: () => false,
-  getIdeMode: () => false,
   isTrustedFolder: () => false,
   getToolRegistry: () => ({ getTool: () => undefined }),
 } as unknown as Config;

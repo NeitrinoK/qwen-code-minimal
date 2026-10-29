@@ -13,9 +13,7 @@ import {
   HookEventName,
   MAX_WEB_SEARCH_MAX_PER_SESSION,
   MAX_WEB_SEARCH_TIMEOUT_MS,
-  DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH,
   OutputFormat,
-  SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT,
 } from '@qwen-code/qwen-code-core';
 import {
   getSettingsSchema,
@@ -24,11 +22,6 @@ import {
   type SettingsSchema,
 } from './settingsSchema.js';
 import { MergeStrategy } from '../utils/deepMerge.js';
-import {
-  MAX_CONCURRENT_SUB_SESSIONS_PER_CALLER,
-  MAX_CONCURRENT_SUB_SESSIONS_TOTAL,
-  MAX_TRACKED_SPAWNED_SESSIONS,
-} from '../serve/create-sub-session.js';
 
 describe('SettingsSchema', () => {
   describe('getSettingsSchema', () => {
@@ -76,9 +69,7 @@ describe('SettingsSchema', () => {
         'mcpServers',
         'general',
         'ui',
-        'ide',
         'privacy',
-        'telemetry',
         'model',
         'context',
         'tools',
@@ -86,7 +77,6 @@ describe('SettingsSchema', () => {
         'security',
         'advanced',
         'plansDirectory',
-        'voiceModel',
         'imageModel',
       ];
 
@@ -138,7 +128,6 @@ describe('SettingsSchema', () => {
       const nestedSettings: Array<keyof Settings> = [
         'general',
         'ui',
-        'ide',
         'privacy',
         'model',
         'context',
@@ -333,17 +322,6 @@ describe('SettingsSchema', () => {
       expect(getSettingsSchema().plansDirectory.showInDialog).toBe(false);
     });
 
-    it('should have voice model setting in schema', () => {
-      const voiceModel = getSettingsSchema().voiceModel;
-
-      expect(voiceModel).toBeDefined();
-      expect(voiceModel.type).toBe('string');
-      expect(voiceModel.category).toBe('Model');
-      expect(voiceModel.default).toBe('');
-      expect(voiceModel.requiresRestart).toBe(false);
-      expect(voiceModel.showInDialog).toBe(false);
-    });
-
     it('should define the image model setting', () => {
       const imageModel = getSettingsSchema().imageModel;
 
@@ -523,52 +501,6 @@ describe('SettingsSchema', () => {
       });
     });
 
-    it('should define telemetry sensitiveSpanAttributeMaxLength as a positive integer', () => {
-      const telemetrySchema = getSettingsSchema().telemetry.jsonSchemaOverride;
-      expect(
-        telemetrySchema.properties?.sensitiveSpanAttributeMaxLength,
-      ).toEqual({
-        description:
-          'Maximum JavaScript string length for each sensitive native OTel span attribute content payload. Default: 1048576 (1 MiB). Maximum: 104857600 (100 MiB). Set lower if your collector or backend rejects large span attributes.',
-        type: 'integer',
-        minimum: 1,
-        maximum: SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH_LIMIT,
-        default: DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH,
-      });
-    });
-
-    it('should define telemetry userId as a privacy-sensitive string', () => {
-      const telemetrySchema = getSettingsSchema().telemetry.jsonSchemaOverride;
-      expect(telemetrySchema.properties?.userId).toEqual({
-        description:
-          'Stable end-user identifier written to GenAI spans as gen_ai.user.id for ARMS session analysis. This value is linkable personal data: prefer a pseudonymous ID, and configure it only when one process represents one user.',
-        type: 'string',
-      });
-    });
-
-    it('should have voice dictation settings under general', () => {
-      const voice =
-        getSettingsSchema().general.properties.voice.properties ?? {};
-
-      expect(voice.enabled.type).toBe('boolean');
-      expect(voice.enabled.default).toBe(false);
-
-      expect(voice.mode.type).toBe('enum');
-      expect(voice.mode.default).toBe('hold');
-      expect(
-        voice.mode.options?.map((o: { value: string }) => o.value),
-      ).toEqual(['hold', 'tap']);
-
-      expect(voice.language.type).toBe('string');
-      expect(voice.language.default).toBe('');
-
-      expect(voice.keytermsFile.type).toBe('string');
-      expect(voice.keytermsFile.default).toBe('');
-
-      expect(voice.refineTranscript.type).toBe('boolean');
-      expect(voice.refineTranscript.default).toBe(true);
-    });
-
     it('should have unique categories', () => {
       const categories = new Set();
 
@@ -669,12 +601,6 @@ describe('SettingsSchema', () => {
       expect(getSettingsSchema().general.properties.vimMode.showInDialog).toBe(
         true,
       );
-      expect(getSettingsSchema().ide.properties.enabled.showInDialog).toBe(
-        true,
-      );
-      expect(
-        getSettingsSchema().general.properties.enableAutoUpdate.showInDialog,
-      ).toBe(true);
       expect(
         getSettingsSchema().ui.properties.hideWindowTitle.showInDialog,
       ).toBe(false);
@@ -683,10 +609,6 @@ describe('SettingsSchema', () => {
       );
       expect(
         getSettingsSchema().ui.properties.showResponseTokensPerSecond
-          .showInDialog,
-      ).toBe(true);
-      expect(
-        getSettingsSchema().privacy.properties.usageStatisticsEnabled
           .showInDialog,
       ).toBe(true);
 
@@ -699,7 +621,6 @@ describe('SettingsSchema', () => {
       );
       expect(getSettingsSchema().permissions.showInDialog).toBe(false);
       expect(getSettingsSchema().mcpServers.showInDialog).toBe(false);
-      expect(getSettingsSchema().telemetry.showInDialog).toBe(false);
 
       // Check that some settings are appropriately hidden
       expect(getSettingsSchema().ui.properties.theme.showInDialog).toBe(true);
@@ -801,22 +722,6 @@ describe('SettingsSchema', () => {
       expect(responseTokensPerSecond.default).toBe(false);
       expect(responseTokensPerSecond.showInDialog).toBe(true);
       expect(responseTokensPerSecond.requiresRestart).toBe(true);
-    });
-
-    it('should pin serve sub-session caps to the runtime defaults', () => {
-      const serve = getSettingsSchema().serve.properties;
-      expect(serve.maxConcurrentSubSessionsPerCaller.default).toBe(
-        MAX_CONCURRENT_SUB_SESSIONS_PER_CALLER,
-      );
-      expect(serve.maxConcurrentSubSessionsTotal.default).toBe(
-        MAX_CONCURRENT_SUB_SESSIONS_TOTAL,
-      );
-      // The runtime clamps the total cap to the tracked-id set size; the
-      // schema maximum must match so editors reject values that the daemon
-      // would otherwise silently clamp.
-      expect(serve.maxConcurrentSubSessionsTotal.maximum).toBe(
-        MAX_TRACKED_SPAWNED_SESSIONS,
-      );
     });
 
     it('should infer Settings type correctly', () => {

@@ -48,12 +48,24 @@ export {
   type ModelSwitchMetadata,
   MODEL_GENERATION_CONFIG_FIELDS,
   type OnModelChangeCallback,
-  QWEN_OAUTH_MODELS,
   resolveModelConfig,
   type ResolvedModelConfig,
   validateModelConfig,
   VERTEX_ADC_HINT,
 } from './models/index.js';
+
+// Reasoning (model family candidate knobs)
+export {
+  reasoningCandidates,
+  type ReasoningCandidates,
+  type ReasoningEffortLevel,
+} from './reasoning/candidates.js';
+export {
+  probeReasoningSupport,
+  classifyProbeResponse,
+  type ProbeResult,
+  type ReasoningTrial,
+} from './reasoning/probe.js';
 
 // Output formatting
 export * from './output/json-formatter.js';
@@ -92,7 +104,6 @@ export {
 export * from './core/llm-chat.js';
 export * from './core/llm-request.js';
 export * from './core/inlineMediaLimit.js';
-export * from './core/insightProtocol.js';
 export * from './core/logger.js';
 export * from './core/message-display-dispatcher.js';
 export * from './core/nonInteractiveToolExecutor.js';
@@ -510,7 +521,14 @@ export * from './services/shellExecutionService.js';
 export * from './services/monitorRegistry.js';
 export * from './services/backgroundShellRegistry.js';
 export * from './agents/background-notification-queue.js';
-export * from './services/web-terminal-registry.js';
+export {
+  fetchHubLoad,
+  parseLoadFrames,
+  HUB_LOAD_DEFAULTS,
+  type HubLoad,
+  type HubLoadSnapshot,
+  type FetchHubLoadDeps,
+} from './hub/load-metrics.js';
 export * from './agents/workflow-run-registry.js';
 export * from './agents/workflow-correlation.js';
 export * from './agents/workflow-snapshot.js';
@@ -583,21 +601,6 @@ export * from './memory/learn-skill-agent.js';
 export * from './memory/writeContextFile.js';
 
 // ============================================================================
-// IDE Support
-// ============================================================================
-
-export * from './ide/ide-client.js';
-export * from './ide/ideContext.js';
-export * from './ide/ide-installer.js';
-export {
-  detectIdeFromEnv,
-  IDE_DEFINITIONS,
-  type IdeInfo,
-} from './ide/detect-ide.js';
-export * from './ide/constants.js';
-export * from './ide/types.js';
-
-// ============================================================================
 // LSP Support
 // ============================================================================
 
@@ -642,13 +645,11 @@ export { hashMcpServerConfig } from './mcp/configHash.js';
 // Telemetry
 // ============================================================================
 
-export { QwenLogger } from './telemetry/qwen-logger/qwen-logger.js';
 export * from './telemetry/index.js';
 export {
   logAuth,
   logExtensionDisable,
   logExtensionEnable,
-  logIdeConnection,
   logLoopDetected,
   logRepeatedToolFailureGuard,
   logModelSlashCommand,
@@ -664,8 +665,6 @@ export {
   ExtensionEnableEvent,
   ExtensionInstallEvent,
   ExtensionUninstallEvent,
-  IdeConnectionEvent,
-  IdeConnectionType,
   LoopDetectedEvent,
   LoopType,
   RepeatedToolFailureGuardEvent,
@@ -796,12 +795,6 @@ export { parse, stringify } from './utils/yaml-parser.js';
 export * from './utils/btwUtils.js';
 export * from './agents/forkedAgent.js';
 export * from './utils/sideQuery.js';
-
-// ============================================================================
-// OAuth & Authentication
-// ============================================================================
-
-export * from './qwen/qwenOAuth2.js';
 
 // ============================================================================
 // Message Bus Types

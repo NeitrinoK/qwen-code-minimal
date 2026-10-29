@@ -8,12 +8,17 @@
 import { type MutableRefObject } from 'react';
 import { type DOMElement } from 'ink';
 import { render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { CompletionCategoryMouseController } from './CompletionCategoryMouseController.js';
 import { useMouseEvents } from '../hooks/useMouseEvents.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { type MouseEvent } from '../utils/mouse.js';
 import { findElementAtMouseEvent } from '../utils/mouse-hit.js';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 vi.mock('../hooks/useMouseEvents.js', () => ({ useMouseEvents: vi.fn() }));
 vi.mock('../hooks/useTerminalSize.js', () => ({ useTerminalSize: vi.fn() }));
@@ -43,7 +48,7 @@ describe('CompletionCategoryMouseController', () => {
     { tag: 'session' },
   ] as unknown as DOMElement[];
   const categories = ['all', 'file', 'session'] as const;
-  let onSelectCategory: ReturnType<typeof vi.fn>;
+  let onSelectCategory: MockAny;
 
   beforeEach(() => {
     vi.clearAllMocks();

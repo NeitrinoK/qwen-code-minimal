@@ -88,7 +88,7 @@ env:
   # excluded from the head-state classifiers (charge + wake) by name, or
   # the loop reads its own red as the round's regression (af-157, R27-23).
   # A test pins the names against the workflows' `name:` lines.
-  LOOP_OWNED_LANES: '["Qwen Autofix","🧐 Qwen Pull Request Review","Qwen CI Failure Patrol","Qwen Autofix Fork Bridge","Qwen Autofix Fork Signal","Qwen Triage","Qwen Triage Finalize","PR self-report label","Qwen PR Safety Precheck","Comment Attachment Guard","PR Asset Branch Cleanup"]'
+  LOOP_OWNED_LANES: '["Qwen Autofix","🧐 Qwen Pull Request Review","Qwen CI Failure Patrol","Qwen Autofix Fork Bridge","Qwen Autofix Fork Signal","Qwen Triage","Qwen Triage Finalize","PR self-report label","Qwen PR Safety Precheck","Comment Attachment Guard"]'
   # The review bot's thread lifecycle replies `R<id> fixed by <what>` into a
   # thread — a NOTE, never a finding: it carries its own marker
   # (FIXED_RULING_MARKER in lib/review-footer.ts) at the end of its first
@@ -930,7 +930,7 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               break
             fi
             if [[ "${attempt}" == "3" ]]; then
@@ -3616,7 +3616,7 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               break
             fi
             if [[ "${attempt}" == "3" ]]; then
@@ -4019,7 +4019,7 @@ jobs:
           QWEN_SKIP_PREPARE: '1'
         run: |-
           for attempt in 1 2 3; do
-            if corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only; then
+            if npm ci --no-audit --progress=false; then
               break
             fi
             if [[ "${attempt}" == "3" ]]; then

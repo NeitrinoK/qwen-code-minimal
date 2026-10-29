@@ -150,18 +150,6 @@ describe('model API selection', () => {
     ).toEqual([]);
   });
 
-  it.each([AuthType.USE_GEMINI, AuthType.USE_ANTHROPIC, AuthType.QWEN_OAUTH])(
-    'rejects api under %s',
-    (protocol) => {
-      expect(
-        () =>
-          new ModelRegistry({
-            [protocol]: [{ id: 'model', wireApi: 'responses' }],
-          }),
-      ).toThrow('wireApi is only supported for OpenAI-compatible models');
-    },
-  );
-
   it('rejects invalid API values and rolls back the whole registry reload', () => {
     const registry = new ModelRegistry(routes);
     expect(() =>

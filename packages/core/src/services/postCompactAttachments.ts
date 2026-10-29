@@ -184,8 +184,8 @@ export interface ExtractedImage {
  * silently drops every tool-returned screenshot, because
  * `convertToFunctionResponse` ALWAYS nests tool media under
  * `functionResponse.parts` and never at the top level. That made the
- * whole screenshot-restoration feature a no-op for real computer-use
- * sessions while the unit tests (which fabricated a top-level shape)
+ * whole screenshot-restoration feature a no-op for real tool-returned
+ * screenshots while the unit tests (which fabricated a top-level shape)
  * stayed green.
  */
 function imagePartsInContentReverse(content: Content): Part[] {
@@ -261,7 +261,7 @@ export function extractRecentImages(
  * Count images RETURNED BY TOOLS across the whole history — inlineData
  * image parts nested inside `functionResponse.parts`. User-pasted
  * top-level images are intentionally excluded: this drives the
- * tool screenshot-overflow auto-compact trigger, whose concern
+ * screenshot-overflow auto-compact trigger, whose concern
  * is screenshot accumulation from tool results, not occasional pastes.
  */
 export function countToolResponseImages(history: Content[]): number {

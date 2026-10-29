@@ -35,7 +35,6 @@ describe('acpModelUtils', () => {
         registryBaseUrl: privateUrl,
       },
       { id: 'implicit', label: 'Implicit', authType: AuthType.USE_OPENAI },
-      { id: 'oauth', label: 'OAuth', authType: AuthType.QWEN_OAUTH },
       {
         id: 'vision',
         label: 'Vision only',
@@ -55,9 +54,6 @@ describe('acpModelUtils', () => {
     );
     expect(resolveAcpFastModelSelector('implicit(openai)', models)).toBe(
       'openai:implicit\0',
-    );
-    expect(resolveAcpFastModelSelector('oauth(qwen-oauth)', models)).toBe(
-      'qwen-oauth:oauth',
     );
     for (const input of [
       'qwen-route:v1:stale',
@@ -366,9 +362,9 @@ describe('acpModelUtils', () => {
       expect(isInlineModelOverrideAllowed(config, 'shared-id')).toBe(true);
     });
 
-    it('allows a model when both sides have no baseUrl/envKey (e.g. qwen-oauth)', () => {
-      const config = makeConfig({ authType: AuthType.QWEN_OAUTH }, [
-        { id: 'qwen-max', authType: AuthType.QWEN_OAUTH },
+    it('allows a model when both sides have no baseUrl/envKey (keyless provider)', () => {
+      const config = makeConfig({ authType: AuthType.USE_OPENAI }, [
+        { id: 'qwen-max', authType: AuthType.USE_OPENAI },
       ]);
       expect(isInlineModelOverrideAllowed(config, 'qwen-max')).toBe(true);
     });
@@ -412,17 +408,16 @@ describe('acpModelUtils', () => {
     });
 
     it('rejects an unknown model id', () => {
-      const config = makeConfig({ authType: AuthType.QWEN_OAUTH }, [
-        { id: 'qwen-max', authType: AuthType.QWEN_OAUTH },
+      const config = makeConfig({ authType: AuthType.USE_OPENAI }, [
+        { id: 'qwen-max', authType: AuthType.USE_OPENAI },
       ]);
       expect(isInlineModelOverrideAllowed(config, 'missing')).toBe(false);
     });
 
-    it('does not match selector-only models', () => {
-      const config = makeConfig({ authType: AuthType.QWEN_OAUTH }, [
-        { id: 'qwen-fast', authType: AuthType.QWEN_OAUTH, fastOnly: true },
-        { id: 'qwen-voice', authType: AuthType.QWEN_OAUTH, voiceOnly: true },
-        { id: 'qwen-image', authType: AuthType.QWEN_OAUTH, imageOnly: true },
+    it('does not match fast-only or voice-only models', () => {
+      const config = makeConfig({ authType: AuthType.USE_OPENAI }, [
+        { id: 'qwen-fast', authType: AuthType.USE_OPENAI, fastOnly: true },
+        { id: 'qwen-voice', authType: AuthType.USE_OPENAI, voiceOnly: true },
       ]);
       expect(isInlineModelOverrideAllowed(config, 'qwen-fast')).toBe(false);
       expect(isInlineModelOverrideAllowed(config, 'qwen-voice')).toBe(false);

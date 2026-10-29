@@ -129,8 +129,7 @@ function buildBanner(config: Config, settings: LoadedSettings, width: number) {
     if (cg?.authType) {
       const matched = findProviderByCredentials(cg.baseUrl, cg.apiKeyEnvKey);
       authLabel =
-        (matched && resolveMetadataKey(matched) && matched.label) ||
-        (cg.authType === 'qwen-oauth' ? 'Qwen OAuth' : 'API Key');
+        (matched && resolveMetadataKey(matched) && matched.label) || 'API Key';
     }
   } catch {
     authLabel = '';

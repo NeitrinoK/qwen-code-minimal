@@ -523,9 +523,9 @@ describe('fetchGitDiffHunksForFile', () => {
     await write(repo, { 'a.txt': 'A\n', 'b.txt': 'B\n' });
 
     const result = await fetchGitDiffHunksForFile(repo, 'a.txt');
-    expect(result!.hunks[0].lines.some((l) => l === '+A')).toBe(true);
+    expect(result!.hunks[0].lines.some((l: string) => l === '+A')).toBe(true);
     // b.txt's change must not leak into a.txt's hunks.
-    expect(result!.hunks[0].lines.some((l) => l === '+B')).toBe(false);
+    expect(result!.hunks[0].lines.some((l: string) => l === '+B')).toBe(false);
   });
 
   it('returns null for an unchanged tracked file', async () => {

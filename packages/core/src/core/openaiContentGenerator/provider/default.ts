@@ -120,6 +120,8 @@ export class DefaultOpenAICompatibleProvider
     const runtimeOptions = buildRuntimeFetchOptions(
       'openai',
       this.cliConfig.getProxy(),
+      this.cliConfig.getNoProxy?.() ?? [],
+      this.cliConfig.getCaCertificates?.() ?? [],
     );
     return new OpenAI({
       apiKey,
@@ -133,7 +135,7 @@ export class DefaultOpenAICompatibleProvider
         this.cliConfig,
         this.contentGeneratorConfig.customHeaders,
       ),
-    });
+    } as ConstructorParameters<typeof OpenAI>[0]);
   }
 
   /**

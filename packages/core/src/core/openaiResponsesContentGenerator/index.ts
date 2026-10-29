@@ -60,6 +60,8 @@ export class OpenAIResponsesContentGenerator implements ContentGenerator {
     const runtimeOptions = buildRuntimeFetchOptions(
       'openai',
       this.cliConfig.getProxy(),
+      this.cliConfig.getNoProxy?.() ?? [],
+      this.cliConfig.getCaCertificates?.() ?? [],
     );
     // This generator's own baseUrl convention is /v1-less (the streaming
     // pipeline strips any trailing /v1 and appends /v1/responses itself),
@@ -92,7 +94,7 @@ export class OpenAIResponsesContentGenerator implements ContentGenerator {
         this.cliConfig,
         this.contentGeneratorConfig.customHeaders,
       ),
-    });
+    } as ConstructorParameters<typeof OpenAISDK>[0]);
     return this.openaiClient;
   }
 

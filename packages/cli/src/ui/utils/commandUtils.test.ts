@@ -25,7 +25,18 @@ import type { RecentSlashCommands } from '../hooks/useSlashCompletion.js';
 import { CommandKind, type SlashCommand } from '../commands/types.js';
 
 // Mock child_process
-vi.mock('child_process');
+const { mockSpawnFn } = vi.hoisted(() => ({ mockSpawnFn: vi.fn() }));
+vi.mock('node:child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+  return {
+    ...actual,
+    default: { ...actual, spawn: mockSpawnFn },
+    spawn: mockSpawnFn,
+  };
+});
 
 // Mock process.platform for platform-specific tests
 const mockProcess = vi.hoisted(() => ({

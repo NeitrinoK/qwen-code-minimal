@@ -187,8 +187,6 @@ describe('mapDomainErrorToErrorKind', () => {
       'StrictMissingModelIdError',
       'MissingApiKeyError',
       'MissingModelError',
-      'MissingBaseUrlError',
-      'MissingAnthropicBaseUrlEnvError',
     ]) {
       const err = new Error(`fake ${name} payload`);
       err.name = name;

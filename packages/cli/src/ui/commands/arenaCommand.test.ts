@@ -38,11 +38,13 @@ afterAll(async () => {
 });
 
 describe('arenaCommand localization', () => {
-  it('localizes descriptions and common errors in zh', async () => {
-    await setLanguageAsync('zh');
+  it('localizes descriptions and common errors in ru', async () => {
+    await setLanguageAsync('ru');
 
-    expect(arenaCommand.description).toBe('管理 Arena 会话');
-    expect(getArenaSubCommand('stop').description).toBe('停止当前 Arena 会话');
+    expect(arenaCommand.description).toBe('Управлять сессиями Arena');
+    expect(getArenaSubCommand('stop').description).toBe(
+      'Остановить текущую сессию Arena',
+    );
 
     const stopContext = createMockCommandContext({
       executionMode: 'interactive',
@@ -60,7 +62,7 @@ describe('arenaCommand localization', () => {
     expect(stopResult).toEqual({
       type: 'message',
       messageType: 'error',
-      content: '未找到正在运行的 Arena 会话。',
+      content: 'Запущенная сессия Arena не найдена.',
     });
 
     const selectContext = createMockCommandContext({
@@ -81,7 +83,8 @@ describe('arenaCommand localization', () => {
     expect(selectResult).toEqual({
       type: 'message',
       messageType: 'error',
-      content: 'Arena 会话仍在运行中。请等待其完成，或先使用 /arena stop。',
+      content:
+        'Сессия Arena всё ещё выполняется. Дождитесь её завершения или сначала используйте /arena stop.',
     });
   });
 });

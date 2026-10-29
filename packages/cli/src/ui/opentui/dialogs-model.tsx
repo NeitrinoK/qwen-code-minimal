@@ -80,7 +80,6 @@ export type ModelDialogMode =
   | 'primary'
   | 'fast'
   | 'advisor'
-  | 'voice'
   | 'vision'
   | 'compaction'
   | 'image';
@@ -182,19 +181,17 @@ export function modelDialogTitle(
   persistScope?: 'workspace' | 'user',
 ): string {
   const base =
-    mode === 'voice'
-      ? t('Select Voice Model')
-      : mode === 'vision'
-        ? t('Select Vision Model')
-        : mode === 'compaction'
-          ? t('Select Compaction Model')
-          : mode === 'image'
-            ? t('Select Image Model')
-            : mode === 'advisor'
-              ? t('Select Advisor Model')
-              : mode === 'fast'
-                ? t('Select Fast Model')
-                : t('Select Model');
+    mode === 'vision'
+      ? t('Select Vision Model')
+      : mode === 'compaction'
+        ? t('Select Compaction Model')
+        : mode === 'image'
+          ? t('Select Image Model')
+          : mode === 'advisor'
+            ? t('Select Advisor Model')
+            : mode === 'fast'
+              ? t('Select Fast Model')
+              : t('Select Model');
   const suffix =
     persistScope === 'workspace'
       ? t(' (this project)')

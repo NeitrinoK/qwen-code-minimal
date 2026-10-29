@@ -22,7 +22,7 @@ on:
       - 'scripts/copy_bundle_assets.js'
       - 'scripts/prepare.js'
       - 'package.json'
-      - 'pnpm-lock.yaml'
+      - 'package-lock.json'
   push:
     branches:
       - 'main'
@@ -46,7 +46,7 @@ on:
       - 'scripts/copy_bundle_assets.js'
       - 'scripts/prepare.js'
       - 'package.json'
-      - 'pnpm-lock.yaml'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
@@ -69,7 +69,7 @@ jobs:
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: 'Build CLI'
-        run: 'corepack pnpm install --frozen-lockfile'
+        run: 'npm ci'
       - name: 'Verify stdin transport ownership'
         working-directory: 'packages/core'
         run: 'npx vitest run src/sandbox/bwrap-relay.test.ts'
@@ -95,7 +95,7 @@ jobs:
           node-version: '22.x'
           package-manager-cache: false
       - name: 'Build workspace prerequisites'
-        run: 'corepack pnpm install --frozen-lockfile'
+        run: 'npm ci'
       - name: 'Verify native settings publication and real output pipes'
         working-directory: 'packages/cli'
         run: 'npx vitest run src/utils/write-with-backup.windows.test.ts src/utils/flush-output.test.ts'

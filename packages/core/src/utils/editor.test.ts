@@ -116,6 +116,11 @@ const PLATFORMS = [
 describe('editor utils', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // vitest v4's clearAllMocks/restoreAllMocks no longer reset the
+    // implementations of module-mock vi.fn()s, so per-test
+    // `mockImplementation` overrides (e.g. the spawnSync-throws cases)
+    // would leak into the next test. Re-establish the default here.
+    (spawnSync as Mock).mockImplementation(() => ({ error: null, status: 0 }));
     vi.unstubAllEnvs();
     Object.defineProperty(process, 'platform', {
       value: originalPlatform,

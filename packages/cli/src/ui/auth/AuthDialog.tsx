@@ -18,11 +18,11 @@ import { useSettings } from '../contexts/SettingsContext.js';
 import { t } from '../../i18n/index.js';
 import { getRawModelProviders } from '../../config/loadedSettingsAdapter.js';
 import {
-  findProviderById,
   findProviderByCredentials,
-  ALIBABA_PROVIDERS,
-  THIRD_PARTY_PROVIDERS,
+  findProviderById,
+  ALL_PROVIDERS,
 } from '@qwen-code/qwen-code-core/providers/all-providers.js';
+import { HUB_UI_GROUP } from '@qwen-code/qwen-code-core/providers/presets/openai-hub.js';
 import { customProvider } from '@qwen-code/qwen-code-core/providers/presets/custom-provider.js';
 import {
   findExistingProviderModels,
@@ -36,58 +36,43 @@ import { ProviderSetupSteps } from './ProviderSetupSteps.js';
 // Types
 // ---------------------------------------------------------------------------
 
-type ViewLevel =
-  | 'main'
-  | 'alibaba-select'
-  | 'thirdparty-select'
-  | 'provider-setup';
+type ViewLevel = 'main' | 'provider-setup';
 
-type MainOption =
-  | 'ALIBABA_MODELSTUDIO'
-  | 'THIRD_PARTY_PROVIDERS'
-  | 'CUSTOM_PROVIDER';
+type MainOption = string; // a hub provider id, or 'CUSTOM_PROVIDER'
 
 // ---------------------------------------------------------------------------
 // Static data
 // ---------------------------------------------------------------------------
 
-const MAIN_ITEMS = [
-  {
-    key: 'ALIBABA_MODELSTUDIO',
-    title: t('Alibaba ModelStudio'),
-    label: t('Alibaba ModelStudio'),
-    description: t(
-      'Official recommended setup: Coding Plan, Token Plan, or Standard API Key',
-    ),
-    value: 'ALIBABA_MODELSTUDIO' as MainOption,
-  },
-  {
-    key: 'THIRD_PARTY_PROVIDERS',
-    title: t('Third-party Providers'),
-    label: t('Third-party Providers'),
-    description: t('Choose a built-in provider and connect with an API key'),
-    value: 'THIRD_PARTY_PROVIDERS' as MainOption,
-  },
-  {
-    key: 'CUSTOM_PROVIDER',
-    title: t('Custom Provider'),
-    label: t('Custom Provider'),
-    description: t(
-      'Manually connect a local server, proxy, or unsupported provider',
-    ),
-    value: 'CUSTOM_PROVIDER' as MainOption,
-  },
-];
-
-function providerToItem(config: ProviderConfig) {
-  return {
-    key: config.id,
-    title: t(config.label),
-    label: t(config.label),
-    description: t(config.description),
-    value: config.id,
-  };
+function buildMainItems() {
+  const hubItems = ALL_PROVIDERS.filter((p) => p.uiGroup === HUB_UI_GROUP).map(
+    (p) => ({
+      key: p.id,
+      title: p.label,
+      label: p.label,
+      description: p.description,
+      value: p.id as MainOption,
+    }),
+  );
+  return [
+    ...hubItems,
+    {
+      key: 'CUSTOM_PROVIDER',
+      title: t('Custom Provider'),
+      label: t('Custom Provider'),
+      description: t(
+        'Manually connect a local server, proxy, or unsupported provider',
+      ),
+      value: 'CUSTOM_PROVIDER' as MainOption,
+    },
+  ];
 }
+
+// Maps each main option to the provider its setup flow starts from.
+const providerForOption = (v: MainOption): ProviderConfig =>
+  v === 'CUSTOM_PROVIDER'
+    ? customProvider
+    : (findProviderById(v) ?? customProvider);
 
 // ---------------------------------------------------------------------------
 // Step label for provider-setup title bar
@@ -113,8 +98,6 @@ function getStepLabel(step: string | null, p: ProviderConfig): string {
 
 const VIEW_TITLES: Record<string, string> = {
   main: t('Connect a Provider'),
-  'alibaba-select': t('Alibaba ModelStudio · Access Method'),
-  'thirdparty-select': t('Third-party Providers · Provider'),
 };
 
 // ---------------------------------------------------------------------------
@@ -136,7 +119,6 @@ export function AuthDialog(): React.JSX.Element {
   const [_viewStack, setViewStack] = useState<ViewLevel[]>([]);
 
   const [mainIndex, setMainIndex] = useState<number | null>(null);
-  const [subMenuIndex, setSubMenuIndex] = useState<Record<string, number>>({});
 
   const setupFlow = useProviderSetupFlow(
     handleProviderSubmit,
@@ -177,14 +159,6 @@ export function AuthDialog(): React.JSX.Element {
     });
   };
 
-  // -- Sub-menu definitions (data-driven) -----------------------------------
-
-  const alibabaItems = useMemo(() => ALIBABA_PROVIDERS.map(providerToItem), []);
-  const thirdPartyItems = useMemo(
-    () => THIRD_PARTY_PROVIDERS.map(providerToItem),
-    [],
-  );
-
   const existingEnv = (settings.merged.env ?? {}) as Record<string, string>;
 
   // The saved route and ids the wizard reopens with. Both must come from the
@@ -209,38 +183,6 @@ export function AuthDialog(): React.JSX.Element {
     return saved.models.map((m) => m.id).filter((id) => !builtinIds.has(id));
   };
 
-  const handleProviderSelect = (providerId: string) => {
-    clearErrors();
-    const providerConfig = findProviderById(providerId);
-    if (!providerConfig) return;
-    setupFlow.start(
-      providerConfig,
-      findSavedModels(providerConfig)?.protocol,
-      existingEnv,
-      getExistingModelIds(providerConfig),
-    );
-    pushView('provider-setup');
-  };
-
-  const subMenus: Record<
-    string,
-    {
-      items: Array<ReturnType<typeof providerToItem>>;
-      onSelect: (v: string) => void;
-    }
-  > = {
-    'alibaba-select': {
-      items: alibabaItems,
-      onSelect: handleProviderSelect,
-    },
-    'thirdparty-select': {
-      items: thirdPartyItems,
-      onSelect: handleProviderSelect,
-    },
-  };
-
-  const activeSubMenu = subMenus[viewLevel];
-
   // -- Default main index from current auth state ---------------------------
 
   const contentGenConfig = config.getContentGeneratorConfig();
@@ -249,39 +191,28 @@ export function AuthDialog(): React.JSX.Element {
     contentGenConfig?.apiKeyEnvKey,
   );
 
-  // Land on the tab that matches the active provider's uiGroup so a DeepSeek
-  // / MiniMax / OpenRouter user opens Third-party Providers, not Alibaba.
-  // (resolveMetadataKey returns config.id for *any* provider with a static
-  // models[], so it can't be used to detect "Alibaba" specifically.)
+  // Land on the option that matches the active provider so re-opening the
+  // dialog highlights the provider already in use.
+  const mainItems = useMemo(buildMainItems, []);
   const defaultMainIndex = useMemo(() => {
-    if (matchedProvider?.uiGroup === 'third-party') return 1;
-    if (matchedProvider?.uiGroup === 'custom') return 2;
-    return 0;
-  }, [matchedProvider]);
+    const index = mainItems.findIndex(
+      (item) => providerForOption(item.value).id === matchedProvider?.id,
+    );
+    return index >= 0 ? index : 0;
+  }, [matchedProvider, mainItems]);
 
   // -- Handlers -------------------------------------------------------------
 
   const handleMainSelect = (value: MainOption) => {
     clearErrors();
-    switch (value) {
-      case 'ALIBABA_MODELSTUDIO':
-        pushView('alibaba-select');
-        break;
-      case 'THIRD_PARTY_PROVIDERS':
-        pushView('thirdparty-select');
-        break;
-      case 'CUSTOM_PROVIDER':
-        setupFlow.start(
-          customProvider,
-          findSavedModels(customProvider)?.protocol,
-          existingEnv,
-          getExistingModelIds(customProvider),
-        );
-        pushView('provider-setup');
-        break;
-      default:
-        break;
-    }
+    const providerConfig = providerForOption(value);
+    setupFlow.start(
+      providerConfig,
+      findSavedModels(providerConfig)?.protocol,
+      existingEnv,
+      getExistingModelIds(providerConfig),
+    );
+    pushView('provider-setup');
   };
 
   // -- Keyboard handling ----------------------------------------------------
@@ -341,43 +272,15 @@ export function AuthDialog(): React.JSX.Element {
       {viewLevel === 'main' && (
         <Box marginTop={1}>
           <DescriptiveRadioButtonSelect
-            items={MAIN_ITEMS}
+            items={mainItems}
             initialIndex={mainIndex != null ? mainIndex : defaultMainIndex}
             onSelect={handleMainSelect}
             onHighlight={(value) => {
-              setMainIndex(
-                MAIN_ITEMS.findIndex((item) => item.value === value),
-              );
+              setMainIndex(mainItems.findIndex((item) => item.value === value));
             }}
             itemGap={1}
           />
         </Box>
-      )}
-
-      {activeSubMenu && (
-        <>
-          <Box marginTop={1}>
-            <DescriptiveRadioButtonSelect
-              items={activeSubMenu.items}
-              initialIndex={subMenuIndex[viewLevel] ?? 0}
-              onSelect={activeSubMenu.onSelect}
-              onHighlight={(value) => {
-                setSubMenuIndex((prev) => ({
-                  ...prev,
-                  [viewLevel]: activeSubMenu.items.findIndex(
-                    (i) => i.value === value,
-                  ),
-                }));
-              }}
-              itemGap={1}
-            />
-          </Box>
-          <Box marginTop={1}>
-            <Text color={theme?.text?.secondary}>
-              {t('Enter to select, ↑↓ to navigate, Esc to go back')}
-            </Text>
-          </Box>
-        </>
       )}
 
       {viewLevel === 'provider-setup' && (

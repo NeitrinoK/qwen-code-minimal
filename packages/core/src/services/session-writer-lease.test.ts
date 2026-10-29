@@ -654,8 +654,6 @@ function createConfig(fixture: Fixture, extra: Partial<ConfigParameters> = {}) {
         experimentalZedIntegration: true,
         sessionWriterLeaseEnabled: true,
         bareMode: true,
-        telemetry: { enabled: false },
-        usageStatisticsEnabled: false,
       }),
   );
 }

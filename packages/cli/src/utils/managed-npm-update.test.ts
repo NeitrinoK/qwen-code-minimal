@@ -16,7 +16,7 @@ import {
   stageManagedNpmUpdate,
 } from './managed-npm-update.js';
 import { EventEmitter } from 'node:events';
-import type { spawn } from 'node:child_process';
+import { execFileSync, type spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mockCompromisedLock } from '../test-utils/mock-compromised-lock.js';
 
@@ -706,30 +706,54 @@ describe('managed npm update', () => {
 });
 
 describe('global npm configuration', () => {
-  it('resolves it with real npm when npm refuses to print the path', () => {
-    // npm will not print a value that looks like a secret, and a UUID in the
-    // global prefix is enough to trip its redaction.
-    for (const key of Object.keys(process.env)) {
-      if (/^npm_config_(globalconfig|prefix|userconfig)$/i.test(key)) {
-        vi.stubEnv(key, undefined);
-      }
+  // A distro-packaged npm ships a builtin npmrc that pins
+  // `globalconfig=/etc/npmrc`, which overrides the prefix this test sets.
+  const npmPinsGlobalconfig = (() => {
+    try {
+      const npmRoot = path.dirname(
+        path.dirname(
+          fs.realpathSync(execFileSync('which', ['npm']).toString().trim()),
+        ),
+      );
+      return /^\s*globalconfig\s*=/m.test(
+        fs.readFileSync(path.join(npmRoot, 'npmrc'), 'utf8'),
+      );
+    } catch {
+      return false;
     }
-    const root = makeTemporaryDirectory();
-    const prefix = path.join(root, 'node-123e4567-e89b-12d3-a456-426614174000');
-    fs.mkdirSync(prefix);
-    vi.stubEnv('NPM_CONFIG_PREFIX', prefix);
-    // A developer's ~/.npmrc must not decide the global configuration here.
-    vi.stubEnv('NPM_CONFIG_USERCONFIG', path.join(root, 'npmrc'));
+  })();
 
-    const update = prepareManagedNpmUpdate(
-      '2.0.0',
-      writeBaseInstallation(root),
-      path.join(root, 'updates'),
-    );
+  it.skipIf(npmPinsGlobalconfig)(
+    'resolves it with real npm when npm refuses to print the path',
+    () => {
+      // npm will not print a value that looks like a secret, and a UUID in the
+      // global prefix is enough to trip its redaction.
+      for (const key of Object.keys(process.env)) {
+        if (/^npm_config_(globalconfig|prefix|userconfig)$/i.test(key)) {
+          vi.stubEnv(key, undefined);
+        }
+      }
+      const root = makeTemporaryDirectory();
+      const prefix = path.join(
+        root,
+        'node-123e4567-e89b-12d3-a456-426614174000',
+      );
+      fs.mkdirSync(prefix);
+      vi.stubEnv('NPM_CONFIG_PREFIX', prefix);
+      // A developer's ~/.npmrc must not decide the global configuration here.
+      vi.stubEnv('NPM_CONFIG_USERCONFIG', path.join(root, 'npmrc'));
 
-    expect(update.installArgs.slice(1, 3)).toEqual([
-      '--globalconfig',
-      path.resolve(prefix, 'etc', 'npmrc'),
-    ]);
-  }, 60_000);
+      const update = prepareManagedNpmUpdate(
+        '2.0.0',
+        writeBaseInstallation(root),
+        path.join(root, 'updates'),
+      );
+
+      expect(update.installArgs.slice(1, 3)).toEqual([
+        '--globalconfig',
+        path.resolve(prefix, 'etc', 'npmrc'),
+      ]);
+    },
+    60_000,
+  );
 });

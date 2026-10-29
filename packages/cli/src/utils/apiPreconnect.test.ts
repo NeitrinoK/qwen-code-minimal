@@ -10,6 +10,7 @@ import {
   resetPreconnectState,
   waitForPreconnect,
 } from './apiPreconnect.js';
+import { buildHubProviders, setHubProviders } from '@qwen-code/qwen-code-core';
 
 // Mock the shared dispatcher functions from core
 const { mockGetOrCreateSharedDispatcher, mockDebugLogger } = vi.hoisted(() => {
@@ -74,7 +75,7 @@ describe('apiPreconnect', () => {
   describe('shouldSkipPreconnect', () => {
     it('should skip when NODE_EXTRA_CA_CERTS is set', () => {
       process.env['NODE_EXTRA_CA_CERTS'] = '/path/to/ca.pem';
-      preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' });
+      preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' });
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });
@@ -108,100 +109,60 @@ describe('apiPreconnect', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should use resolvedBaseUrl when it is a dashscope compatible-mode URL', async () => {
-      preconnectApi('openai', {
-        resolvedBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        proxy: 'http://proxy.example.com:8080',
-      });
-      await waitForPreconnect();
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        expect.objectContaining({ method: 'HEAD' }),
-      );
-    });
-
-    it('should skip when resolvedBaseUrl is a dashscope subdomain-spoofed URL', () => {
-      preconnectApi('openai', {
-        resolvedBaseUrl: 'https://dashscope.aliyuncs.com.malicious.com/v1',
-        proxy: 'http://proxy.example.com:8080',
-      });
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('should accept DashScope regional endpoint (sg-singapore)', async () => {
-      preconnectApi('openai', {
-        resolvedBaseUrl:
-          'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
-        proxy: 'http://proxy.example.com:8080',
-      });
-      await waitForPreconnect();
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
-        expect.objectContaining({ method: 'HEAD' }),
-      );
-    });
-
-    it('should accept DashScope regional endpoint (us-virginia)', async () => {
-      preconnectApi('openai', {
-        resolvedBaseUrl: 'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
-        proxy: 'http://proxy.example.com:8080',
-      });
-      await waitForPreconnect();
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://dashscope-us.aliyuncs.com/compatible-mode/v1',
-        expect.objectContaining({ method: 'HEAD' }),
-      );
-    });
-
-    it('should accept DashScope regional endpoint (cn-hongkong)', async () => {
-      preconnectApi('openai', {
-        resolvedBaseUrl:
-          'https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1',
-        proxy: 'http://proxy.example.com:8080',
-      });
-      await waitForPreconnect();
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1',
-        expect.objectContaining({ method: 'HEAD' }),
-      );
-    });
-
     it('should fall back to authType default when resolvedBaseUrl is a non-URL sentinel', async () => {
-      preconnectApi('qwen-oauth', {
-        resolvedBaseUrl: 'DYNAMIC_QWEN_OAUTH_BASE_URL',
+      preconnectApi('openai', {
+        resolvedBaseUrl: 'DYNAMIC_BASE_URL',
         proxy: 'http://proxy.example.com:8080',
       });
       await waitForPreconnect();
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://coding.dashscope.aliyuncs.com',
+        'https://api.openai.com',
         expect.objectContaining({ method: 'HEAD' }),
       );
     });
 
     it('should fall back to default URL when resolvedBaseUrl is undefined', async () => {
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
       });
       await waitForPreconnect();
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://coding.dashscope.aliyuncs.com',
+        'https://api.openai.com',
+        expect.objectContaining({ method: 'HEAD' }),
+      );
+    });
+  });
+
+  describe('hub providers registered after import', () => {
+    afterEach(() => setHubProviders([]));
+
+    it('treats a hub URL registered later as a default URL', async () => {
+      const url = 'https://hub.example.com/v1';
+      preconnectApi('openai', {
+        resolvedBaseUrl: url,
+        proxy: 'http://proxy.example.com:8080',
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+
+      setHubProviders(
+        buildHubProviders({
+          label: 'Acme',
+          endpoints: [{ name: 'p', baseUrl: url }],
+        }),
+      );
+      preconnectApi('openai', {
+        resolvedBaseUrl: url,
+        proxy: 'http://proxy.example.com:8080',
+      });
+      await waitForPreconnect();
+      expect(mockFetch).toHaveBeenCalledWith(
+        url,
         expect.objectContaining({ method: 'HEAD' }),
       );
     });
   });
 
   describe('preconnect behavior', () => {
-    it('should use default baseUrl for qwen-oauth', async () => {
-      preconnectApi('qwen-oauth', {
-        proxy: 'http://proxy.example.com:8080',
-      });
-      await waitForPreconnect();
-      expect(mockFetch).toHaveBeenCalledWith(
-        'https://coding.dashscope.aliyuncs.com',
-        expect.objectContaining({ method: 'HEAD' }),
-      );
-    });
-
     it('should use default baseUrl for openai', async () => {
       preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
@@ -225,7 +186,7 @@ describe('apiPreconnect', () => {
     });
 
     it('should pass shared dispatcher on Node.js runtime', async () => {
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
       });
       await waitForPreconnect();
@@ -238,7 +199,7 @@ describe('apiPreconnect', () => {
     });
 
     it('should pass configured proxy to shared dispatcher', async () => {
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
       });
       await waitForPreconnect();
@@ -248,7 +209,7 @@ describe('apiPreconnect', () => {
     });
 
     it('should not fire twice', async () => {
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
       });
       preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' });
@@ -264,19 +225,19 @@ describe('apiPreconnect', () => {
       expect(mockFetch).not.toHaveBeenCalled();
 
       // Second call: valid authType → should fire
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://proxy.example.com:8080',
       });
       await waitForPreconnect();
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://coding.dashscope.aliyuncs.com',
+        'https://api.openai.com',
         expect.objectContaining({ method: 'HEAD' }),
       );
     });
 
     it('should skip dispatcher creation when no proxy configured', () => {
-      preconnectApi('qwen-oauth');
+      preconnectApi('openai');
       expect(mockFetch).not.toHaveBeenCalled();
       expect(mockGetOrCreateSharedDispatcher).not.toHaveBeenCalled();
       expect(mockDebugLogger.debug).toHaveBeenCalledWith(
@@ -286,11 +247,11 @@ describe('apiPreconnect', () => {
 
     it('should allow a later proxy preconnect after a no-proxy skip', async () => {
       // First call: no proxy, no useful undici pool to warm.
-      preconnectApi('qwen-oauth');
+      preconnectApi('openai');
       expect(mockFetch).not.toHaveBeenCalled();
 
       // Second call: proxy is now available, so preconnect should still fire.
-      preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' });
+      preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' });
       await waitForPreconnect();
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockGetOrCreateSharedDispatcher).toHaveBeenCalledWith(
@@ -302,7 +263,7 @@ describe('apiPreconnect', () => {
       mockFetch.mockRejectedValue(new Error('Network error'));
       // Should not throw
       expect(() =>
-        preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' }),
+        preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' }),
       ).not.toThrow();
     });
 
@@ -310,7 +271,7 @@ describe('apiPreconnect', () => {
       mockFetch.mockRejectedValue(
         new Error('connect ECONNREFUSED token@proxy.local:8080'),
       );
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://token@proxy.local:8080',
       });
 
@@ -329,7 +290,7 @@ describe('apiPreconnect', () => {
         throw new Error('Failed to create dispatcher');
       });
       expect(() =>
-        preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' }),
+        preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' }),
       ).not.toThrow();
     });
 
@@ -338,7 +299,7 @@ describe('apiPreconnect', () => {
         throw new Error('connect ECONNREFUSED user:pass@proxy.local:8080');
       });
 
-      preconnectApi('qwen-oauth', {
+      preconnectApi('openai', {
         proxy: 'http://user:pass@proxy.local:8080',
       });
 
@@ -354,13 +315,13 @@ describe('apiPreconnect', () => {
 
     it('should skip when QWEN_CODE_DISABLE_PRECONNECT is set', () => {
       process.env['QWEN_CODE_DISABLE_PRECONNECT'] = '1';
-      preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' });
+      preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' });
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('should skip in sandbox mode', () => {
       process.env['SANDBOX'] = '1';
-      preconnectApi('qwen-oauth', { proxy: 'http://proxy.example.com:8080' });
+      preconnectApi('openai', { proxy: 'http://proxy.example.com:8080' });
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });

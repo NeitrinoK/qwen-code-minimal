@@ -5,7 +5,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { normalizeProxyUrl } from './proxyUtils.js';
+import { EnvHttpProxyAgent, Agent } from 'undici';
+import {
+  normalizeProxyUrl,
+  parseNoProxy,
+  createHttpDispatcher,
+} from './proxyUtils.js';
 
 describe('normalizeProxyUrl', () => {
   it('should return undefined for undefined input', () => {
@@ -147,5 +152,51 @@ describe('normalizeProxyUrl', () => {
     expect(normalizeProxyUrl('http://socks5h.example.com:1080')).toBe(
       'http://socks5h.example.com:1080',
     );
+  });
+});
+
+describe('parseNoProxy', () => {
+  it('returns an empty list for empty input', () => {
+    expect(parseNoProxy(undefined)).toEqual([]);
+    expect(parseNoProxy('')).toEqual([]);
+    expect(parseNoProxy([])).toEqual([]);
+  });
+
+  it('splits on commas, semicolons, and whitespace', () => {
+    expect(
+      parseNoProxy('hub.example.com, git.example.com;portal.x  .internal'),
+    ).toEqual(['hub.example.com', 'git.example.com', 'portal.x', '.internal']);
+  });
+
+  it('accepts an array and normalizes case / whitespace', () => {
+    expect(parseNoProxy([' HUB.example.com ', '', 'Git.Example.Com'])).toEqual([
+      'hub.example.com',
+      'git.example.com',
+    ]);
+  });
+});
+
+describe('createHttpDispatcher', () => {
+  it('returns undefined when there is no proxy and no extra CA certs', () => {
+    expect(createHttpDispatcher({})).toBeUndefined();
+    expect(
+      createHttpDispatcher({ noProxy: ['hub.example.com'] }),
+    ).toBeUndefined();
+  });
+
+  it('returns an EnvHttpProxyAgent when a proxy is configured', () => {
+    const d = createHttpDispatcher({
+      proxyUrl: '127.0.0.1:3128',
+      noProxy: ['hub.example.com'],
+    });
+    expect(d).toBeInstanceOf(EnvHttpProxyAgent);
+  });
+
+  it('returns a plain Agent when only extra CA certs are configured', () => {
+    const d = createHttpDispatcher({
+      caCertificates: ['/no/such/cert.pem'],
+    });
+    expect(d).toBeInstanceOf(Agent);
+    expect(d).not.toBeInstanceOf(EnvHttpProxyAgent);
   });
 });

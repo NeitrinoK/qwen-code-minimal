@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 
 /**
  * Stateful fake of the real LlmClient's single swap-slot contract (see
@@ -23,7 +23,14 @@ import { vi } from 'vitest';
  * ran; assert the call counts and the commit-vs-abort choice instead
  * (#9844 review).
  */
-export function makeSwapSlotClient() {
+export interface SwapSlotClient {
+  initialize: Mock<() => Promise<void>>;
+  beginTelemetrySwap: Mock<() => boolean>;
+  commitTelemetrySwap: Mock<() => void>;
+  abortTelemetrySwap: Mock<() => boolean>;
+}
+
+export function makeSwapSlotClient(): SwapSlotClient {
   let open = false;
   return {
     initialize: vi.fn().mockResolvedValue(undefined),
@@ -42,5 +49,3 @@ export function makeSwapSlotClient() {
     }),
   };
 }
-
-export type SwapSlotClient = ReturnType<typeof makeSwapSlotClient>;

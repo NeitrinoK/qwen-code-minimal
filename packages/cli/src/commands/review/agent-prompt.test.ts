@@ -2947,7 +2947,9 @@ describe('buildRoleBrief — every agent, not just the territory ones', () => {
       const head = "export default { examples: 'New' };\n";
       const beforePath = JSON.stringify(`a/${path}`);
       const afterPath = JSON.stringify(`b/${path}`);
-      const patch = createTwoFilesPatch(beforePath, afterPath, base, head);
+      // diff@9 quotes the header names itself, so hand it the bare paths;
+      // pre-quoted names would come back double-quoted.
+      const patch = createTwoFilesPatch(`a/${path}`, `b/${path}`, base, head);
       const diff = `diff --git ${beforePath} ${afterPath}\nindex aaaaaaa..bbbbbbb 100644\n${patch.slice(patch.indexOf('---'))}`;
       const eligible = isStaticDocsNavDiff(diff, (side) =>
         side === 'base' ? base : head,

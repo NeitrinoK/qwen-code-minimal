@@ -39,17 +39,7 @@ describe('auth command', () => {
     expect(notice).toContain('qwen auth has been removed');
     expect(notice).toContain('/auth');
     expect(notice).toContain('/doctor');
-    expect(notice).toContain('BAILIAN_CODING_PLAN_API_KEY');
-    expect(notice).toContain('https://coding.dashscope.aliyuncs.com/v1');
-    expect(notice).toContain('https://coding-intl.dashscope.aliyuncs.com/v1');
-    expect(notice).toContain('BAILIAN_TOKEN_PLAN_API_KEY');
-    expect(notice).toContain(
-      'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
-    );
-    expect(notice).toContain(
-      'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
-    );
-    expect(notice).toContain('OPENROUTER_API_KEY');
+    expect(notice).toContain('OPENAI_API_KEY');
     expect(notice).not.toContain('\x1b[');
     expect(notice).not.toContain('v0.15.8');
   });
@@ -81,7 +71,6 @@ describe('auth command', () => {
     ['auth api-key'],
     ['auth qwen-oauth'],
     ['auth openrouter --key test-key'],
-    ['auth coding-plan --region china --key sk-sp-test'],
     ['auth --key test-key'],
   ])('routes `%s` to the removal notice', async (command) => {
     const exit = vi

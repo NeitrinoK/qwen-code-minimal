@@ -295,19 +295,6 @@ describe('modelConfigUtils', () => {
       expect(getAuthTypeFromEnv()).toBe(AuthType.USE_OPENAI);
     });
 
-    it('uses an injected env instead of process.env when provided', () => {
-      process.env['OPENAI_API_KEY'] = 'process-key';
-      process.env['OPENAI_MODEL'] = 'process-model';
-      process.env['OPENAI_BASE_URL'] = 'https://process.example';
-
-      expect(
-        getAuthTypeFromEnv({
-          GEMINI_API_KEY: 'runtime-key',
-          GEMINI_MODEL: 'runtime-model',
-        }),
-      ).toBe(AuthType.USE_GEMINI);
-    });
-
     it('should return USE_OPENAI when the model is given via QWEN_MODEL', () => {
       // QWEN_MODEL is a valid USE_OPENAI model var (see AUTH_ENV_MODEL_VARS),
       // so a config that sets it instead of OPENAI_MODEL must still resolve.
@@ -325,109 +312,6 @@ describe('modelConfigUtils', () => {
       // Missing OPENAI_BASE_URL
 
       expect(getAuthTypeFromEnv()).toBeUndefined();
-    });
-
-    it('should return QWEN_OAUTH when QWEN_OAUTH is set', () => {
-      process.env['QWEN_OAUTH'] = 'true';
-
-      expect(getAuthTypeFromEnv()).toBe(AuthType.QWEN_OAUTH);
-    });
-
-    it('should return USE_GEMINI when Gemini env vars are set', () => {
-      process.env['GEMINI_API_KEY'] = 'test-key';
-      process.env['GEMINI_MODEL'] = 'gemini-pro';
-
-      expect(getAuthTypeFromEnv()).toBe(AuthType.USE_GEMINI);
-    });
-
-    it('should return undefined when Gemini env vars are incomplete', () => {
-      process.env['GEMINI_API_KEY'] = 'test-key';
-      // Missing GEMINI_MODEL
-
-      expect(getAuthTypeFromEnv()).toBeUndefined();
-    });
-
-    it('should return USE_VERTEX_AI when Google env vars are set', () => {
-      process.env['GOOGLE_API_KEY'] = 'test-key';
-      process.env['GOOGLE_MODEL'] = 'vertex-model';
-
-      expect(getAuthTypeFromEnv()).toBe(AuthType.USE_VERTEX_AI);
-    });
-
-    it('should return USE_VERTEX_AI for keyless Vertex AI env vars', () => {
-      expect(
-        getAuthTypeFromEnv({
-          GOOGLE_CLOUD_PROJECT: 'test-project',
-          GOOGLE_MODEL: 'vertex-model',
-        }),
-      ).toBe(AuthType.USE_VERTEX_AI);
-    });
-
-    it('should preserve keyed Vertex AI precedence', () => {
-      expect(
-        getAuthTypeFromEnv({
-          GOOGLE_API_KEY: 'test-key',
-          GOOGLE_CLOUD_PROJECT: 'test-project',
-          GOOGLE_MODEL: 'vertex-model',
-        }),
-      ).toBe(AuthType.USE_VERTEX_AI);
-    });
-
-    it('should not infer keyless Vertex AI without a model', () => {
-      expect(
-        getAuthTypeFromEnv({ GOOGLE_CLOUD_PROJECT: 'test-project' }),
-      ).toBeUndefined();
-    });
-
-    it('should not infer keyless Vertex AI without a project', () => {
-      expect(
-        getAuthTypeFromEnv({ GOOGLE_MODEL: 'vertex-model' }),
-      ).toBeUndefined();
-    });
-
-    it('should prefer keyless Vertex AI over a complete Anthropic env', () => {
-      expect(
-        getAuthTypeFromEnv({
-          GOOGLE_CLOUD_PROJECT: 'test-project',
-          GOOGLE_MODEL: 'vertex-model',
-          ANTHROPIC_API_KEY: 'test-key',
-          ANTHROPIC_MODEL: 'anthropic-model',
-          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
-        }),
-      ).toBe(AuthType.USE_VERTEX_AI);
-    });
-
-    it('should return undefined when Google env vars are incomplete', () => {
-      process.env['GOOGLE_API_KEY'] = 'test-key';
-      // Missing GOOGLE_MODEL
-
-      expect(getAuthTypeFromEnv()).toBeUndefined();
-    });
-
-    it('should return USE_ANTHROPIC when Anthropic env vars are set', () => {
-      process.env['ANTHROPIC_API_KEY'] = 'test-key';
-      process.env['ANTHROPIC_MODEL'] = 'claude-3';
-      process.env['ANTHROPIC_BASE_URL'] = 'https://api.anthropic.com';
-
-      expect(getAuthTypeFromEnv()).toBe(AuthType.USE_ANTHROPIC);
-    });
-
-    it('should return undefined when Anthropic env vars are incomplete', () => {
-      process.env['ANTHROPIC_API_KEY'] = 'test-key';
-      process.env['ANTHROPIC_MODEL'] = 'claude-3';
-      // Missing ANTHROPIC_BASE_URL
-
-      expect(getAuthTypeFromEnv()).toBeUndefined();
-    });
-
-    it('should prioritize QWEN_OAUTH over other auth types when explicitly set', () => {
-      process.env['QWEN_OAUTH'] = 'true';
-      process.env['OPENAI_API_KEY'] = 'test-key';
-      process.env['OPENAI_MODEL'] = 'gpt-4';
-      process.env['OPENAI_BASE_URL'] = 'https://api.openai.com';
-
-      // QWEN_OAUTH is checked first, so it should be returned even when other auth vars are set
-      expect(getAuthTypeFromEnv()).toBe(AuthType.QWEN_OAUTH);
     });
 
     it('should return undefined when no auth env vars are set', () => {
@@ -836,38 +720,6 @@ describe('modelConfigUtils', () => {
       );
     });
 
-    it('warns when a custom provider maps to qwen-oauth', () => {
-      const settings = makeMockSettings({
-        model: { name: 'some-model' },
-        modelProviders: {
-          idealab: [{ id: 'qwen3.7-max' }],
-        } as unknown as Settings['modelProviders'],
-        providerProtocol: {
-          idealab: AuthType.QWEN_OAUTH,
-        } as unknown as Settings['providerProtocol'],
-      });
-
-      vi.mocked(resolveModelConfig).mockReturnValue({
-        config: { model: 'some-model', apiKey: '', baseUrl: '' },
-        sources: {},
-        warnings: [],
-      });
-
-      const result = resolveCliGenerationConfig({
-        argv: {},
-        settings,
-        selectedAuthType: AuthType.USE_OPENAI,
-      });
-
-      expect(result.warnings).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining(
-            'modelProviders provider "idealab" maps to "qwen-oauth"',
-          ),
-        ]),
-      );
-    });
-
     it('should find modelProvider from settings.model.name when argv.model is not provided', () => {
       const argv = {};
       const modelProvider: ProviderModelConfig = {
@@ -942,7 +794,7 @@ describe('modelConfigUtils', () => {
           },
         });
 
-        const result = resolveCliGenerationConfig({
+        resolveCliGenerationConfig({
           argv: {},
           settings,
           selectedAuthType: AuthType.USE_OPENAI,
@@ -954,7 +806,6 @@ describe('modelConfigUtils', () => {
         expect(vi.mocked(resolveModelConfig)).toHaveBeenCalledWith(
           expect.objectContaining({ modelProvider: ideaLab }),
         );
-        expect(result.registryBaseUrl).toBe(ideaLab.baseUrl);
       });
 
       it('falls back to the first id match when no baseUrl is persisted (backward compat)', () => {
@@ -1871,8 +1722,8 @@ describe('modelConfigUtils', () => {
       );
     });
 
-    // Edge Case 4: Non-OpenAI auth should ignore OPENAI_MODEL
-    it('Edge Case 4: non-OpenAI auth should ignore OPENAI_MODEL', () => {
+    // Edge Case 4: settings.model.name wins over OPENAI_MODEL
+    it('Edge Case 4: settings.model.name should win over OPENAI_MODEL', () => {
       const argv = {};
       const settingsProvider: ProviderModelConfig = {
         id: 'settings-model',
@@ -1881,10 +1732,10 @@ describe('modelConfigUtils', () => {
       const settings = makeMockSettings({
         model: { name: 'settings-model' },
         modelProviders: {
-          [AuthType.USE_ANTHROPIC]: [settingsProvider],
+          [AuthType.USE_OPENAI]: [settingsProvider],
         },
       });
-      const selectedAuthType = AuthType.USE_ANTHROPIC;
+      const selectedAuthType = AuthType.USE_OPENAI;
 
       vi.mocked(resolveModelConfig).mockReturnValue({
         config: { model: 'settings-model', apiKey: '', baseUrl: '' },
@@ -2099,41 +1950,6 @@ describe('modelConfigUtils', () => {
         // QWEN_MODEL should be passed to resolveModelConfig
         const callArgs = vi.mocked(resolveModelConfig).mock.calls[0][0];
         expect(callArgs.env?.['QWEN_MODEL']).toBe('qwen-model');
-      });
-
-      it('[Regression] Non-OpenAI auth ignores OPENAI_MODEL', () => {
-        const argv = {};
-        const settings = makeMockSettings();
-        const selectedAuthType = AuthType.USE_ANTHROPIC;
-        const env = {
-          OPENAI_MODEL: 'should-be-ignored',
-          ANTHROPIC_API_KEY: 'key',
-          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
-        };
-
-        vi.mocked(resolveModelConfig).mockImplementation(() => ({
-          config: {
-            model: 'claude-3',
-            apiKey: 'key',
-            baseUrl: 'https://api.anthropic.com',
-          },
-          sources: {
-            model: { kind: 'env' as const, envKey: 'ANTHROPIC_MODEL' },
-          },
-          warnings: [],
-        }));
-
-        const result = resolveCliGenerationConfig({
-          argv,
-          settings,
-          selectedAuthType,
-          env,
-        });
-
-        // For non-OpenAI auth, OPENAI_MODEL should not be in the model resolution
-        expect(result.model).toBe('claude-3');
-        const callArgs = vi.mocked(resolveModelConfig).mock.calls[0][0];
-        expect(callArgs.env?.['OPENAI_MODEL']).toBeUndefined();
       });
     });
   });

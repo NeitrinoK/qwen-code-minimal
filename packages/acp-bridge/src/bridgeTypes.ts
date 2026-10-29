@@ -1002,8 +1002,6 @@ export interface BridgeWorkspaceMemoryDreamResult {
 }
 
 /**
- * Wire-format mirror of `DaemonPendingInteraction*` in
- * `packages/sdk-typescript/src/daemon/types.ts`; keep fields synchronized.
  * Pending interaction details are exposed by live session status endpoints.
  */
 export interface BridgePendingInteractionOption {
@@ -1419,12 +1417,11 @@ export const DAEMON_SUBMITTED_PROMPT_META_KEY = 'qwen.daemon.submittedPrompt';
 export const DAEMON_PROMPT_DISPLAY_TEXT_META_KEY =
   'qwen.daemon.promptDisplayText';
 export const IMAGE_ONLY_PROMPT_TEXT = '[image]';
-// Bare (unprefixed) key by contract: the SDK wire type
-// (`sdk-typescript/src/daemon/ui/types.ts`) and already-written transcripts
-// pin the value, so it must stay `inputAnnotations`.
+// Bare (unprefixed) key by contract: already-written transcripts pin the
+// value, so it must stay `inputAnnotations`.
 export const DAEMON_INPUT_ANNOTATIONS_META_KEY = 'inputAnnotations';
-// Wire twin of channel-base's CHANNEL_PROMPT_META_KEY; the packages have no
-// dependency path between them, so a cross-package test pins the value.
+// Prompt meta keys for channel-originated turns; the wire values are pinned
+// by already-written transcripts and must not change.
 export const CHANNEL_PROMPT_META_KEY = 'qwen.channel.prompt';
 export const CHANNEL_OUTPUT_MODE_META_KEY = 'qwen.channel.outputMode';
 

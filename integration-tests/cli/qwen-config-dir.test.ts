@@ -8,15 +8,20 @@
  * E2E integration tests for the QWEN_HOME environment variable.
  *
  * These tests verify that when QWEN_HOME is set, all global config files
- * (installation_id, settings.json, memory.md, etc.) are routed to the
- * custom directory instead of ~/.qwen/.
+ * (extensions/extension-enablement.json, settings.json, memory.md, etc.) are
+ * routed to the custom directory instead of ~/.qwen/.
  *
  * Based on the test plan at:
  *   .claude/docs/PLAN-qwen-config-dir-e2e-tests.md
  *
  * NOTE: Most tests require a full prompt run (config.initialize() must run to
- * write installation_id). Only scenario 2b can use --help because settings
- * migration runs before arg parsing.
+ * write the global config marker). Only scenario 2b can use --help because
+ * settings migration runs before arg parsing.
+ *
+ * The marker is `extensions/extension-enablement.json`, which
+ * config.initialize() writes into the global config dir even without a model.
+ * Upstream checks `installation_id` instead, but only its telemetry logger
+ * writes that file, and this fork removed telemetry.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -41,6 +46,9 @@ const CURRENT_SETTINGS_VERSION = 4;
 
 // The fake server is reached over loopback, so a runner-level proxy must not
 // be allowed to intercept it.
+/** A file config.initialize() always creates in the global config dir. */
+const GLOBAL_CONFIG_MARKER = join('extensions', 'extension-enablement.json');
+
 const NO_PROXY = IS_CONTAINER_SANDBOX
   ? CONTAINER_SANDBOX_NO_PROXY
   : '127.0.0.1,localhost';
@@ -85,11 +93,10 @@ describe('QWEN_HOME environment variable', () => {
     /**
      * 1a. CLI uses custom config dir for settings and initialization.
      *
-     * A full prompt run is required because installation_id is only written
-     * during config.initialize() → logStartSession() → getInstallationId().
-     * --help exits before that point.
+     * A full prompt run is required because the global config marker is only
+     * written during config.initialize(); --help exits before that point.
      */
-    it('1a: installation_id is written inside QWEN_HOME, not ~/.qwen', async () => {
+    it('1a: global config is written inside QWEN_HOME, not ~/.qwen', async () => {
       await rig.setup('qwen-home-1a-installation-id');
 
       customConfigDir = join(rig.testDir!, 'custom-config');
@@ -101,13 +108,13 @@ describe('QWEN_HOME environment variable', () => {
         await rig.run('say hello');
       } catch {
         // May fail without a valid API key; that is acceptable — we only
-        // need config.initialize() to run far enough to create installation_id
+        // need config.initialize() to run far enough to create the marker
       }
 
-      const installationIdPath = join(customConfigDir, 'installation_id');
+      const markerPath = join(customConfigDir, GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(installationIdPath),
-        `Expected installation_id at ${installationIdPath}`,
+        existsSync(markerPath),
+        `Expected the global config marker at ${markerPath}`,
       ).toBe(true);
     });
 
@@ -135,11 +142,11 @@ describe('QWEN_HOME environment variable', () => {
         `Expected ${customConfigDir} to be created`,
       ).toBe(true);
 
-      // installation_id signals that config.initialize() ran inside it
-      const installationIdPath = join(customConfigDir, 'installation_id');
+      // The marker signals that config.initialize() ran inside it
+      const markerPath = join(customConfigDir, GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(installationIdPath),
-        `Expected installation_id inside newly created dir`,
+        existsSync(markerPath),
+        `Expected the global config marker inside the newly created dir`,
       ).toBe(true);
     });
 
@@ -164,10 +171,10 @@ describe('QWEN_HOME environment variable', () => {
 
       // Resolve the expected absolute path the same way the subprocess does
       const expectedAbsPath = resolve(rig.testDir!, 'custom-qwen');
-      const installationIdPath = join(expectedAbsPath, 'installation_id');
+      const markerPath = join(expectedAbsPath, GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(installationIdPath),
-        `Expected installation_id at resolved path ${installationIdPath}`,
+        existsSync(markerPath),
+        `Expected the global config marker at resolved path ${markerPath}`,
       ).toBe(true);
     });
 
@@ -231,10 +238,10 @@ describe('QWEN_HOME environment variable', () => {
 
       // The default global dir must have materialized under the redirected
       // HOME rather than the real one.
-      const installationIdPath = join(homeDir, '.qwen', 'installation_id');
+      const markerPath = join(homeDir, '.qwen', GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(installationIdPath),
-        `Expected the default global dir at ${installationIdPath}`,
+        existsSync(markerPath),
+        `Expected the default global dir at ${markerPath}`,
       ).toBe(true);
     });
   });
@@ -385,7 +392,7 @@ describe('QWEN_HOME environment variable', () => {
     /**
      * 4a. QWEN_HOME and QWEN_RUNTIME_DIR can be set independently.
      *
-     * Config files (installation_id) go to QWEN_HOME.
+     * Config files (the extension enablement file) go to QWEN_HOME.
      * Runtime files (debug logs) go to QWEN_RUNTIME_DIR.
      */
     it('4a: config files land in QWEN_HOME and runtime files land in QWEN_RUNTIME_DIR', async () => {
@@ -407,10 +414,10 @@ describe('QWEN_HOME environment variable', () => {
       }
 
       // Config file must be inside QWEN_HOME
-      const installationIdPath = join(customConfigDir, 'installation_id');
+      const markerPath = join(customConfigDir, GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(installationIdPath),
-        `Expected installation_id in QWEN_HOME at ${installationIdPath}`,
+        existsSync(markerPath),
+        `Expected the global config marker in QWEN_HOME at ${markerPath}`,
       ).toBe(true);
 
       // Debug logs must be inside QWEN_RUNTIME_DIR (under debug/)
@@ -421,11 +428,11 @@ describe('QWEN_HOME environment variable', () => {
         `Expected debug log files in ${debugDir}`,
       ).toBeGreaterThan(0);
 
-      // installation_id must NOT appear in the runtime dir
-      const runtimeInstallationId = join(runtimeDir, 'installation_id');
+      // Global config must NOT appear in the runtime dir
+      const runtimeMarker = join(runtimeDir, GLOBAL_CONFIG_MARKER);
       expect(
-        existsSync(runtimeInstallationId),
-        `Did NOT expect installation_id inside QWEN_RUNTIME_DIR`,
+        existsSync(runtimeMarker),
+        `Did NOT expect the global config marker inside QWEN_RUNTIME_DIR`,
       ).toBe(false);
     });
   });

@@ -174,3 +174,22 @@ export function scanForSecrets(content: string): SecretMatch[] {
   }
   return matches;
 }
+
+/**
+ * Replace every occurrence matched by any secret rule with `[REDACTED]`.
+ * Reuses the same compiled rule set as {@link scanForSecrets}, so the two
+ * never drift. Global-flag safe: each rule is applied via a fresh RegExp
+ * (with the `g` flag added if absent), so the shared `rule.re` lastIndex is
+ * never mutated.
+ */
+export function redactSecrets(content: string): string {
+  let out = content;
+  for (const rule of getCompiledRules()) {
+    const g = new RegExp(
+      rule.re.source,
+      rule.re.flags.includes('g') ? rule.re.flags : rule.re.flags + 'g',
+    );
+    out = out.replace(g, '[REDACTED]');
+  }
+  return out;
+}

@@ -47,10 +47,6 @@ const APPROVAL_MODE_DESCRIPTIONS: Record<`${ApprovalMode}`, string> = {
 const AUTH_TYPE_CHOICES = [
   'openai',
   'openai-responses',
-  'anthropic',
-  'qwen-oauth',
-  'gemini',
-  'vertex-ai',
 ] as const satisfies ReadonlyArray<`${CoreAuthType}`>;
 
 // AuthType drift witness (the choices array's `satisfies` check only
@@ -60,10 +56,6 @@ const AUTH_TYPE_CHOICES = [
 export const AUTH_TYPE_PARITY_WITNESS: Record<`${CoreAuthType}`, true> = {
   openai: true,
   'openai-responses': true,
-  anthropic: true,
-  'qwen-oauth': true,
-  gemini: true,
-  'vertex-ai': true,
 };
 
 /** Usage banner shared by both help builders, kept here with the options. */
@@ -88,37 +80,6 @@ export const QUERY_POSITIONAL = {
 } as const satisfies PositionalOptions;
 
 export const TOP_LEVEL_GLOBAL_OPTIONS = {
-  telemetry: {
-    type: 'boolean' as const,
-    description:
-      'Enable telemetry? This flag specifically controls if telemetry is sent. Other --telemetry-* flags set specific values but do not enable telemetry on their own.',
-  },
-  'telemetry-target': {
-    type: 'string' as const,
-    choices: ['local', 'gcp'] as const,
-    description:
-      'Set the telemetry target (local or gcp). Overrides settings files.',
-  },
-  'telemetry-otlp-endpoint': {
-    type: 'string' as const,
-    description:
-      'Set the OTLP endpoint for telemetry. Overrides environment variables and settings files.',
-  },
-  'telemetry-otlp-protocol': {
-    type: 'string' as const,
-    choices: ['grpc', 'http'] as const,
-    description:
-      'Set the OTLP protocol for telemetry (grpc or http). Overrides settings files.',
-  },
-  'telemetry-log-prompts': {
-    type: 'boolean' as const,
-    description:
-      'Enable or disable logging of user prompts for telemetry. Overrides settings files.',
-  },
-  'telemetry-outfile': {
-    type: 'string' as const,
-    description: 'Redirect all telemetry output to the specified file.',
-  },
   debug: {
     alias: 'd',
     type: 'boolean' as const,
@@ -154,18 +115,6 @@ export const TOP_LEVEL_GLOBAL_OPTIONS = {
 } as const satisfies Record<string, Options>;
 
 export const TOP_LEVEL_DEPRECATED_OPTIONS = {
-  telemetry:
-    'Use the "telemetry.enabled" setting in settings.json instead. This flag will be removed in a future version.',
-  'telemetry-target':
-    'Use the "telemetry.target" setting in settings.json instead. This flag will be removed in a future version.',
-  'telemetry-otlp-endpoint':
-    'Use the "telemetry.otlpEndpoint" setting in settings.json instead. This flag will be removed in a future version.',
-  'telemetry-otlp-protocol':
-    'Use the "telemetry.otlpProtocol" setting in settings.json instead. This flag will be removed in a future version.',
-  'telemetry-log-prompts':
-    'Use the "telemetry.logPrompts" setting in settings.json instead. This flag will be removed in a future version.',
-  'telemetry-outfile':
-    'Use the "telemetry.outfile" setting in settings.json instead. This flag will be removed in a future version.',
   proxy:
     'Use the "proxy" setting in settings.json instead. This flag will be removed in a future version.',
   'sandbox-image':

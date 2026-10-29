@@ -5,7 +5,6 @@
  */
 
 import { Box, Text } from 'ink';
-import { IdeIntegrationNudge } from '../IdeIntegrationNudge.js';
 import { CommandFormatMigrationNudge } from '../CommandFormatMigrationNudge.js';
 import { LoopDetectionConfirmation } from './LoopDetectionConfirmation.js';
 import { FolderTrustDialog } from './FolderTrustDialog.js';
@@ -14,11 +13,9 @@ import { ShellConfirmationDialog } from './ShellConfirmationDialog.js';
 import { ConsentPrompt } from './ConsentPrompt.js';
 import { ProviderUpdatePrompt } from './ProviderUpdatePrompt.js';
 import { SettingInputPrompt } from './SettingInputPrompt.js';
-import { PluginChoicePrompt } from './PluginChoicePrompt.js';
 import { ThemeDialog } from './ThemeDialog.js';
 import { SettingsDialog } from './SettingsDialog.js';
 import { StatusLineDialog } from './StatusLineDialog.js';
-import { QwenOAuthProgress } from './QwenOAuthProgress.js';
 import { ExternalAuthProgress } from './ExternalAuthProgress.js';
 import { AuthDialog } from '../auth/AuthDialog.js';
 import { EditorSettingsDialog } from './EditorSettingsDialog.js';
@@ -41,7 +38,6 @@ import { AuthState } from '../types.js';
 import { AuthType } from '@qwen-code/qwen-code-core';
 import process from 'node:process';
 import { type UseHistoryManagerReturn } from '../hooks/useHistoryManager.js';
-import { IdeTrustChangeDialog } from './IdeTrustChangeDialog.js';
 import { WelcomeBackDialog } from './WelcomeBackDialog.js';
 import { WorktreeExitDialog } from './WorktreeExitDialog.js';
 import { AgentCreationWizard } from './subagents/create/AgentCreationWizard.js';
@@ -106,17 +102,6 @@ export const DialogManager = ({
         onKeep={() => void uiActions.handleWorktreeExit('keep')}
         onRemove={() => void uiActions.handleWorktreeExit('remove')}
         onCancel={() => void uiActions.handleWorktreeExit('cancel')}
-      />
-    );
-  }
-  if (uiState.showIdeRestartPrompt) {
-    return <IdeTrustChangeDialog reason={uiState.ideTrustRestartReason} />;
-  }
-  if (uiState.shouldShowIdePrompt) {
-    return (
-      <IdeIntegrationNudge
-        ide={uiState.currentIDE!}
-        onComplete={uiActions.handleIdePromptComplete}
       />
     );
   }
@@ -217,22 +202,6 @@ export const DialogManager = ({
       />
     );
   }
-  if (
-    uiState.pluginChoiceRequests.length > 0 &&
-    !uiState.isExtensionsManagerDialogOpen
-  ) {
-    const request = uiState.pluginChoiceRequests[0];
-    return (
-      <PluginChoicePrompt
-        key={request.marketplaceName}
-        marketplaceName={request.marketplaceName}
-        plugins={request.plugins}
-        onSelect={request.onSelect}
-        onCancel={request.onCancel}
-        terminalWidth={terminalWidth}
-      />
-    );
-  }
   if (uiState.isThemeDialogOpen) {
     return (
       <Box flexDirection="column">
@@ -273,7 +242,6 @@ export const DialogManager = ({
         onClose={uiActions.closeModelDialog}
         isFastModelMode={uiState.isFastModelMode}
         isAdvisorModelMode={uiState.isAdvisorModelMode}
-        isVoiceModelMode={uiState.isVoiceModelMode}
         isVisionModelMode={uiState.isVisionModelMode}
         isCompactionModelMode={uiState.isCompactionModelMode}
         isImageModelMode={uiState.isImageModelMode}
@@ -446,26 +414,7 @@ export const DialogManager = ({
       );
     }
 
-    // OpenAI authentication now handled through AuthDialog with coding-plan/custom sub-modes
-    // Qwen OAuth remains as a separate flow
-    if (uiState.auth.pendingAuthType === AuthType.QWEN_OAUTH) {
-      return (
-        <QwenOAuthProgress
-          deviceAuth={uiState.auth.qwenAuthState.deviceAuth || undefined}
-          authStatus={uiState.auth.qwenAuthState.authStatus}
-          authMessage={uiState.auth.qwenAuthState.authMessage}
-          onTimeout={() => {
-            uiActions.auth.onAuthError('Qwen OAuth authentication timed out.');
-            uiActions.auth.cancelAuthentication();
-            uiActions.auth.setAuthState(AuthState.Updating);
-          }}
-          onCancel={() => {
-            uiActions.auth.cancelAuthentication();
-            uiActions.auth.setAuthState(AuthState.Updating);
-          }}
-        />
-      );
-    }
+    // OpenAI authentication now handled through AuthDialog with provider/custom sub-modes
   }
   if (uiState.isTrustDialogOpen) {
     return (

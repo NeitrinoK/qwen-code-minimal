@@ -30,12 +30,14 @@ vi.mock('./oauth-token-storage.js', () => {
   const mockdeleteCredentials = vi.fn();
 
   return {
-    MCPOAuthTokenStorage: vi.fn(() => ({
-      saveToken: mockSaveToken,
-      getCredentials: mockGetCredentials,
-      isTokenExpired: mockIsTokenExpired,
-      deleteCredentials: mockdeleteCredentials,
-    })),
+    MCPOAuthTokenStorage: vi.fn(function () {
+      return {
+        saveToken: mockSaveToken,
+        getCredentials: mockGetCredentials,
+        isTokenExpired: mockIsTokenExpired,
+        deleteCredentials: mockdeleteCredentials,
+      };
+    }),
   };
 });
 

@@ -51,7 +51,6 @@ export const EVENT_SUBAGENT_EXECUTION = 'qwen-code.subagent_execution';
 export const EVENT_GOAL_STATE = 'qwen-code.goal_state';
 export const EVENT_SKILL_LAUNCH = 'qwen-code.skill_launch';
 export const EVENT_AUTH = 'qwen-code.auth';
-export const EVENT_USER_FEEDBACK = 'qwen-code.user_feedback';
 export const EVENT_TOOL_OUTPUT_TRUNCATED = 'qwen-code.tool_output_truncated';
 
 export const DEFAULT_SENSITIVE_SPAN_ATTRIBUTE_MAX_LENGTH = 1024 * 1024;

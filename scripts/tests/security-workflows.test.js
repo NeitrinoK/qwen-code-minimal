@@ -78,7 +78,6 @@ describe('security workflows', () => {
       'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e',
     );
     expect(dependencyCheckoutStep).toContain('persist-credentials: false');
-    // pnpm audit reads pnpm-lock.yaml, so the root tree is never installed.
     expect(dependencyJob).not.toContain("- name: 'Install dependencies'");
     // And the root package-lock.json is retired, so an npm cache here would
     // key off a file that no longer exists and fail the step — on a job no
@@ -105,7 +104,7 @@ describe('security workflows', () => {
     expect(auditStep).toContain('audit endpoint returned an error');
     expect(auditStep).toContain('ERR_PNPM_AUDIT_BAD_RESPONSE');
     expect(auditStep).toContain(
-      'audit corepack pnpm audit --prod --audit-level high || status=$?',
+      'audit npm audit --omit=dev --audit-level high || status=$?',
     );
     expect(auditStep).toContain(
       'audit npm audit --omit=dev --audit-level=high --workspaces=false',

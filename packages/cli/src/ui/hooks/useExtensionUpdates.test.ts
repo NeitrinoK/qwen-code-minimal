@@ -26,7 +26,7 @@ import {
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { MessageType } from '../types.js';
 
-vi.mock('os', async (importOriginal) => {
+vi.mock('node:os', async (importOriginal) => {
   const mockedOs = await importOriginal<typeof os>();
   return {
     ...mockedOs,

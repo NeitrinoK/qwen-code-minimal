@@ -1,221 +1,221 @@
-# Agent Loop 减轮方案：从 Skill 设计入手
+# Reducing Agent Loop Rounds: Starting from Skill Design
 
-> 与 `rt-optimization-design.md` 同目录，互为补充：那份文档讨论**框架机制**层面减轮（D1 跳过末尾总结轮、D2 fast 路由、D4 prevalidate），这份文档主张**减轮的真正杠杆在 skill/tool 设计层**，并提出一条不依赖框架改造、不依赖 cache hit rate 数据的可实施路径。
-
----
-
-## 0. 验收 Spec（开发前置 gate）
-
-> 本节是开发的**前置 gate** — 列出哪些 spec 必须在动手前确认、哪些 spec 必须等数据驱动。把 spec 前置而非"做完再看指标"，是为了避免：(a) 写完才发现指标不可测、(b) 阈值随结果飘移导致结论失真、(c) 没设止损线让方案陷入"看起来在做、其实没收益"。
->
-> **本 spec 框架的适用边界**：本框架假设方向正确性可以在 P1.5 基线测量后判断。这个假设对"减轮"场景成立，因为它有清晰的可测信号（轮数、followup_rate、batch_size）。**超出此假设的场景**（例如未来用同一框架做"质量优化"等难以量化的方向），spec 前置可能反而阻碍快速学习；遇到时回退到 §0.5 治理流程重新评估，不机械套用本框架。
-
-**spec 分四层 — 时机不同**：
-
-| 层级 | 类型                                    | 锁定时机                         |
-| ---- | --------------------------------------- | -------------------------------- |
-| §0.1 | 工程层 spec（数据管道、代码改动正确性） | **前置**、可立刻锁定             |
-| §0.2 | 统计层 spec（项目"算成功"的指标）       | **前置**、阈值待 P1.5 基线后锁定 |
-| §0.3 | 止损线（"如果发生就放弃"硬条件）        | **前置**、不可移动               |
-| §0.4 | per-skill spec（具体改哪个、目标多少）  | **后置**、Layer 1 数据驱动       |
-
-### 0.1 工程层 spec（必须前置 · 可立刻锁定）
-
-数据管道与代码改动的正确性 spec — 不依赖任何业务判断或基线数据，开发前就该锁定：
-
-- **qwen-logger 链路通畅**（§4.1.1b）：skill_launch 事件能同时落到 OTLP 和 qwen-logger 两条管道
-- **`prompt_id` 串联**：单个 user prompt 触发的 `skill_launch` + 后续 `tool_call` 能用同一个 `prompt_id` grep 出完整 trail
-- **`batch_size` 非 undefined**（§4.3.2 方向 A）：单工具 batch 显式设 `batch_size = 1` / `batch_position = 0`
-- **SQL 可跑通**（§4.1.2）：离线 SQL 在真实 telemetry backend 输出非空且能区分高/低 followup_rate skill
-- **基线方差 < P50 × 20%**（P1.5）：基线测量稳定（否则后续 A/B 对比不可信）—— 注：本条虽列在 §0.1 工程层，但**锁定依赖 P1.5 基线数据**，是 §0.1 中唯一的后置验证项；P1.5 未通过则 §0.2 阈值无法可信锁定
-- **Skill 体积预算**（Layer 2 改造）：内联 followup 后，skill 描述 token 数不超过改造前的 2×，且绝对值 ≤ 500 tokens（取较小值）。超过则按 §4.2 拆分 skill 而非合并。本条与 §7 第 2 条、§4.2 已有约束对齐，前置到 spec 层
-- **`npm run preflight` 全过**：每个 PR 的硬门槛
-
-### 0.2 统计层 spec（必须前置 · 阈值待 P1.5 后锁定）
-
-项目算"统计意义上成功"的指标 — **方向**前置定下，**阈值**等基线测出来后锁定（避免凭空填数字）：
-
-| 指标                               | 方向     | 锁定时机  | 当前占位阈值（待校准） |
-| ---------------------------------- | -------- | --------- | ---------------------- |
-| top-3 skill 加权 `followup_rate`   | ↓        | P1.5 末   | ≥ 30%                  |
-| 含 skill 的会话端到端 RT P50       | ↓        | P1.5 末   | ≥ 2s                   |
-| `batch_size > 1` 的 tool_call 占比 | ↑        | P3 前     | ≥ 30%                  |
-| 改造的 skill 触发场景 A/B 显著性   | p < 0.05 | P2 改完前 | n 待定                 |
-
-> **关键约束**：占位阈值不是承诺。P1.5 基线如果显示"top-5 skill 加权 followup_rate < 30%"（触发 §0.3 止损线 #1），项目终止；**不能为了让阈值"达到"而下调 spec**。
->
-> **怎么测**：每个指标的测量方法、SQL 模板、A/B 设计见 §5.1-§5.2；统计显著性（p < 0.05）的样本量计算见 §5.1。
-
-### 0.3 止损线（必须前置 · P-1 锁定后受限可调）
-
-§5.3 已列。这些是"如果发生就放弃"的硬条件 — **任何情况下不能为了达成 §0.2 统计层 spec 而放宽止损线**。
-
-- **结果指标**（3 条）：top-5 加权 `followup_rate < 30%` / 改完 2 个 skill RT P50 ↓ < 1s / Layer 3 后 `batch_size P50` 仍 = 1
-- **过程指标**（3 条）：skill 命中率 ↓ ≥ 5pp / 内联 followup 失败率 ≥ 5% / 用户取消率 ↑ ≥ 2pp
-
-详见 §5.3。
-
-**可调性规则**（避免无数据支撑的纪律刚性）：
-
-| 阶段                  | 可否调整                                 | 调整方向                                                                        |
-| --------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
-| P-1 锁定时            | ✅ 任意调整（基于历史 telemetry 或共识） | 任意                                                                            |
-| P-1 锁定后 → P1.5 末  | ❌ 不可调整                              | —                                                                               |
-| P1.5 末（基线出来时） | ✅ 仅允许**放宽**一次                    | 放宽（如 30% → 25%）需附数据证据 + 2 人评审；**不允许收紧**（避免事后追加止损） |
-| P1.5 之后             | ❌ 不可调整                              | —                                                                               |
-
-> 阈值占位值（30% / 1s / 5pp 等）当前**无历史数据支撑**，是 P-1 评审前的工程师直觉。如果 P-1 评审时能拿到最近 4 周历史 telemetry，应基于历史数据校准止损线；拿不到则保留占位值，P1.5 末执行上面的"放宽一次"规则。
-
-### 0.4 per-skill spec（必须后置 · 数据驱动）
-
-具体改哪个 skill、目标 `followup_rate` 改到多少 — **Layer 1 数据出来前不锁定**。
-
-不锁定的理由：先验设计 vs 后验数据可能差很多。强行前置会重蹈 `rt-optimization-design.md` §7 D2 路线的覆辙 —— 前置假设"fast 模型快 2-3s"被 cache 实装这一后验事实推翻，导致方案净收益接近 0 甚至为负。
-
-**产出位置**：per-skill spec 在 P1.5 末由数据驱动产出，每个 Layer 2 PR 的 description 里独立声明（不进 design 文档，避免文档每改一个 skill 就改）。
-
-**per-skill spec 结构模板**（与 §4.2 的 PR description 必含项对齐 — 这两个清单是同一份，§4.2 是过程视角、本节是 spec 视角）：
-
-| 字段            | 内容                                                                                                   | 数据来源                               |
-| --------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------- |
-| 1. 当前数据     | invocation_count、followup_rate、top followup tools                                                    | Layer 1 telemetry                      |
-| 2. 目标         | followup_rate 从 X% 降到 Y%                                                                            | 基于 §0.2 改善方向，绝对值 PR 内自行定 |
-| 3. 改造范围     | 内联哪些 followup（read/grep/shell read-only），明确**不**内联什么（write 操作 / 跨 skill / 深度推理） | §4.2 改造模式表                        |
-| 4. 输出契约更新 | skill 描述里加的预声明（"Returns: ..."）                                                               | §3.2 改造示例                          |
-| 5. A/B 计划     | 改造后 2 周观察 followup_rate / RT P50 / 过程指标，对照 §5.1 验收线                                    | §5.1                                   |
-| 6. 体积证明     | 改造前后 skill 描述 token 数（用 tiktoken 估算），不得超 §0.1"Skill 体积预算"                          | §0.1 第 6 条                           |
-
-### 0.5 spec 治理
-
-- **修改 §0.1 / §0.3 spec** 需 design 文档更新 + PR 评审；§0.3 仅遵循 §0.3"可调性规则"在 P1.5 末窗口内放宽
-- **修改 §0.2 阈值（P1.5 锁定后）** 需附以下至少一项数据证据：
-  - (a) P1.5 基线测量结果与已锁定阈值的偏差分析（含原始测量记录链接）
-  - (b) 同类项目的公开 benchmark 数据（含来源链接）
-  - (c) 内部 ≥ 2 人评审签字的偏差说明
-
-  PR 评审时若上述证据均无，评审者**有义务** block PR — 不接受"凭工程师直觉调整"
-
-- **§0.4 per-skill spec** 在数据驱动产出后写入 PR description（按 §0.4 6 项模板），不进 design 文档
+> Same directory as `rt-optimization-design.md`, and complementary to it: that document discusses round reduction at the **framework mechanism** level (D1 skipping the final summary round, D2 fast routing, D4 prevalidate), whereas this document argues that **the real lever for round reduction lies at the skill/tool design layer**, and proposes an actionable path that does not depend on framework changes and does not depend on cache hit rate data.
 
 ---
 
-## 1. 背景与定位
+## 0. Acceptance Spec (pre-development gate)
 
-### 1.1 问题
+> This section is the **pre-development gate** — it lists which specs must be confirmed before starting work, and which specs must wait to be data-driven. Putting specs up front rather than "measuring metrics after the work is done" is meant to avoid: (a) discovering after writing the code that a metric is unmeasurable, (b) thresholds drifting with results and distorting conclusions, (c) leaving no stop-loss line so the project gets stuck in "looks like it's making progress, but actually produces no gain".
+>
+> **Applicability boundary of this spec framework**: this framework assumes that the correctness of the direction can be judged after the P1.5 baseline measurement. This assumption holds for the "round reduction" scenario, because it has clear measurable signals (round count, followup_rate, batch_size). **Scenarios outside this assumption** (for example, future use of the same framework for a hard-to-quantify direction like "quality optimization") may have spec-front-loading actually hinder fast learning; when you hit such a case, fall back to the §0.5 governance process to re-evaluate, and do not mechanically apply this framework.
 
-`rt-optimization-design.md` §1.2 给出的基线：3 轮 agent loop，13.4s 端到端，其中 LLM 调用占 78%。每一轮 ~3-4s。
+**Specs fall into four layers — with different timing**:
+
+| Layer | Type                                                            | Locking timing                                                 |
+| ----- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+| §0.1  | Engineering-layer spec (data pipeline, code-change correctness) | **Pre-development**, can be locked immediately                 |
+| §0.2  | Statistical-layer spec (the project's "success" metrics)        | **Pre-development**, thresholds locked after the P1.5 baseline |
+| §0.3  | Stop-loss line ("if this happens, abandon" hard conditions)     | **Pre-development**, immovable                                 |
+| §0.4  | Per-skill spec (which one to change, target value)              | **Deferred**, Layer 1 data-driven                              |
+
+### 0.1 Engineering-layer spec (must be pre-development · can be locked immediately)
+
+Correctness spec for the data pipeline and code changes — does not depend on any business judgment or baseline data, and should be locked before development starts:
+
+- **qwen-logger path is unobstructed** (§4.1.1b): the skill_launch event can land on both the OTLP and qwen-logger pipelines simultaneously
+- **`prompt_id` linkage**: the `skill_launch` + subsequent `tool_call` triggered by a single user prompt can be grepped out as a complete trail using the same `prompt_id`
+- **`batch_size` not undefined** (§4.3.2 direction A): a single-tool batch explicitly sets `batch_size = 1` / `batch_position = 0`
+- **SQL runs end to end** (§4.1.2): the offline SQL produces non-empty output on the real telemetry backend and can distinguish high/low followup_rate skills
+- **Baseline variance < P50 × 20%** (P1.5): the baseline measurement is stable (otherwise subsequent A/B comparisons are not trustworthy) — note: although this item is listed under §0.1 engineering layer, **locking it depends on the P1.5 baseline data**, making it the only deferred verification item in §0.1; if P1.5 does not pass, the §0.2 thresholds cannot be locked credibly
+- **Skill size budget** (Layer 2 changes): after inlining followups, the skill description token count must not exceed 2× the pre-change value, and the absolute value must be ≤ 500 tokens (take the smaller value). If exceeded, split the skill per §4.2 rather than merging. This item aligns with §7 item 2 and the existing constraints in §4.2, and is front-loaded into the spec layer
+- **`npm run preflight` fully passes**: the hard gate for every PR
+
+### 0.2 Statistical-layer spec (must be pre-development · thresholds locked after P1.5)
+
+The project's "statistically successful" metrics — the **direction** is fixed up front, and the **threshold** is locked after the baseline is measured (to avoid filling in numbers out of thin air):
+
+| Metric                                                    | Direction | Locking timing             | Current placeholder threshold (to be calibrated) |
+| --------------------------------------------------------- | --------- | -------------------------- | ------------------------------------------------ |
+| Weighted `followup_rate` of top-3 skills                  | ↓         | End of P1.5                | ≥ 30%                                            |
+| End-to-end RT P50 for sessions containing a skill         | ↓         | End of P1.5                | ≥ 2s                                             |
+| Share of tool_call with `batch_size > 1`                  | ↑         | Before P3                  | ≥ 30%                                            |
+| A/B significance of the changed skill's trigger scenarios | p < 0.05  | Before P2 changes complete | n TBD                                            |
+
+> **Key constraint**: placeholder thresholds are not commitments. If the P1.5 baseline shows "weighted followup_rate of top-5 skills < 30%" (triggering §0.3 stop-loss line #1), the project is terminated; **you must not lower the spec just to make the threshold "achievable"**.
+>
+> **How to measure**: the measurement method, SQL template, and A/B design for each metric are in §5.1-§5.2; the sample-size calculation for statistical significance (p < 0.05) is in §5.1.
+
+### 0.3 Stop-loss line (must be pre-development · restrictedly adjustable after P-1 locking)
+
+Already listed in §5.3. These are the "if this happens, abandon" hard conditions — **under no circumstances may the stop-loss line be relaxed in order to meet the §0.2 statistical-layer spec**.
+
+- **Outcome metrics** (3 items): top-5 weighted `followup_rate < 30%` / RT P50 ↓ < 1s after changing 2 skills / `batch_size P50` still = 1 after Layer 3
+- **Process metrics** (3 items): skill hit rate ↓ ≥ 5pp / inlined-followup failure rate ≥ 5% / user cancellation rate ↑ ≥ 2pp
+
+See §5.3 for details.
+
+**Adjustability rules** (to avoid rigid discipline without data support):
+
+| Stage                                     | Adjustable?                                                   | Direction of adjustment                                                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| At P-1 locking                            | ✅ Adjust freely (based on historical telemetry or consensus) | Any                                                                                                                                               |
+| After P-1 locking → end of P1.5           | ❌ Not adjustable                                             | —                                                                                                                                                 |
+| End of P1.5 (when the baseline comes out) | ✅ Only **relaxation** allowed once                           | Relaxation (e.g., 30% → 25%) requires data evidence + 2-person review; **tightening is not allowed** (to avoid adding a stop-loss after the fact) |
+| After P1.5                                | ❌ Not adjustable                                             | —                                                                                                                                                 |
+
+> The placeholder threshold values (30% / 1s / 5pp, etc.) currently have **no historical data support** and are engineers' intuition before the P-1 review. If recent 4-week historical telemetry can be obtained at the P-1 review, the stop-loss line should be calibrated based on the historical data; if it cannot be obtained, the placeholder values are retained, and the "relax once" rule above is executed at the end of P1.5.
+
+### 0.4 Per-skill spec (must be deferred · data-driven)
+
+Which specific skill to change, and what target `followup_rate` to change it to — **not locked until Layer 1 data is available**.
+
+Reason for not locking: a priori design vs. a posteriori data can differ greatly. Forcing it up front would repeat the mistake of the `rt-optimization-design.md` §7 D2 route — the a priori assumption "the fast model is 2-3s faster" was overturned by the a posteriori fact that cache was already implemented, causing the net gain of that plan to approach 0 or even be negative.
+
+**Output location**: the per-skill spec is produced data-driven at the end of P1.5, and is declared independently in the description of each Layer 2 PR (it does not go into the design document, to avoid changing the document every time a skill is changed).
+
+**Per-skill spec structure template** (aligned with the mandatory items of the PR description in §4.2 — these two lists are the same one; §4.2 is the process view, this section is the spec view):
+
+| Field                     | Content                                                                                                                                            | Data source                                                               |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 1. Current data           | invocation_count, followup_rate, top followup tools                                                                                                | Layer 1 telemetry                                                         |
+| 2. Target                 | followup_rate reduced from X% to Y%                                                                                                                | Based on the §0.2 improvement direction; absolute value set within the PR |
+| 3. Change scope           | which followups to inline (read/grep/shell read-only), explicitly stating what **not** to inline (write operations / cross-skill / deep reasoning) | §4.2 change-pattern table                                                 |
+| 4. Output contract update | the pre-declaration added to the skill description ("Returns: ...")                                                                                | §3.2 change example                                                       |
+| 5. A/B plan               | observe followup_rate / RT P50 / process metrics for 2 weeks after the change, against the §5.1 acceptance line                                    | §5.1                                                                      |
+| 6. Size proof             | skill description token count before and after the change (estimated with tiktoken), must not exceed the §0.1 "Skill size budget"                  | §0.1 item 6                                                               |
+
+### 0.5 Spec governance
+
+- **Modifying the §0.1 / §0.3 spec** requires a design document update + PR review; §0.3 may only be relaxed within the end-of-P1.5 window following the §0.3 "adjustability rules"
+- **Modifying the §0.2 thresholds (after the P1.5 lock)** requires at least one of the following data evidence items attached:
+  - (a) deviation analysis between the P1.5 baseline measurement result and the locked threshold (including a link to the raw measurement records)
+  - (b) public benchmark data from similar projects (including a source link)
+  - (c) a deviation explanation signed off by ≥ 2 internal reviewers
+
+  At PR review, if none of the above evidence exists, the reviewer is **obligated** to block the PR — "adjusting based on engineer's intuition" is not accepted
+
+- **The §0.4 per-skill spec** is written into the PR description after it is produced data-driven (following the §0.4 6-item template), and does not go into the design document
+
+---
+
+## 1. Background and positioning
+
+### 1.1 The problem
+
+The baseline given in `rt-optimization-design.md` §1.2: 3-round agent loop, 13.4s end to end, of which LLM calls account for 78%. Each round is ~3-4s.
 
 ```
-Round 1 (3.8s, 28%): LLM 决策调 skill
-Round 2 (3.0s, 22%): LLM 决策调 shell
-Round 3 (3.8s, 28%): LLM 总结
+Round 1 (3.8s, 28%): LLM decides to call a skill
+Round 2 (3.0s, 22%): LLM decides to call shell
+Round 3 (3.8s, 28%): LLM summarizes
 ```
 
-`rt-optimization-design.md` §6/§7 经过两轮 review 后，D2/D4 已被否决，D1/D3 也降级为"等浮油完成后再评估"。但**整份原文档都聚焦在末尾的 Round 3（总结轮）或单轮内的微优化（D4）上，完全没有正面讨论 Round 1 → Round 2 这个"中间轮"为什么会出现、能不能消掉**。
+After two rounds of review, `rt-optimization-design.md` §6/§7 rejected D2/D4, and downgraded D1/D3 to "re-evaluate after the groundwork is done". But **the entire original document focuses on the final Round 3 (the summary round) or on micro-optimizations within a single round (D4), and does not directly discuss why the "middle round" Round 1 → Round 2 occurs or whether it can be eliminated**.
 
-事实是：Round 2 之所以存在，**绝大多数情况是因为 Round 1 调用的 skill 没有返回完整答案**，模型才追加 shell 查询补全。如果 skill 设计成"一次拿到完整结果"，3 轮 → 2 轮，省掉的就是 Round 2 那 ~3s — 这是与 D1 完全不重叠的收益面。
+The fact is: Round 2 exists **mostly because the skill called in Round 1 did not return a complete answer**, so the model appends a shell query to fill in the gaps. If a skill is designed to "get the complete result in one go", 3 rounds → 2 rounds, and what is saved is the ~3s of Round 2 — this is a gain surface that does not overlap with D1 at all.
 
-### 1.2 与 rt-optimization-design 的关系
+### 1.2 Relationship with rt-optimization-design
 
-| 减轮方向             | 命中的轮次                      | 杠杆位置                     | 本文档定位                   |
-| -------------------- | ------------------------------- | ---------------------------- | ---------------------------- |
-| D1 `skipLlmRound`    | 末尾总结轮                      | 框架机制 + per-tool opt-in   | 兜底，**放在 Layer 2 之后**  |
-| D2 fast 路由         | 单轮延迟                        | 框架机制                     | 已 defer，**不在本文档范围** |
-| D3 Summarizing 状态  | 末尾总结轮（感知层）            | UI 状态机                    | 可选，与本方案正交           |
-| D4 prevalidate       | 单轮延迟                        | 框架机制                     | 已 defer，**不在本文档范围** |
-| **本方案 Layer 1-3** | **中间决策轮 + 并发未触发的轮** | **skill 设计 + prompt 工程** | **新增方向**                 |
+| Round-reduction direction | Round hit                                                               | Lever location                        | Positioning in this document                        |
+| ------------------------- | ----------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------- |
+| D1 `skipLlmRound`         | Final summary round                                                     | Framework mechanism + per-tool opt-in | Fallback, **placed after Layer 2**                  |
+| D2 fast routing           | Single-round latency                                                    | Framework mechanism                   | Already deferred, **out of scope of this document** |
+| D3 Summarizing state      | Final summary round (perception layer)                                  | UI state machine                      | Optional, orthogonal to this plan                   |
+| D4 prevalidate            | Single-round latency                                                    | Framework mechanism                   | Already deferred, **out of scope of this document** |
+| **This plan's Layer 1-3** | **Middle decision rounds + rounds where concurrency was not triggered** | **skill design + prompt engineering** | **New direction**                                   |
 
-### 1.3 核心论点
+### 1.3 Core argument
 
-减轮的真正杠杆在 skill/tool 设计层，不在 agent 框架。三个理由：
+The real lever for round reduction lies at the skill/tool design layer, not in the agent framework. Three reasons:
 
-1. **§1.2 基线本身就暴露问题在 skill** — Round 1 → Round 2 的跳跃是 skill 返回不全才发生的，框架做对了，skill 做错了
-2. **框架级减轮最终也要 per-tool opt-in** — D1 的 `skipLlmRound` 必须每个工具显式标记，绕一圈回到 skill 工程，还多一套不变量修复 + 决策门控成本
-3. **ROI 局部可测、灰度容易** — 改一个 skill 就少一轮 × 该 skill 触发次数，不依赖 cache hit rate 数据，不依赖跨系统改动
+1. **The §1.2 baseline itself exposes that the problem is in the skill** — the jump from Round 1 → Round 2 happens because the skill returns incomplete results; the framework did it right, the skill did it wrong
+2. **Framework-level round reduction ultimately also requires per-tool opt-in** — D1's `skipLlmRound` must be explicitly marked on each tool, looping back around to skill engineering, plus an extra set of invariant-fixing + decision-gating cost
+3. **ROI is locally measurable and easy to gray-release** — changing one skill saves one round × the number of times that skill is triggered; it does not depend on cache hit rate data, nor on cross-system changes
 
-> **实施前必须先走 §0 验收 Spec 前置评审（P-1 阶段，0.5d）** — §0.1 工程层 spec 和 §0.3 止损线在动手前必须锁定；§0.2 统计层阈值的方向也要前置确认（具体数值等 P1.5 基线后再锁）。跳过 §0 进入 P0 实施 = 默认走"做完才看指标"的反模式，文档不背书这种做法。
-
----
-
-## 2. 设计原则
-
-1. **不改 agent 框架** — 不动 `useGeminiStream` / `coreToolScheduler` / `geminiChat` 核心路径
-2. **数据驱动选优先级** — 先建 telemetry，让数据告诉你改哪个 skill，不靠拍脑袋
-3. **per-skill 可测可灰度** — 每个 skill 改造独立 A/B，失败局部回退
-4. **复利优先** — 收益 = 单次减轮收益 × 触发频率，高频 skill 优先
-5. **不绑定 D1** — 本方案的成功不依赖 D1 是否落地
+> **Before implementation you must first go through the §0 Acceptance Spec pre-development review (the P-1 stage, 0.5d)** — the §0.1 engineering-layer spec and the §0.3 stop-loss line must be locked before starting work; the direction of the §0.2 statistical-layer thresholds must also be confirmed up front (the specific values are locked after the P1.5 baseline). Skipping §0 to enter P0 implementation = defaulting to the "measure metrics only after the work is done" anti-pattern, which this document does not endorse.
 
 ---
 
-## 3. 三层方案
+## 2. Design principles
 
-### 3.1 Layer 1：减轮 Telemetry（找金矿）
+1. **Do not change the agent framework** — do not touch the `useGeminiStream` / `coreToolScheduler` / `geminiChat` core paths
+2. **Data-driven prioritization** — build telemetry first, let the data tell you which skill to change, do not guess
+3. **per-skill measurable and gray-releasable** — each skill change is an independent A/B, and a failure rolls back locally
+4. **Compounding first** — gain = single round-reduction gain × trigger frequency, prioritize high-frequency skills
+5. **Not bound to D1** — the success of this plan does not depend on whether D1 lands
 
-**目标**：让数据告诉你哪些 skill 最值得改 — 即"用了这个 skill 之后，模型有多大概率追加一次工具调用"。
+---
 
-**核心字段**（per-turn、per-skill-invocation）：
+## 3. Three-layer plan
+
+### 3.1 Layer 1: Round-reduction telemetry (finding the gold mine)
+
+**Goal**: let the data tell you which skills are most worth changing — i.e., "after using this skill, how likely is the model to append a tool call".
+
+**Core fields** (per-turn, per-skill-invocation):
 
 ```typescript
 interface SkillFollowupRecord {
   skill_name: string;
-  prompt_id: string; // 关联同一 user prompt 内的所有 events
-  turn_index: number; // 该 skill 在 loop 里是第几轮
-  followup_tool_names: string[]; // 同一 prompt_id 下，skill 之后还调了哪些工具
+  prompt_id: string; // associates all events within the same user prompt
+  turn_index: number; // which round this skill is in the loop
+  followup_tool_names: string[]; // which other tools were called after the skill under the same prompt_id
   followup_count: number; // followup_tool_names.length
   followup_kinds: Kind[]; // Read/Edit/Execute/...
-  next_turn_is_terminal: boolean; // skill 之后下一轮就出文字（不再调工具）
-  user_followup_within_30s: boolean; // 用户在结果显示后 30s 内追加新 prompt（质量回归信号）
+  next_turn_is_terminal: boolean; // the next round after the skill is text (no more tool calls)
+  user_followup_within_30s: boolean; // user appends a new prompt within 30s after the result is shown (quality regression signal)
 }
 ```
 
-**关键指标**：
+**Key metrics**:
 
 - `skill_followup_rate = sum(followup_count > 0) / total_invocations`
 - `terminal_after_skill_rate = sum(next_turn_is_terminal) / total_invocations`
-- 按 `(skill_name, top followup tool)` 聚合 — 看哪些 skill 之后最常追加哪个工具
+- Aggregate by `(skill_name, top followup tool)` — see which tool is most often appended after which skill
 
-**金矿判定**：
+**Gold mine criterion**:
 
 ```
 (invocation_count_weekly × skill_followup_rate) ≥ threshold
 ↓
-该 skill 是减轮金矿，优先 Layer 2 改造
+this skill is a round-reduction gold mine, prioritize for Layer 2 change
 ```
 
-阈值建议：top-3 按上式排序的 skill，先改前 2 个。
+Threshold suggestion: of the top-3 skills sorted by the formula above, change the first 2 first.
 
-### 3.2 Layer 2：Skill 输出完整化
+### 3.2 Layer 2: Completing skill output
 
-**目标**：让被识别为金矿的 skill 一次返回完整答案，消除 Round 1 → Round 2 的跳跃。
+**Goal**: make the skills identified as gold mines return a complete answer in one go, eliminating the Round 1 → Round 2 jump.
 
-**改造模式（按 followup 类型分类）**：
+**Change patterns (categorized by followup type)**:
 
-| Followup 模式               | 典型场景                   | 改造方向                           |
-| --------------------------- | -------------------------- | ---------------------------------- |
-| skill → `read_file`         | skill 给路径，模型再读     | skill 内部直接读，返回内容         |
-| skill → `grep/glob`         | skill 给目录，模型再搜     | skill 内部搜好，返回匹配           |
-| skill → `shell` (read-only) | skill 给命令，模型再执行   | skill 内部跑命令，返回输出         |
-| skill → `shell` (write)     | skill 给方案，模型再执行写 | **保留**（写操作要确认，不应合并） |
-| skill → another skill       | 链式调用                   | **不合并**（保持组合性）           |
+| Followup pattern            | Typical scenario                                   | Change direction                                                    |
+| --------------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| skill → `read_file`         | skill gives a path, model reads it again           | skill reads directly internally, returns the content                |
+| skill → `grep/glob`         | skill gives a directory, model searches again      | skill searches internally, returns the matches                      |
+| skill → `shell` (read-only) | skill gives a command, model executes again        | skill runs the command internally, returns the output               |
+| skill → `shell` (write)     | skill gives a plan, model executes the write again | **Keep** (write operations need confirmation, should not be merged) |
+| skill → another skill       | chained call                                       | **Do not merge** (preserve composability)                           |
 
-**改造检查清单（per-skill PR 模板）**：
+**Change checklist (per-skill PR template)**:
 
-1. 在 skill 描述里**预声明输出契约**：明确写 "Returns: full file content / matched lines / command output"，让模型知道不必追加查询
-2. 在 skill 内部**完成所有 read-only followup**：把 telemetry 显示 >50% 追加率的 read/search 操作内联进 skill
-3. **不内联 write 操作**：写操作需要用户确认，必须单独成轮
-4. **不内联深度推理 followup**：如果 followup 是"基于此再分析"，那是模型的事，不是 skill 的事
-5. **附 A/B telemetry**：改造后 2 周对比 `followup_rate` 是否下降到 <20%
+1. **Pre-declare the output contract** in the skill description: explicitly write "Returns: full file content / matched lines / command output", so the model knows it does not need to append a query
+2. **Complete all read-only followups** inside the skill: inline into the skill any read/search operations whose telemetry shows a >50% append rate
+3. **Do not inline write operations**: write operations require user confirmation and must be a separate round
+4. **Do not inline deep-reasoning followups**: if the followup is "analyze further based on this", that is the model's job, not the skill's job
+5. **Attach A/B telemetry**: compare whether `followup_rate` drops to <20% within 2 weeks after the change
 
-**典型改造示例（示意）**：
+**Typical change example (illustrative)**:
 
-改造前：
+Before:
 
 ```
 skill "list-workspaces" returns: ["ws_a", "ws_b"]
 → Round 2: model calls shell to get details for each workspace
 ```
 
-改造后：
+After:
 
 ```
 skill "list-workspaces" returns:
@@ -225,15 +225,15 @@ description updated: "Returns workspaces with owner, last_active, status"
 → Round 2 disappears for ~80% of queries
 ```
 
-### 3.3 Layer 3：Prompt 教育模型并发
+### 3.3 Layer 3: Prompt to teach the model concurrency
 
-**目标**：对于独立工具（多文件读、多目录搜），让模型在同一轮里并发发起 tool_calls，把 N 轮压成 1 轮。
+**Goal**: for independent tools (reading multiple files, searching multiple directories), let the model issue tool_calls concurrently within the same round, compressing N rounds into 1.
 
-**前提**：基础设施已就绪 — `tools/tools.ts:818` 的 `CONCURRENCY_SAFE_KINDS` + `coreToolScheduler` 的 `partitionToolCalls` 已经能并发执行同 batch 内的 read/search/fetch 工具。**差的只是模型主动发起并发 tool_calls 的意愿**，qwen-coder 默认偏串行。
+**Prerequisite**: the infrastructure is already in place — `CONCURRENCY_SAFE_KINDS` at `tools/tools.ts:818` + the `partitionToolCalls` of `coreToolScheduler` can already execute read/search/fetch tools within the same batch concurrently. **What is missing is only the model's willingness to proactively issue concurrent tool_calls**; qwen-coder defaults to being serial.
 
-**改动位置**：`packages/core/src/core/prompts.ts`（已审计过，加在 `# Final Reminder` 段 L396 附近不会破坏 cache 命中以外的事 — 仅一次性预热成本）。
+**Change location**: `packages/core/src/core/prompts.ts` (already audited; adding near the `# Final Reminder` section at L396 will not break anything other than cache hits — it is only a one-time warm-up cost).
 
-**指导文本（示意，需 A/B 调优）**：
+**Guidance text (illustrative, needs A/B tuning)**:
 
 ```
 When you need to call multiple independent read-only tools (read_file,
@@ -247,35 +247,35 @@ Examples:
 Do NOT batch when the second call depends on the first call's result.
 ```
 
-**生效衡量**：新增 telemetry 字段 `batch_size`（同 turn 内 tool_calls 数量）— 改 prompt 前后对比分布。
+**Measuring effectiveness**: add a new telemetry field `batch_size` (the number of tool_calls within the same turn) — compare the distribution before and after the prompt change.
 
-#### 3.3.1 扩展 `CONCURRENCY_SAFE_KINDS`（Layer 3 子项）
+#### 3.3.1 Extending `CONCURRENCY_SAFE_KINDS` (a Layer 3 sub-item)
 
-prompt 教育模型并发只是供给侧（模型愿意一次发多个 tool_calls），但 `tools/tools.ts:818` 的 `CONCURRENCY_SAFE_KINDS = { Read, Search, Fetch }` 决定**实际能并发执行的工具范围**：`partitionToolCalls`（`coreToolScheduler.ts:775`）会把"连续的安全工具"打包成 concurrent batch，其余各自串行。
+The prompt teaching the model concurrency is only the supply side (the model is willing to issue multiple tool_calls at once), but `CONCURRENCY_SAFE_KINDS = { Read, Search, Fetch }` at `tools/tools.ts:818` determines **the range of tools that can actually execute concurrently**: `partitionToolCalls` (`coreToolScheduler.ts:775`) packs "consecutive safe tools" into a concurrent batch, and the rest run serially individually.
 
-如果模型按指导一次发了 3 个 tool_calls 但其中 1 个属于 `Kind.Execute` 且不在安全集合，整个 batch 就会被拆开串行执行 — Layer 3 prompt 改动的收益会被运行时调度抵消。
+If the model issues 3 tool_calls at once per the guidance but one of them belongs to `Kind.Execute` and is not in the safe set, the entire batch will be split apart and executed serially — the gain of the Layer 3 prompt change will be offset by the runtime scheduling.
 
-**扩展候选**（按风险递增）：
+**Extension candidates** (by increasing risk):
 
-- `Kind.Think`（含 save_memory / todo_write）—— **不要加**，有隐式写入
-- 只读 shell（`isShellCommandReadOnly()` 返回 true 的 Execute）—— `partitionToolCalls` 已有特判（`coreToolScheduler.ts` `partitionToolCalls` 注释里提到 "Execute (shell) is safe only when isShellCommandReadOnly() returns true"），现状已覆盖，无需改 `CONCURRENCY_SAFE_KINDS`
-- MCP 工具按 `Kind` 分类 —— 各 MCP server 行为差异大，需要在工具注册时显式 opt-in 才安全
+- `Kind.Think` (includes save_memory / todo_write) — **do not add**, has implicit writes
+- Read-only shell (Execute for which `isShellCommandReadOnly()` returns true) — `partitionToolCalls` already has a special case (the `partitionToolCalls` comment in `coreToolScheduler.ts` mentions "Execute (shell) is safe only when isShellCommandReadOnly() returns true"); the current state already covers it, no need to change `CONCURRENCY_SAFE_KINDS`
+- MCP tools classified by `Kind` — the behavior of each MCP server varies greatly, and it is only safe with explicit opt-in at tool registration time
 
-**结论**：当前集合已经合理，**Layer 3 不依赖扩展 `CONCURRENCY_SAFE_KINDS`**。本节存在的意义是：在收完 `batch_size` telemetry 数据后，**如果发现"并发 batch P50 < 期望值"，先检查是不是被 `partitionToolCalls` 切断而非模型不并发**。这是 Layer 3 A/B 失败时的一个诊断路径，不是必做项。
+**Conclusion**: the current set is already reasonable, and **Layer 3 does not depend on extending `CONCURRENCY_SAFE_KINDS`**. The reason this section exists is: after collecting the `batch_size` telemetry data, **if you find "concurrent batch P50 < expected value", first check whether it is being cut off by `partitionToolCalls` rather than the model not being concurrent**. This is a diagnostic path for when the Layer 3 A/B fails, not a required item.
 
-> 信用：codex review 提出"扩展 `CONCURRENCY_SAFE_KINDS` 是被忽略的杠杆"。核对后判断为：现状已有 `isShellCommandReadOnly` 特判覆盖最大头，扩展集合本身收益小、风险大；保留作为诊断路径。
+> Credit: codex review raised that "extending `CONCURRENCY_SAFE_KINDS` is an overlooked lever". After verification, the judgment is: the current state already covers the biggest chunk with the `isShellCommandReadOnly` special case; extending the set itself has small gain and large risk; keep it as a diagnostic path.
 
 ---
 
-## 4. 详细实施
+## 4. Detailed implementation
 
-### 4.1 Layer 1：Telemetry 扩展（1-2d）
+### 4.1 Layer 1: Telemetry extension (1-2d)
 
-#### 4.1.1 补 `prompt_id` 到 `SkillLaunchEvent`
+#### 4.1.1 Add `prompt_id` to `SkillLaunchEvent`
 
-**位置**：`packages/core/src/telemetry/types.ts:896`
+**Location**: `packages/core/src/telemetry/types.ts:896`
 
-当前 `SkillLaunchEvent` 仅含 `skill_name` + `success`，**无 `prompt_id`** — 无法跟同一 turn 内的其他 `ToolCallEvent` 关联。
+The current `SkillLaunchEvent` only contains `skill_name` + `success`, with **no `prompt_id`** — making it impossible to associate with other `ToolCallEvent`s within the same turn.
 
 ```typescript
 // types.ts:896
@@ -284,56 +284,56 @@ export class SkillLaunchEvent implements BaseTelemetryEvent {
   'event.timestamp': string;
   skill_name: string;
   success: boolean;
-  prompt_id: string;                    // 新增
-  turn_index?: number;                  // 新增
+  prompt_id: string;                    // new
+  turn_index?: number;                  // new
 
   constructor(
     skill_name: string,
     success: boolean,
-    prompt_id: string,                  // 新增
-    turn_index?: number,                // 新增
+    prompt_id: string,                  // new
+    turn_index?: number,                // new
   ) { ... }
 }
 ```
 
-**调用方更新**：`packages/core/src/tools/skill.ts` 的 4 个 `logSkillLaunch` 调用点（L386, L399, L426, L482），传入 `this.params` 拿不到 `prompt_id` — `BaseToolInvocation` 仅持有 `params`，没有 `request.prompt_id` 字段。**实际实现**用鸭子类型方式注入：`SkillToolInvocation` 暴露 `setPromptId(id)` setter + 私有 `promptId` 字段，`CoreToolScheduler.buildInvocation`（`coreToolScheduler.ts:1253`）在 build 后 duck-type 调 `setPromptId(request.prompt_id)`，对齐既有 `setCallId` hook 的 pattern；invocation 在 `execute()` 内的 4 个 `logSkillLaunch` 都传 `this.promptId`。**早期版本的本节描述（"BaseToolInvocation 已有 request.prompt_id"）是错的**，已在 PR #4565 review 后更正。
+**Caller updates**: the 4 `logSkillLaunch` call sites in `packages/core/src/tools/skill.ts` (L386, L399, L426, L482), where passing `this.params` cannot get `prompt_id` — `BaseToolInvocation` only holds `params` and has no `request.prompt_id` field. **The actual implementation** injects via duck typing: `SkillToolInvocation` exposes a `setPromptId(id)` setter + a private `promptId` field, and `CoreToolScheduler.buildInvocation` (`coreToolScheduler.ts:1253`) duck-type calls `setPromptId(request.prompt_id)` after building, aligning with the existing `setCallId` hook pattern; the 4 `logSkillLaunch` calls within `execute()` all pass `this.promptId`. **The earlier version of this section's description ("BaseToolInvocation already has request.prompt_id") was wrong** and was corrected after the PR #4565 review.
 
-#### 4.1.1b qwen-logger 链路修复（前置）
+#### 4.1.1b qwen-logger path fix (prerequisite)
 
-补 `prompt_id` 之前要先解决一个 **既存的链路断点**：`packages/core/src/telemetry/qwen-logger/qwen-logger.ts:908` 定义了 `logSkillLaunchEvent(event)` 方法，但**全仓库无任何调用方** —— `loggers.ts:958` 的 `logSkillLaunch` 直接走 `logs.getLogger(SERVICE_NAME).emit()` 这条 OTLP 路径，绕过了 qwen-logger。
+Before adding `prompt_id`, you must first resolve an **existing path break**: `packages/core/src/telemetry/qwen-logger/qwen-logger.ts:908` defines the `logSkillLaunchEvent(event)` method, but **there is no caller anywhere in the repository** — `logSkillLaunch` at `loggers.ts:958` goes directly through the OTLP path `logs.getLogger(SERVICE_NAME).emit()`, bypassing qwen-logger.
 
-后果：
+Consequences:
 
-- OTLP 路径上的 skill_launch 事件能到 OTLP collector（已工作），但 qwen-logger 那条专用上报链路目前是死的
-- 如果 telemetry backend 是从 qwen-logger 消费（而非 OTLP），skill_launch 事件**完全不上报**
-- §4.1.2 离线 SQL 派生 `SkillFollowupRecord` 依赖 skill_launch 事件落库 —— **必须先验证现在 skill_launch 在 backend 是否可见**
+- skill_launch events on the OTLP path can reach the OTLP collector (already working), but that dedicated qwen-logger reporting path is currently dead
+- if the telemetry backend consumes from qwen-logger (rather than OTLP), skill_launch events are **not reported at all**
+- the §4.1.2 offline SQL that derives `SkillFollowupRecord` depends on skill_launch events being persisted — **you must first verify whether skill_launch is currently visible in the backend**
 
-修复方向二选一：
+Choose one of two fix directions:
 
-- **A**（推荐）在 `loggers.ts:958` 的 `logSkillLaunch` 里加一行 `QwenLogger.getInstance(config)?.logSkillLaunchEvent(event)`，对齐 `logToolCall` 的 `loggers.ts:230` 写法
-- **B** 确认 backend 只从 OTLP 消费，把 qwen-logger 里的 `logSkillLaunchEvent` 标 `@deprecated` 或删除
+- **A** (recommended): add one line `QwenLogger.getInstance(config)?.logSkillLaunchEvent(event)` to `logSkillLaunch` at `loggers.ts:958`, aligning with how `logToolCall` is written at `loggers.ts:230`
+- **B**: confirm the backend only consumes from OTLP, and mark `logSkillLaunchEvent` in qwen-logger as `@deprecated` or delete it
 
-**为什么只补 QwenLogger 一条路径，不对齐 `logToolCall` 的 4 条全路径**：
+**Why add only the QwenLogger path, not align with all 4 paths of `logToolCall`**:
 
-`logToolCall`（`loggers.ts:220-247`）实际有 4 条出口：
+`logToolCall` (`loggers.ts:220-247`) actually has 4 exits:
 
-1. `uiTelemetryService.addEvent(...)` — UI 展示
-2. `config.getChatRecordingService()?.recordUiTelemetryEvent(...)` — 聊天历史
-3. `QwenLogger.getInstance(config)?.logToolCallEvent(...)` — qwen-logger 后端遥测
+1. `uiTelemetryService.addEvent(...)` — UI display
+2. `config.getChatRecordingService()?.recordUiTelemetryEvent(...)` — chat history
+3. `QwenLogger.getInstance(config)?.logToolCallEvent(...)` — qwen-logger backend telemetry
 4. OTLP `logger.emit(...)` — OpenTelemetry
 
-skill_launch 是**纯后端遥测事件**，不需要在 UI 上展示（用户已经看到 SkillTool 的 returnDisplay）、也不需要进 ChatRecording 的 turn 历史（skill 内部的工具调用已经各自被 recordUiTelemetryEvent 记录）。因此只补第 3 条（QwenLogger），保留第 4 条（OTLP），跳过 1/2 是有意的，不是遗漏。
+skill_launch is a **pure backend telemetry event**, which does not need to be displayed in the UI (the user already sees the SkillTool's returnDisplay), nor does it need to enter the ChatRecording turn history (the tool calls inside the skill are each already recorded by recordUiTelemetryEvent). Therefore only the 3rd exit (QwenLogger) is added, the 4th exit (OTLP) is kept, and skipping 1/2 is intentional, not an omission.
 
-**字段透传细节**：`loggers.ts:961-966` 用 `{ ...event }` spread 自动透传新字段（`prompt_id` 加进 `SkillLaunchEvent` 后这条路自动生效），但 `qwen-logger.ts:908` 的 `logSkillLaunchEvent` 内部如果显式解构 `event.skill_name` / `event.success`，新字段不会自动纳入，需手动同步。
+**Field pass-through details**: `loggers.ts:961-966` uses `{ ...event }` spread to automatically pass through new fields (once `prompt_id` is added to `SkillLaunchEvent`, this path takes effect automatically), but if `logSkillLaunchEvent` at `qwen-logger.ts:908` explicitly destructures `event.skill_name` / `event.success` internally, new fields will not be automatically included and must be manually synced.
 
-工作量：A 路径约 0.5d（含 backend 端确认）；B 路径约 0.2d（删代码 + 文档说明）。
+Effort: path A is about 0.5d (including backend-side confirmation); path B is about 0.2d (delete code + document the explanation).
 
-#### 4.1.2 派生 `SkillFollowupRecord`（离线聚合）
+#### 4.1.2 Deriving `SkillFollowupRecord` (offline aggregation)
 
-不需要新事件类型 — `ToolCallEvent` 和 `SkillLaunchEvent` 都已带 `prompt_id`，离线 SQL 即可派生：
+No new event type is needed — both `ToolCallEvent` and `SkillLaunchEvent` already carry `prompt_id`, so offline SQL can derive it:
 
 ```sql
--- 伪 SQL，按实际 telemetry backend 调整
+-- pseudo-SQL, adjust to the actual telemetry backend
 WITH skill_events AS (
   SELECT prompt_id, skill_name, timestamp FROM events
   WHERE event_name = 'skill_launch' AND success = true
@@ -360,215 +360,215 @@ GROUP BY skill_name
 ORDER BY invocations * followup_rate DESC;
 ```
 
-#### 4.1.3 跑 telemetry 1 周收数据
+#### 4.1.3 Run telemetry for 1 week to collect data
 
-- 不变更 user-facing 行为
-- 不需要任何配置开关 — telemetry 已有 opt-in 框架（`telemetry.target` 设置项）
-- 1 周后产出 skill ranking 报告
+- No change to user-facing behavior
+- No configuration switch needed — telemetry already has an opt-in framework (the `telemetry.target` setting)
+- Produce a skill ranking report after 1 week
 
-### 4.2 Layer 2：Skill 改造（per-skill 0.5-1d）
+### 4.2 Layer 2: Skill changes (per-skill 0.5-1d)
 
-按 Layer 1 数据从 top-down 改造。每个 skill 一个独立 PR，PR description 必须包含：
+Change top-down based on the Layer 1 data. Each skill is an independent PR, and the PR description must contain:
 
-1. **数据**：当前 invocation_count、followup_rate、top followup tools
-2. **改造范围**：内联了哪些 followup（明确不内联什么）
-3. **输出契约更新**：skill 描述里加了什么预声明
-4. **A/B 计划**：改造后 2 周再观察 followup_rate
+1. **Data**: current invocation_count, followup_rate, top followup tools
+2. **Change scope**: which followups were inlined (explicitly state what is not inlined)
+3. **Output contract update**: what pre-declaration was added to the skill description
+4. **A/B plan**: observe followup_rate again for 2 weeks after the change
 
-**注意事项**：
+**Notes**:
 
-- Skill 内联 read 操作不要重复 read_file 的所有边界情况处理（编码、二进制检测等）— 调用 `read_file` 工具本身，不要重写
-- Skill 内联 grep/glob 同理
-- Skill 内联 shell 命令需走 `executeToolCall` 标准路径（保留 telemetry）
-- **不要让 skill 体积爆炸**：内联 followup 后 skill 描述 > 500 tokens 时，拆分 skill 而不是合并
+- When a skill inlines a read operation, do not duplicate all of read_file's edge-case handling (encoding, binary detection, etc.) — call the `read_file` tool itself, do not rewrite it
+- Same for a skill inlining grep/glob
+- A skill inlining a shell command must go through the `executeToolCall` standard path (to preserve telemetry)
+- **Do not let the skill size explode**: when the skill description > 500 tokens after inlining followups, split the skill rather than merging
 
-### 4.3 Layer 3：Prompt 教育（0.5d 改动 + 实测调优）
+### 4.3 Layer 3: Prompt education (0.5d change + real-world tuning)
 
-#### 4.3.1 加并发指导
+#### 4.3.1 Add concurrency guidance
 
-**位置**：`packages/core/src/core/prompts.ts` `# Final Reminder` 段（L396）
+**Location**: the `# Final Reminder` section (L396) in `packages/core/src/core/prompts.ts`
 
-加上节 3.3 的指导文本。具体措辞需 A/B —— 先用最朴素版本，根据并发率提升程度再细化。
+Add the guidance text from section 3.3. The specific wording needs A/B — start with the most plain version, then refine based on the degree of concurrency-rate improvement.
 
-#### 4.3.2 加 `batch_size` telemetry
+#### 4.3.2 Add `batch_size` telemetry
 
-**位置**：`packages/core/src/telemetry/types.ts` 的 `ToolCallEvent` 或新增轻量级 `ToolBatchEvent`
+**Location**: the `ToolCallEvent` in `packages/core/src/telemetry/types.ts`, or a new lightweight `ToolBatchEvent`
 
 ```typescript
-// 选项 A：在 ToolCallEvent 上加字段（侵入小）
+// Option A: add fields to ToolCallEvent (less intrusive)
 export class ToolCallEvent {
   ...
-  batch_size?: number;        // 同一 batch 内 tool_call 数量
-  batch_position?: number;    // 在 batch 内的位置 (0-indexed)
+  batch_size?: number;        // number of tool_calls within the same batch
+  batch_position?: number;    // position within the batch (0-indexed)
 }
 
-// 选项 B：新增 ToolBatchEvent（语义更清晰，需走完整新事件类型流程）
+// Option B: new ToolBatchEvent (clearer semantics, requires the full new-event-type process)
 ```
 
-**推荐选项 A** — 改动小、查询时聚合方便。
+**Recommend option A** — small change, convenient to aggregate at query time.
 
-**状态传递路径**（关键 — 这一步成本被早期版本低估）：
+**State-passing path** (key — this step's cost was underestimated by the earlier version):
 
-`coreToolScheduler.ts:2456` 的 `partitionToolCalls(callsToExecute)` 返回 `batches`，**但 batch 信息在调度路径上立刻丢失**：
+`partitionToolCalls(callsToExecute)` at `coreToolScheduler.ts:2456` returns `batches`, **but the batch information is immediately lost on the scheduling path**:
 
 ```
 executeToolCalls
-  └─ batches = partitionToolCalls(...)           // 知道 batch.calls.length
+  └─ batches = partitionToolCalls(...)           // knows batch.calls.length
      └─ for batch of batches:
-        └─ this.runConcurrently(batch.calls, ...) // 知道 batch.calls.length
-           └─ executeSingleToolCall(call, ...)   // ❌ 已不知道 batch
+        └─ this.runConcurrently(batch.calls, ...) // knows batch.calls.length
+           └─ executeSingleToolCall(call, ...)   // ❌ no longer knows batch
               └─ ...
                  └─ finalizeToolCalls
-                    └─ logToolCall(config, new ToolCallEvent(call)) // ❌ 无 batch context
+                    └─ logToolCall(config, new ToolCallEvent(call)) // ❌ no batch context
 ```
 
-`ToolCallEvent` 的构造器（`types.ts:189`）只接收单个 `CompletedToolCall`，无 batch 字段。
+The `ToolCallEvent` constructor (`types.ts:189`) only receives a single `CompletedToolCall`, with no batch field.
 
-修复方向：
+Fix directions:
 
-- **方向 A**（推荐）：在 `ScheduledToolCall` 上加 `batchSize?: number` + `batchPosition?: number`。两条分支分别填充：
-  - 并发分支（`coreToolScheduler.ts:2459-2460`，`batch.calls.length > 1`）：`runConcurrently(batch.calls, ...)` 进入循环前给每个 `call` 写 `batchSize = batch.calls.length`、`batchPosition = i`
-  - 串行分支（`L2462-2464` 的 `for (const call of batch.calls)`）：单工具 batch 显式设 `batchSize = 1`、`batchPosition = 0`（**不要默认 undefined**，否则下游 telemetry 聚合时会把并发未生效的轮次误判为缺失数据）
+- **Direction A** (recommended): add `batchSize?: number` + `batchPosition?: number` to `ScheduledToolCall`. The two branches fill them separately:
+  - Concurrent branch (`coreToolScheduler.ts:2459-2460`, `batch.calls.length > 1`): before entering the loop, `runConcurrently(batch.calls, ...)` writes `batchSize = batch.calls.length`, `batchPosition = i` for each `call`
+  - Serial branch (the `for (const call of batch.calls)` at `L2462-2464`): a single-tool batch explicitly sets `batchSize = 1`, `batchPosition = 0` (**do not default to undefined**, otherwise downstream telemetry aggregation will misjudge rounds where concurrency did not take effect as missing data)
 
-  `new ToolCallEvent(call)` 在构造器里从 `call` 读这两个字段
+  `new ToolCallEvent(call)` reads these two fields from `call` in the constructor
 
-- **方向 B**：改 `ToolCallEvent` 构造器签名 `new ToolCallEvent(call, batchInfo?)`，所有调用方同步改（4 个 logToolCall 调用点 + 测试）。改动面比 A 大
+- **Direction B**: change the `ToolCallEvent` constructor signature to `new ToolCallEvent(call, batchInfo?)`, and change all callers in sync (4 logToolCall call sites + tests). This has a larger change surface than A
 
-工作量：方向 A 约 0.5d 含单测；方向 B 约 1d（调用方多）。
+Effort: direction A is about 0.5d including unit tests; direction B is about 1d (more callers).
 
-**同步衡量"模型并发意愿"** — Layer 3 改 prompts.ts 前后，对比 `batch_size > 1 的 tool_call 占比` 分布。这是 Layer 3 是否生效的关键指标，没这个数据 Layer 3 A/B 无法收尾。
+**Measuring "the model's willingness to be concurrent" in sync** — before and after the Layer 3 change to prompts.ts, compare the distribution of `the share of tool_call with batch_size > 1`. This is the key metric for whether Layer 3 takes effect; without this data the Layer 3 A/B cannot be wrapped up.
 
-#### 4.3.3 cache 影响评估
+#### 4.3.3 Cache impact assessment
 
-`prompts.ts` 改动会让 DashScope ephemeral cache 一次性失效（首次请求 cache miss，之后恢复）。这是已知一次性成本，参见 `rt-optimization-design.md` §7.8 的 prompt 稳态审计。
-
----
-
-## 5. 验收与度量
-
-> **本节是 §0 验收 Spec 的"方法论"配套** — §0 声明"算成功的指标 + 阈值前置/后置时机"，§5 说明"怎么测、SQL 怎么写、A/B 怎么设计"。本节阈值是 §0.2 的当前占位，最终值在 P1.5 基线测量后锁定。
-
-### 5.1 per-skill A/B 指标（改造后 2 周）
-
-| 指标                                      | 验收线                   | 备注                       |
-| ----------------------------------------- | ------------------------ | -------------------------- |
-| 该 skill 的 `followup_rate`               | < 20%（改造前若为 70%+） | 主指标                     |
-| 该 skill 触发场景的端到端 RT P50          | 下降 ≥ 2s                | 来自少一轮 LLM 调用        |
-| 该 skill 的 `user_followup_within_30s` 率 | 不上升                   | 用户没追问 = 答案完整      |
-| 该 skill 的 `success` 率                  | 不下降                   | 内联 followup 没引入新失败 |
-
-### 5.2 整体 RT 指标
-
-| 指标                               | 基线                                  | Layer 2 改完 top-3 skill 后目标  |
-| ---------------------------------- | ------------------------------------- | -------------------------------- |
-| 端到端 RT P50（含 skill 的会话）   | 13.4s（单次采样）/ 待补 ≥3 类场景基线 | 下降 2-3s                        |
-| Tool batch P50 size（Layer 3）     | 待测                                  | ≥ 1.3（>30% 调用涉及并发 batch） |
-| Skill 总 followup_rate（加权平均） | 待测                                  | 下降 ≥ 30%                       |
-
-### 5.3 失败信号 — 什么时候放弃这个方向
-
-**结果指标止损线**：
-
-- Layer 1 数据出来后，**top-5 skill 的加权 followup_rate < 30%** → 减轮空间小，不值得继续 Layer 2
-- Layer 2 改完 2 个 skill 后，**端到端 RT P50 下降 < 1s** → 改造方向错（可能 followup 是写操作不该合并），停下复盘
-- Layer 3 prompt 改动 2 周后 **batch_size P50 仍 = 1** → 模型不接受并发指导，放弃 Layer 3，只保留 Layer 1+2
-
-**过程指标止损线（前置预警，避免方案"看起来在做、其实没收益"）**：
-
-- **Skill 命中率（intended skill vs selected skill）下降 ≥ 5pp** → skill 描述改坏让模型选错 skill。典型场景：改造前用户问 X 总是命中 skill_a，改造后偶尔被路由到 skill_b 但没产生 error（模型用错 skill 但勉强凑出答案），结果指标看起来正常但 followup_rate 反而上升。**衡量方法**：在 telemetry 加 `skill_invocation_pattern` —— 按 user prompt 前 N 个关键词聚类，看每个 cluster 主要触发哪个 skill；改造前后对比顶 1 偏移
-- **Skill 内联 followup 失败率 ≥ 5%** → skill 改造引入了原本不存在的失败模式（如内联 `read_file` 处理大文件爆内存）。衡量：`SkillLaunchEvent.success` 改造前后对比
-- **Per-skill 用户取消率（Ctrl+C）上升 ≥ 2pp** → skill 输出变慢或变长导致用户失去耐心。衡量：`ToolCallEvent.status === 'cancelled'` 占比
+The `prompts.ts` change will invalidate the DashScope ephemeral cache once (the first request is a cache miss, then it recovers). This is a known one-time cost; see the prompt steady-state audit in `rt-optimization-design.md` §7.8.
 
 ---
 
-## 6. 与 D1/D3 的衔接
+## 5. Acceptance and measurement
 
-### 6.1 与 D1 的关系
+> **This section is the "methodology" companion to the §0 Acceptance Spec** — §0 declares "the success metrics + the pre/deferred timing of thresholds", and §5 explains "how to measure, how to write the SQL, how to design the A/B". The thresholds in this section are the current placeholders of §0.2; the final values are locked after the P1.5 baseline measurement.
 
-Layer 2 改完 top skill 后，**剩余的 followup-heavy skill 才是 D1 `skipLlmRound` 的真正适用场景** — 那些 skill 输出已经完整（不需要 Round 2），且确实是终态查询（Round 3 总结也是浪费）。
+### 5.1 Per-skill A/B metrics (2 weeks after the change)
 
-执行次序：
+| Metric                                             | Acceptance line                   | Note                                             |
+| -------------------------------------------------- | --------------------------------- | ------------------------------------------------ |
+| The skill's `followup_rate`                        | < 20% (if 70%+ before the change) | Primary metric                                   |
+| End-to-end RT P50 of the skill's trigger scenarios | drop ≥ 2s                         | From one fewer LLM call                          |
+| The skill's `user_followup_within_30s` rate        | does not rise                     | User did not follow up = answer is complete      |
+| The skill's `success` rate                         | does not drop                     | Inlined followups did not introduce new failures |
 
-1. Layer 1 telemetry 上线 → 1 周数据
-2. Layer 2 改造 top 2-3 skill → A/B 2 周
-3. Layer 3 prompt 并发 → 实测 1 周
-4. **此时**再评估 D1：剩余高频 skill 里有多少是"输出完整 + 终态查询"形态 → 是否值得 2-3d 框架改造
+### 5.2 Overall RT metrics
 
-### 6.2 与 D3 的关系
+| Metric                                          | Baseline                                                   | Target after Layer 2 changes the top-3 skills    |
+| ----------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| End-to-end RT P50 (sessions containing a skill) | 13.4s (single sample) / baseline for ≥3 scenario types TBD | drop 2-3s                                        |
+| Tool batch P50 size (Layer 3)                   | TBD                                                        | ≥ 1.3 (>30% of calls involve a concurrent batch) |
+| Total skill followup_rate (weighted average)    | TBD                                                        | drop ≥ 30%                                       |
 
-D3（`StreamingState.Summarizing`）是感知层优化，与本方案完全正交。Layer 1-3 减少的是**真实轮数**，D3 减少的是**用户感知等待**。如果 Layer 2 已经把 RT 降到用户可接受的范围，D3 价值下降；反之 D3 可以叠加。
+### 5.3 Failure signals — when to abandon this direction
 
----
+**Outcome-metric stop-loss lines**:
 
-## 7. 限制与已知风险
+- After the Layer 1 data is out, **the weighted followup_rate of the top-5 skills < 30%** → the round-reduction room is small, not worth continuing to Layer 2
+- After Layer 2 changes 2 skills, **end-to-end RT P50 drops < 1s** → the change direction is wrong (the followup may be a write operation that should not be merged), stop and review
+- 2 weeks after the Layer 3 prompt change, **batch_size P50 is still = 1** → the model does not accept the concurrency guidance, abandon Layer 3, keep only Layer 1+2
 
-1. **覆盖率受改造范围限制** — 改 10 个 skill 就只覆盖那 10 个的场景。但收益是确定可测有复利的
-2. **Skill 内联 followup 可能让单 skill 变重** — 描述膨胀、加载慢、复用度下降。Layer 2 检查清单第 5 条防御
-3. **Layer 3 模型可能不听并发指导** — qwen-coder 训练数据偏串行；A/B 数据可能显示 prompt 改动无效，作为已知失败模式
-4. **Telemetry 隐私边界** — `SkillFollowupRecord` 不应记录工具参数（已默认从 `ToolCallEvent.function_args` 拿，但要审计 skill_name 是否泄露用户意图）
-5. **不适用于子 agent / cron / notification** — 这些路径不走 skill 系统，本方案不覆盖
-6. **基线数据单薄** — 沿用 `rt-optimization-design.md` §1.2 的单次采样，Layer 2 落地前需补 ≥3 类场景基线
-7. **`logSkillLaunch` 字段扩展会破坏既有 telemetry consumer** — 4 个调用点 + 下游 logger 都要同步改
-8. **`qwen-logger.ts:908` `logSkillLaunchEvent` 当前是死代码** — 仓库内无任何调用方，§4.1.1b 已列前置修复
+**Process-metric stop-loss lines (early warning up front, to avoid the plan "looking like it's making progress but actually producing no gain")**:
 
-### 7.1 与已有框架机制的边界（不在本方案范围）
-
-仓库已有几条与减轮间接相关的框架机制，**本方案不重新发明，也不替代**：
-
-| 已有机制                                             | 位置                                 | 与本方案的关系                                                                                                                |
-| ---------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `partitionToolCalls` + `runConcurrently`（并发执行） | `coreToolScheduler.ts:775, 2473`     | Layer 3 直接复用；本方案不动它                                                                                                |
-| `CONCURRENCY_SAFE_KINDS`（决定哪些工具可并发）       | `tools/tools.ts:818`                 | §3.3.1 已论证现状合理，不扩展                                                                                                 |
-| `FileReadCache`（避免重复读同一文件）                | `services/fileReadCache.ts`          | 间接影响"模型重复读文件"轮次，已生效；本方案不依赖也不增强                                                                    |
-| `chatCompressionService`（历史压缩）                 | `services/chatCompressionService.ts` | 与轮次正交（影响单轮成本而非轮数）；与 `rt-optimization-design.md` §3.2 fast 路由的 `wouldTriggerCompression` gate 是同一组件 |
-
-列出这些是为了避免"本方案被理解为忽略了已有机制"。
+- **Skill hit rate (intended skill vs selected skill) drops ≥ 5pp** → the skill description was changed badly and makes the model select the wrong skill. Typical scenario: before the change, the user asking X always hit skill_a; after the change, it is occasionally routed to skill_b without producing an error (the model uses the wrong skill but barely cobbles together an answer), so the outcome metrics look normal but followup_rate rises instead. **Measurement method**: add `skill_invocation_pattern` to telemetry — cluster by the first N keywords of the user prompt, see which skill each cluster mainly triggers; compare the top-1 shift before and after the change
+- **Skill inlined-followup failure rate ≥ 5%** → the skill change introduced a failure mode that did not previously exist (e.g., the inlined `read_file` blows up memory handling a large file). Measurement: compare `SkillLaunchEvent.success` before and after the change
+- **Per-skill user cancellation rate (Ctrl+C) rises ≥ 2pp** → the skill output became slower or longer, causing users to lose patience. Measurement: the share of `ToolCallEvent.status === 'cancelled'`
 
 ---
 
-## 8. 实施时间线
+## 6. Integration with D1/D3
 
-> **前提：本时间线从 P-1 开始，不能跳过**。P-1 是 §0 验收 Spec 的前置评审，0.5d 工作量但**强制性** — 不通过则不进入 P0。这一约束是为了避免"先写代码再补 spec"的反模式：spec 后置等于把"算成功"的判断推迟到结果出来后，容易出现"为了让指标好看而调整 spec"的偏差（参见 `rt-optimization-design.md` §7 D2 路线的覆辙）。
+### 6.1 Relationship with D1
 
-| Phase    | 内容                                                                   | 投入                  | 产出                           | spec 锁定动作                           |
-| -------- | ---------------------------------------------------------------------- | --------------------- | ------------------------------ | --------------------------------------- |
-| **P-1**  | spec 前置评审                                                          | 0.5d                  | §0.1 / §0.3 锁定               | **锁定 §0.1 工程层 spec + §0.3 止损线** |
-| **P0**   | qwen-logger 链路修复（§4.1.1b 前置）                                   | 0.5d                  | skill_launch 事件可见性确认    | 验证 §0.1 第 1 条                       |
-| **P1**   | Layer 1 telemetry：补 `prompt_id` 字段 + 离线 SQL                      | 1-2d                  | skill ranking 报告             | 验证 §0.1 第 2/3/4 条                   |
-| **P1.5** | 1 周数据收集 + 基线测量（≥3 类场景 × ≥10 次）                          | 1w                    | 决定改哪 2-3 个 skill          | **锁定 §0.2 阈值 + 验证 §0.1 第 5 条**  |
-| **P2**   | Layer 2 改造 top-1 skill（PR + A/B）                                   | 0.5-1d 改造 + 2w 观察 | followup_rate ↓、RT P50 ↓ 验证 | **PR 内声明 §0.4 per-skill spec**       |
-| **P3**   | Layer 3 prompt 并发指导 + `batch_size` telemetry（含 §4.3.2 状态传递） | 1-1.5d 改动 + 1w 实测 | batch_size 分布                | 验证 §0.2 第 3 条                       |
-| **P4**   | Layer 2 继续改 top-2 / top-3 skill（并行 P3）                          | 0.5-1d × N            | 累计 RT P50 ↓                  | 每 PR 内声明 §0.4                       |
-| **P5**   | 评估 D1 是否还有价值                                                   | 决策会                | 路线图更新                     | —                                       |
+After Layer 2 changes the top skills, **the remaining followup-heavy skills are the real applicable scenario for D1's `skipLlmRound`** — those skills already have complete output (no Round 2 needed) and are indeed terminal queries (the Round 3 summary is also wasteful).
 
-**关键决策点（对照 §0.3 止损线）**：
+Execution order:
 
-- **P-1 末**：§0.1 / §0.3 任一项无法达成共识 → 不进入 P0
-- **P1.5 末**：触发 §0.3 结果指标 #1（top-5 加权 followup_rate < 30%）→ 终止方向；否则锁定 §0.2 阈值
-- **P2 末**：触发 §0.3 结果指标 #2（top-1 改造后 RT P50 ↓ < 1s）或任一过程指标 → 停下复盘
-- **P3 末**：触发 §0.3 结果指标 #3（batch_size P50 仍 = 1）→ 放弃 Layer 3
-- **P5**：根据剩余 skill 形态决定 D1 ROI
+1. Layer 1 telemetry goes live → 1 week of data
+2. Layer 2 changes the top 2-3 skills → A/B for 2 weeks
+3. Layer 3 prompt concurrency → 1 week of real-world testing
+4. **At this point** re-evaluate D1: how many of the remaining high-frequency skills are in the "complete output + terminal query" form → whether a 2-3d framework change is worth it
+
+### 6.2 Relationship with D3
+
+D3 (`StreamingState.Summarizing`) is a perception-layer optimization, completely orthogonal to this plan. What Layer 1-3 reduces is the **real round count**, while what D3 reduces is the **user's perceived wait**. If Layer 2 has already brought RT down to a range users find acceptable, D3's value drops; conversely, D3 can be stacked on top.
 
 ---
 
-## 9. 关键代码位置
+## 7. Limitations and known risks
 
-| 文件                                                     | 关键符号                                                      | 位置                              |
-| -------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------- |
-| `packages/core/src/telemetry/types.ts`                   | `ToolCallEvent`（含 `prompt_id` / `duration_ms`）             | L170                              |
-| `packages/core/src/telemetry/types.ts`                   | `SkillLaunchEvent`（需补 `prompt_id`）                        | L896                              |
-| `packages/core/src/telemetry/loggers.ts`                 | `logToolCall`                                                 | L220                              |
-| `packages/core/src/telemetry/loggers.ts`                 | `logSkillLaunch`（走 OTLP；缺 qwen-logger 转发）              | L958                              |
-| `packages/core/src/telemetry/loggers.ts`                 | `logToolCall`（双路径：OTLP + qwen-logger，作为修复样板）     | L220, L230                        |
-| `packages/core/src/telemetry/qwen-logger/qwen-logger.ts` | `logSkillLaunchEvent`（**当前死代码**，§4.1.1b 前置修复目标） | L908                              |
-| `packages/core/src/core/coreToolScheduler.ts`            | `partitionToolCalls`                                          | L775                              |
-| `packages/core/src/core/coreToolScheduler.ts`            | `runConcurrently` / batch 调度                                | L2456, L2473                      |
-| `packages/core/src/core/coreToolScheduler.ts`            | `logToolCall` 调用点（batch_size 状态传递终点）               | L3163                             |
-| `packages/core/src/services/fileReadCache.ts`            | `FileReadCache`（已有，影响重复读取轮次）                     | L135                              |
-| `packages/core/src/tools/skill.ts`                       | `SkillTool` + 4 个 `logSkillLaunch` 调用点                    | L386, L399, L426, L482            |
-| `packages/core/src/skills/skill-manager.ts`              | `SkillManager`（skill 注册/加载）                             | 全文件                            |
-| `packages/core/src/skills/skill-load.ts`                 | skill 描述加载（输出契约改动入口）                            | 全文件                            |
-| `packages/core/src/tools/tools.ts`                       | `Kind` + `CONCURRENCY_SAFE_KINDS`                             | L793, L818                        |
-| `packages/core/src/core/coreToolScheduler.ts`            | `partitionToolCalls` + `runConcurrently`（已有并发基础设施）  | 见 rt-optimization-design.md §5.7 |
-| `packages/core/src/core/prompts.ts`                      | `# Final Reminder` 段（Layer 3 加并发指导处）                 | L396                              |
-| `.qwen/skills/`                                          | 各 skill 定义目录（Layer 2 改造对象）                         | 目录                              |
+1. **Coverage is limited by the change scope** — changing 10 skills only covers the scenarios of those 10. But the gain is deterministic, measurable, and compounding
+2. **Inlining followups into a skill may make a single skill heavier** — description bloat, slow loading, lower reusability. The Layer 2 checklist item 5 defends against this
+3. **The Layer 3 model may not follow the concurrency guidance** — qwen-coder's training data is biased toward serial; the A/B data may show the prompt change is ineffective, treated as a known failure mode
+4. **Telemetry privacy boundary** — `SkillFollowupRecord` should not record tool arguments (it already gets them from `ToolCallEvent.function_args` by default, but audit whether skill_name leaks user intent)
+5. **Not applicable to sub-agent / cron / notification** — these paths do not go through the skill system, and this plan does not cover them
+6. **Thin baseline data** — reusing the single sample from `rt-optimization-design.md` §1.2; before Layer 2 lands, a baseline for ≥3 scenario types needs to be added
+7. **The `logSkillLaunch` field extension will break the existing telemetry consumer** — the 4 call sites + the downstream logger must all be changed in sync
+8. **`logSkillLaunchEvent` at `qwen-logger.ts:908` is currently dead code** — there is no caller in the repository; §4.1.1b already lists the prerequisite fix
+
+### 7.1 Boundary with existing framework mechanisms (out of scope of this plan)
+
+The repository already has several framework mechanisms indirectly related to round reduction, which **this plan does not reinvent, nor replace**:
+
+| Existing mechanism                                               | Location                             | Relationship with this plan                                                                                                                                                         |
+| ---------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `partitionToolCalls` + `runConcurrently` (concurrent execution)  | `coreToolScheduler.ts:775, 2473`     | Layer 3 reuses it directly; this plan does not touch it                                                                                                                             |
+| `CONCURRENCY_SAFE_KINDS` (decides which tools can be concurrent) | `tools/tools.ts:818`                 | §3.3.1 already argued the current state is reasonable, not extended                                                                                                                 |
+| `FileReadCache` (avoids re-reading the same file)                | `services/fileReadCache.ts`          | Indirectly affects the "model re-reads a file" round, already in effect; this plan neither depends on nor enhances it                                                               |
+| `chatCompressionService` (history compression)                   | `services/chatCompressionService.ts` | Orthogonal to rounds (affects single-round cost rather than round count); the same component as the `wouldTriggerCompression` gate of `rt-optimization-design.md` §3.2 fast routing |
+
+These are listed to avoid "this plan being understood as ignoring existing mechanisms".
+
+---
+
+## 8. Implementation timeline
+
+> **Prerequisite: this timeline starts from P-1 and cannot be skipped**. P-1 is the pre-development review of the §0 Acceptance Spec, 0.5d of work but **mandatory** — if it does not pass, P0 is not entered. This constraint is meant to avoid the "write code first, fill in the spec later" anti-pattern: deferring the spec equals deferring the "success" judgment until after the results are out, which easily produces the bias of "adjusting the spec to make the metrics look good" (see the mistake of the `rt-optimization-design.md` §7 D2 route).
+
+| Phase    | Content                                                                                       | Effort                                | Output                                  | Spec-locking action                                                |
+| -------- | --------------------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| **P-1**  | spec pre-development review                                                                   | 0.5d                                  | §0.1 / §0.3 locked                      | **Lock the §0.1 engineering-layer spec + the §0.3 stop-loss line** |
+| **P0**   | qwen-logger path fix (§4.1.1b prerequisite)                                                   | 0.5d                                  | skill_launch event visibility confirmed | Verify §0.1 item 1                                                 |
+| **P1**   | Layer 1 telemetry: add the `prompt_id` field + offline SQL                                    | 1-2d                                  | skill ranking report                    | Verify §0.1 items 2/3/4                                            |
+| **P1.5** | 1 week of data collection + baseline measurement (≥3 scenario types × ≥10 times)              | 1w                                    | decide which 2-3 skills to change       | **Lock the §0.2 thresholds + verify §0.1 item 5**                  |
+| **P2**   | Layer 2 changes the top-1 skill (PR + A/B)                                                    | 0.5-1d change + 2w observation        | followup_rate ↓, RT P50 ↓ verified      | **Declare the §0.4 per-skill spec in the PR**                      |
+| **P3**   | Layer 3 prompt concurrency guidance + `batch_size` telemetry (including §4.3.2 state passing) | 1-1.5d change + 1w real-world testing | batch_size distribution                 | Verify §0.2 item 3                                                 |
+| **P4**   | Layer 2 continues changing the top-2 / top-3 skills (parallel with P3)                        | 0.5-1d × N                            | cumulative RT P50 ↓                     | Declare §0.4 in each PR                                            |
+| **P5**   | Evaluate whether D1 still has value                                                           | decision meeting                      | roadmap update                          | —                                                                  |
+
+**Key decision points (against the §0.3 stop-loss line)**:
+
+- **End of P-1**: if any item of §0.1 / §0.3 cannot reach consensus → do not enter P0
+- **End of P1.5**: triggers §0.3 outcome metric #1 (top-5 weighted followup_rate < 30%) → terminate the direction; otherwise lock the §0.2 thresholds
+- **End of P2**: triggers §0.3 outcome metric #2 (RT P50 ↓ < 1s after the top-1 change) or any process metric → stop and review
+- **End of P3**: triggers §0.3 outcome metric #3 (batch_size P50 still = 1) → abandon Layer 3
+- **P5**: decide D1 ROI based on the form of the remaining skills
+
+---
+
+## 9. Key code locations
+
+| File                                                     | Key symbol                                                                           | Location                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------- |
+| `packages/core/src/telemetry/types.ts`                   | `ToolCallEvent` (contains `prompt_id` / `duration_ms`)                               | L170                               |
+| `packages/core/src/telemetry/types.ts`                   | `SkillLaunchEvent` (needs `prompt_id` added)                                         | L896                               |
+| `packages/core/src/telemetry/loggers.ts`                 | `logToolCall`                                                                        | L220                               |
+| `packages/core/src/telemetry/loggers.ts`                 | `logSkillLaunch` (goes through OTLP; missing qwen-logger forwarding)                 | L958                               |
+| `packages/core/src/telemetry/loggers.ts`                 | `logToolCall` (dual path: OTLP + qwen-logger, as a fix template)                     | L220, L230                         |
+| `packages/core/src/telemetry/qwen-logger/qwen-logger.ts` | `logSkillLaunchEvent` (**currently dead code**, the §4.1.1b prerequisite fix target) | L908                               |
+| `packages/core/src/core/coreToolScheduler.ts`            | `partitionToolCalls`                                                                 | L775                               |
+| `packages/core/src/core/coreToolScheduler.ts`            | `runConcurrently` / batch scheduling                                                 | L2456, L2473                       |
+| `packages/core/src/core/coreToolScheduler.ts`            | `logToolCall` call site (the endpoint of the batch_size state passing)               | L3163                              |
+| `packages/core/src/services/fileReadCache.ts`            | `FileReadCache` (existing, affects re-read rounds)                                   | L135                               |
+| `packages/core/src/tools/skill.ts`                       | `SkillTool` + 4 `logSkillLaunch` call sites                                          | L386, L399, L426, L482             |
+| `packages/core/src/skills/skill-manager.ts`              | `SkillManager` (skill registration/loading)                                          | whole file                         |
+| `packages/core/src/skills/skill-load.ts`                 | skill description loading (the entry point for output contract changes)              | whole file                         |
+| `packages/core/src/tools/tools.ts`                       | `Kind` + `CONCURRENCY_SAFE_KINDS`                                                    | L793, L818                         |
+| `packages/core/src/core/coreToolScheduler.ts`            | `partitionToolCalls` + `runConcurrently` (existing concurrency infrastructure)       | see rt-optimization-design.md §5.7 |
+| `packages/core/src/core/prompts.ts`                      | the `# Final Reminder` section (where Layer 3 adds concurrency guidance)             | L396                               |
+| `.qwen/skills/`                                          | the directory of each skill definition (the Layer 2 change target)                   | directory                          |

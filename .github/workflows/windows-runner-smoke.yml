@@ -102,7 +102,7 @@ jobs:
 
       - name: 'Install dependencies'
         shell: 'bash'
-        run: 'corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only'
+        run: 'npm ci --no-audit --progress=false'
 
       - name: 'Run tests and generate reports'
         shell: 'bash'

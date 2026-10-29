@@ -7,6 +7,7 @@
 import type { Dispatcher } from 'undici';
 
 import { createDebugLogger } from './debugLogger.js';
+import { buildCaBundle } from './proxyUtils.js';
 
 const debugLogger = createDebugLogger('RUNTIME_FETCH');
 
@@ -110,8 +111,8 @@ export type OpenAIRuntimeFetchOptions =
       // Optional fetch override. When a custom dispatcher is being passed,
       // we pin this to the bundled undici's fetch so the dispatcher and
       // fetch share a single undici version — otherwise Node's built-in
-      // fetch (newer undici) rejects a dispatcher from the bundled undici
-      // with errors such as `invalid onError method`.
+      // fetch (newer undici) rejects a ProxyAgent from the bundled undici
+      // (e.g. v6) with `invalid onError method`.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       fetch?: any;
     }
@@ -139,6 +140,8 @@ export type SDKType = 'openai' | 'anthropic';
 export function buildRuntimeFetchOptions(
   sdkType: 'openai',
   proxyUrl?: string,
+  noProxy?: string[],
+  caCertificates?: string[],
 ): OpenAIRuntimeFetchOptions;
 /**
  * Build runtime-specific fetch options for Anthropic SDK
@@ -146,6 +149,8 @@ export function buildRuntimeFetchOptions(
 export function buildRuntimeFetchOptions(
   sdkType: 'anthropic',
   proxyUrl?: string,
+  noProxy?: string[],
+  caCertificates?: string[],
 ): AnthropicRuntimeFetchOptions;
 /**
  * Build runtime-specific fetch options based on the detected runtime and SDK type
@@ -158,6 +163,8 @@ export function buildRuntimeFetchOptions(
 export function buildRuntimeFetchOptions(
   sdkType: SDKType,
   proxyUrl?: string,
+  noProxy: string[] = [],
+  caCertificates: string[] = [],
 ): OpenAIRuntimeFetchOptions | AnthropicRuntimeFetchOptions {
   const runtime = detectRuntime();
 
@@ -204,12 +211,22 @@ export function buildRuntimeFetchOptions(
       // Node.js: Use a custom undici dispatcher with disabled timeouts in both
       // proxy and no-proxy paths so SDK timeout controls the total request time.
       // No-proxy uses a plain Agent (not ProxyAgent) for local LLM backends.
-      return buildFetchOptionsWithDispatcher(sdkType, proxyUrl);
+      return buildFetchOptionsWithDispatcher(
+        sdkType,
+        proxyUrl,
+        noProxy,
+        caCertificates,
+      );
     }
 
     default: {
       // Unknown runtime: treat as Node.js-like environment.
-      return buildFetchOptionsWithDispatcher(sdkType, proxyUrl);
+      return buildFetchOptionsWithDispatcher(
+        sdkType,
+        proxyUrl,
+        noProxy,
+        caCertificates,
+      );
     }
   }
 }
@@ -240,35 +257,49 @@ const NO_DISPATCHER_FALLBACK = {
  * The dispatcher is cached so that preconnect and subsequent SDK requests
  * share the same connection pool, enabling TCP+TLS connection reuse.
  *
- * @param proxyUrl - Proxy URL used to create a cached proxy dispatcher
- * @returns A cached undici dispatcher that honors NO_PROXY
+ * @param proxyUrl - Proxy URL used to create a cached ProxyAgent
+ * @returns A cached undici ProxyAgent dispatcher
  */
 export function getOrCreateSharedDispatcher(
   proxyUrl: string,
+  noProxy: string[] = [],
+  caCertificates: string[] = [],
   insecure: boolean = isTlsVerificationDisabled(),
 ): Dispatcher {
   // Secure and insecure dispatchers must not share a cache entry, otherwise a
   // preconnect warmed without the flag could hand a verifying dispatcher to a
-  // client that expects verification disabled (or vice versa).
-  const cacheKey = insecure ? `${proxyUrl}#insecure` : proxyUrl;
+  // client that expects verification disabled (or vice versa). NO_PROXY and CA
+  // trust also change the dispatcher, so both are part of the composite key.
+  const baseCacheKey = `${proxyUrl}|${noProxy.join(',')}|${caCertificates.join(',')}`;
+  const cacheKey = insecure ? `${baseCacheKey}#insecure` : baseCacheKey;
   const cached = dispatcherCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
+  const ca = buildCaBundle(caCertificates);
   const { EnvHttpProxyAgent } = requireUndici();
   const dispatcher = new EnvHttpProxyAgent({
     httpProxy: proxyUrl,
     httpsProxy: proxyUrl,
+    noProxy: noProxy.join(','),
     headersTimeout: 0,
     bodyTimeout: 0,
     keepAliveTimeout: 60_000,
     // EnvHttpProxyAgent can dispatch either directly or through a proxy.
-    // `connect` covers a direct NO_PROXY connection, `requestTls` covers the
-    // origin through a proxy, and `proxyTls` covers an HTTPS proxy itself.
+    // `connect` covers a direct NO_PROXY connection (extra CA certs and, when
+    // opted in, disabled verification), `requestTls` covers the origin
+    // through a proxy, and `proxyTls` covers an HTTPS proxy itself.
+    ...(ca || insecure
+      ? {
+          connect: {
+            ...(ca ? { ca } : {}),
+            ...(insecure ? { rejectUnauthorized: false } : {}),
+          },
+        }
+      : {}),
     ...(insecure
       ? {
-          connect: { rejectUnauthorized: false },
           requestTls: { rejectUnauthorized: false },
           proxyTls: { rejectUnauthorized: false },
         }
@@ -316,6 +347,8 @@ export function getOrCreateMcpDispatcher(
   if (resolvedProxyUrlForRuntimeFetch) {
     return getOrCreateSharedDispatcher(
       resolvedProxyUrlForRuntimeFetch,
+      [],
+      [],
       insecure,
     );
   }
@@ -743,6 +776,8 @@ function recordProxyFailure(hostname: string): number {
 function buildFetchOptionsWithDispatcher(
   sdkType: SDKType,
   proxyUrl?: string,
+  noProxy: string[] = [],
+  caCertificates: string[] = [],
 ): OpenAIRuntimeFetchOptions | AnthropicRuntimeFetchOptions {
   const insecure = isTlsVerificationDisabled();
   const { Agent, fetch: undiciFetch } = requireUndici();
@@ -750,29 +785,46 @@ function buildFetchOptionsWithDispatcher(
   // timeouts (headersTimeout: 0, bodyTimeout: 0). This prevents undici's 300s
   // default bodyTimeout from aborting long-running requests to local LLM
   // backends (LM Studio, Ollama, llama.cpp, MLX). The Agent is cached for
-  // connection pool reuse, matching the proxy path's caching behavior.
+  // connection pool reuse, matching the proxy path's caching behavior. Extra
+  // CA certs (when configured) are applied so internal TLS endpoints are
+  // trusted on the direct path too.
   if (!proxyUrl) {
-    const NO_PROXY_KEY = insecure ? '__no_proxy__#insecure' : '__no_proxy__';
-    let dispatcher = dispatcherCache.get(NO_PROXY_KEY);
+    const ca = buildCaBundle(caCertificates);
+    const baseNoProxyKey = `__no_proxy__|${caCertificates.join(',')}`;
+    const noProxyKey = insecure ? `${baseNoProxyKey}#insecure` : baseNoProxyKey;
+    let dispatcher = dispatcherCache.get(noProxyKey);
     if (!dispatcher) {
       dispatcher = new Agent({
         headersTimeout: 0,
         bodyTimeout: 0,
         keepAliveTimeout: 60_000,
         // For a direct (non-proxy) Agent, `connect` options flow straight to
-        // the TLS connector, so this disables upstream cert verification.
-        ...(insecure ? { connect: { rejectUnauthorized: false } } : {}),
+        // the TLS connector: extra CA certs widen trust, and (when opted in)
+        // `rejectUnauthorized: false` disables upstream cert verification.
+        ...(ca || insecure
+          ? {
+              connect: {
+                ...(ca ? { ca } : {}),
+                ...(insecure ? { rejectUnauthorized: false } : {}),
+              },
+            }
+          : {}),
       });
-      dispatcherCache.set(NO_PROXY_KEY, dispatcher);
+      dispatcherCache.set(noProxyKey, dispatcher);
     }
     return { fetchOptions: { dispatcher }, fetch: undiciFetch };
   }
 
   try {
-    const dispatcher = getOrCreateSharedDispatcher(proxyUrl, insecure);
+    const dispatcher = getOrCreateSharedDispatcher(
+      proxyUrl,
+      noProxy,
+      caCertificates,
+      insecure,
+    );
     // Pin fetch to undici's own implementation so the dispatcher and fetch
     // come from the same undici version. Node's bundled undici may differ in
-    // major version from the packaged one (e.g. v8 vs v7), which
+    // major version from the project's bundled one (e.g. v8 vs v6), which
     // breaks dispatcher handler-interface checks (`invalid onError method`).
     // The no-proxy branch above also pins undiciFetch for consistency.
     return { fetchOptions: { dispatcher }, fetch: undiciFetch };

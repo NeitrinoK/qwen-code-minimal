@@ -1,301 +1,301 @@
-# Slash Command 重构路线图
+# Slash Command Refactor Roadmap
 
-## 总体目标
+## Overall Goal
 
-用 Qwen 内部架构风格，交付一个在外部体验上 95% 对齐 Claude Code 的 command 平台，同时修复三模式分裂、命令来源单一、prompt command 无法被模型调用三个核心问题。
-
----
-
-## 核心设计原则
-
-1. **每个 Phase 可独立 ship**：完成后行为是自洽的，不依赖未来 Phase 才能运行
-2. **Phase 1 是纯基础设施**：除修复 MCP_PROMPT 被错误拦截外，不改变任何现有可用命令集
-3. **行为变化与架构变化分开**：Phase 1 做架构，Phase 2 做能力扩展
-4. **不照搬 Claude Code 内部架构**：但对齐用户可感知的能力面
+Using Qwen's internal architectural style, deliver a command platform whose external experience is 95% aligned with Claude Code, while fixing the three core problems: the three-mode split, the single command source, and prompt commands not being invocable by the model.
 
 ---
 
-## Phase 1：基础设施重建（纯架构，零行为变化）
+## Core Design Principles
 
-### 目标
-
-建立统一的命令元数据模型和跨模式管理机制，为后续所有 Phase 提供底层支撑。
-
-### 功能点
-
-#### 1.1 扩展 `SlashCommand` 元数据模型
-
-在现有 `SlashCommand` 接口上新增以下字段：
-
-**来源字段**
-
-- `source: CommandSource`：命令来源枚举（`builtin-command` / `bundled-skill` / `skill-dir-command` / `plugin-command` / `mcp-prompt` 等）
-- `sourceLabel?: string`：展示用的来源标签（如 `"Built-in"` / `"MCP: github-server"`）
-
-**模式能力字段**
-
-- `supportedModes: ExecutionMode[]`：声明在哪些运行模式下可用（`interactive` / `non_interactive` / `acp`）
-
-**执行类型字段**
-
-- `commandType: CommandType`：声明执行类型（`prompt` / `local` / `local-jsx`）
-
-**可见性字段**
-
-- `userInvocable: boolean`：用户是否可通过 slash command 调用（默认 `true`）
-- `modelInvocable: boolean`：模型是否可通过 tool call 调用（默认 `false`）
-
-**辅助元数据字段**（为 Phase 3 预留，Phase 1 仅定义，不使用）
-
-- `argumentHint?: string`：参数提示，如 `"<model-id>"` / `"show|list|set"`
-- `whenToUse?: string`：何时调用该命令的说明（供模型使用）
-- `examples?: string[]`：使用示例
-
-#### 1.2 Loader 填充 source/commandType 字段
-
-每个 Loader 在构建 `SlashCommand` 时必须填充 `source` 和 `commandType`：
-
-| Loader                           | source              | commandType                           |
-| -------------------------------- | ------------------- | ------------------------------------- |
-| `BuiltinCommandLoader`           | `builtin-command`   | 由各命令声明（`local` / `local-jsx`） |
-| `BundledSkillLoader`             | `bundled-skill`     | `prompt`                              |
-| `FileCommandLoader`（用户/项目） | `skill-dir-command` | `prompt`                              |
-| `FileCommandLoader`（插件）      | `plugin-command`    | `prompt`                              |
-| `McpPromptLoader`                | `mcp-prompt`        | `prompt`                              |
-
-#### 1.3 内置命令声明 `supportedModes` 和 `commandType`
-
-为所有 built-in 命令显式声明：
-
-- `commandType`：`local`（无 UI 依赖）或 `local-jsx`（依赖 dialog/React）
-- `supportedModes`：`local` 类命令声明 `['interactive', 'non_interactive', 'acp']`；`local-jsx` 类命令声明 `['interactive']`
-
-#### 1.4 用 capability-based 过滤替换硬编码白名单
-
-- 删除 `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` 常量
-- 删除 `filterCommandsForNonInteractive` 函数
-- 新增 `filterCommandsForMode(commands, mode)` 函数，基于 `supportedModes` 字段过滤
-- 新增 `getEffectiveSupportedModes(cmd)` 工具函数（考虑 CommandKind 默认策略）
-- 修改 `handleSlashCommand` / `getAvailableCommands` 函数签名，移除 `allowedBuiltinCommandNames` 参数
-
-#### 1.5 CommandService 升级为统一 Registry
-
-- 新增 `getCommandsForMode(mode: ExecutionMode)` 方法
-- 新增 `getModelInvocableCommands()` 方法（Phase 2/3 使用，Phase 1 提供接口）
-- 现有 `getCommands()` 保持不变（interactive 使用）
-
-### 验收标准
-
-- [ ] `SlashCommand` 接口包含所有新字段，TypeScript 编译通过
-- [ ] 所有 Loader 填充 `source` 和 `commandType` 字段
-- [ ] 所有 built-in 命令声明 `commandType` 和 `supportedModes`
-- [ ] `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` 已删除，被 capability filter 取代
-- [ ] **non-interactive 下可用命令集与重构前完全一致**（现有测试不 break）
-- [ ] MCP prompt commands 在 non-interactive/acp 下可正常执行（修复原有错误限制）
-- [ ] `CommandService.getCommandsForMode('non_interactive')` 返回正确的命令集
-- [ ] 所有现有测试通过
+1. **Each Phase can ship independently**: once complete, the behavior is self-consistent and does not depend on a future Phase to run.
+2. **Phase 1 is pure infrastructure**: aside from fixing MCP_PROMPT being incorrectly blocked, it does not change any existing usable command set.
+3. **Separate behavior changes from architecture changes**: Phase 1 does the architecture, Phase 2 does the capability expansion.
+4. **Do not copy Claude Code's internal architecture wholesale**: but do align with the user-perceivable capability surface.
 
 ---
 
-## Phase 2：能力扩展（命令整理与 prompt command 模型调用）
+## Phase 1: Infrastructure Rebuild (pure architecture, zero behavior change)
 
-### 目标
+### Goal
 
-基于 Phase 1 的元数据基础，扩展三种模式下的命令可用范围，并打通 prompt command 的模型调用通路。
+Establish a unified command metadata model and a cross-mode management mechanism, providing the underlying foundation for all subsequent Phases.
 
-### 功能点
+### Features
 
-#### 2.1 扩展 non-interactive / acp 可用命令集
+#### 1.1 Extend the `SlashCommand` metadata model
 
-**ACP 语义设计原则**
+Add the following fields to the existing `SlashCommand` interface:
 
-将命令扩展到 ACP/non-interactive 模式前，需遵循以下设计原则：
+**Source fields**
 
-1. **接收方不同**：ACP 模式下消息的接收方是 IDE（Zed/VS Code 插件），而非终端用户。消息内容以纯文本或 Markdown 格式为宜，不应包含 terminal 专用的 ANSI 样式。
-2. **实现策略是增加模式分支，而非替换**：正确做法是在命令的 `action` 内部新增模式判断——interactive 路径保持现有 UI 渲染逻辑不变，non_interactive/acp 路径返回适合机器消费的 `message` 或 `submit_prompt`。两条路径共存于同一个 `action` 函数中。
-3. **有状态操作需说明语义**：在单次非交互调用中（如 CLI `-p` 参数），`/model set`、`/language set` 等有状态命令的变更仅在本次 session 内有效，应在命令响应文本中注明。
-4. **只读 vs 有副作用**：只读命令（如 `/about`、`/stats`）直接返回当前状态文本；有副作用命令（如 `/model set`、`/language set`）需在响应中确认操作结果。
-5. **避免环境相关副作用**：打开浏览器（`/docs`、`/insight`）、操作剪贴板（`/copy`）等依赖图形环境的操作，在 non_interactive/acp 路径下应跳过，改为在响应文本中返回相关 URL 或内容本身。
+- `source: CommandSource`: command source enum (`builtin-command` / `bundled-skill` / `skill-dir-command` / `plugin-command` / `mcp-prompt`, etc.)
+- `sourceLabel?: string`: display source label (e.g. `"Built-in"` / `"MCP: github-server"`)
 
-**待扩展命令总览**
+**Mode capability fields**
 
-> 注：`btw`、`bug`、`compress`、`context`、`init`、`summary` 已在 Phase 1 中扩展到全模式，不在本阶段列表中。
+- `supportedModes: ExecutionMode[]`: declares which run modes it is available in (`interactive` / `non_interactive` / `acp`)
 
-以下 13 个命令将在 Phase 2 中扩展到 `non_interactive` 和 `acp` 模式：
+**Execution type field**
 
-**A 类：action 已返回 `message` 或 `submit_prompt`，只需扩展 `supportedModes` 并设计 ACP 消息内容**
+- `commandType: CommandType`: declares the execution type (`prompt` / `local` / `local-jsx`)
 
-| 命令          | 返回类型        | ACP/non-interactive 处理要点                       |
-| ------------- | --------------- | -------------------------------------------------- |
-| `/copy`       | `message`       | ACP 下无剪贴板，改为在响应文本中返回内容本身或提示 |
-| `/export`     | `message`       | 返回导出文件的完整路径                             |
-| `/plan`       | `submit_prompt` | 无需改动，直接扩展模式                             |
-| `/restore`    | `message`       | 返回恢复操作的结果描述                             |
-| `/language`   | `message`       | 返回当前语言设置或变更确认文本                     |
-| `/statusline` | `submit_prompt` | 无需改动，直接扩展模式                             |
+**Visibility fields**
 
-**A' 类：有参数时正常执行，无参数时触发 dialog（需增加无参数路径的 non-interactive 处理）**
+- `userInvocable: boolean`: whether the user can invoke it via a slash command (default `true`)
+- `modelInvocable: boolean`: whether the model can invoke it via a tool call (default `false`)
 
-| 命令             | 无参数 interactive 行为 | 无参数 non_interactive/acp 行为 |
-| ---------------- | ----------------------- | ------------------------------- |
-| `/model`         | 打开模型选择 dialog     | 返回当前模型名称及说明文本      |
-| `/approval-mode` | 打开审批模式 dialog     | 返回当前审批模式及说明文本      |
+**Auxiliary metadata fields** (reserved for Phase 3; in Phase 1 only defined, not used)
 
-**B 类：action 内部使用 `context.ui.addItem()` 渲染 React 组件，需增加模式分支返回纯文本**
+- `argumentHint?: string`: argument hint, e.g. `"<model-id>"` / `"show|list|set"`
+- `whenToUse?: string`: a description of when to invoke this command (for model use)
+- `examples?: string[]`: usage examples
 
-| 命令       | interactive 行为          | non_interactive/acp 返回内容                                                        |
-| ---------- | ------------------------- | ----------------------------------------------------------------------------------- |
-| `/about`   | 渲染版本/配置 React 组件  | 版本号、当前模型、关键配置的纯文本摘要                                              |
-| `/stats`   | 渲染 token/费用统计组件   | session 统计数据的纯文本格式                                                        |
-| `/insight` | 渲染分析组件 + 打开浏览器 | `non_interactive` 同步生成返回文件路径；`acp` 通过 `stream_messages` 推送进度和结果 |
-| `/docs`    | 渲染文档入口 + 打开浏览器 | 返回文档 URL，不打开浏览器                                                          |
+#### 1.2 Loaders populate the source/commandType fields
 
-**C 类：特殊处理**
+Each Loader must populate `source` and `commandType` when constructing a `SlashCommand`:
 
-| 命令     | interactive 行为                       | non_interactive/acp 行为                                                                            |
-| -------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `/clear` | 调用 `context.ui.clear()` 清空终端显示 | 返回上下文边界标记 message，内容为 `"Context cleared. Previous messages are no longer in context."` |
+| Loader                             | source              | commandType                                      |
+| ---------------------------------- | ------------------- | ------------------------------------------------ |
+| `BuiltinCommandLoader`             | `builtin-command`   | declared by each command (`local` / `local-jsx`) |
+| `BundledSkillLoader`               | `bundled-skill`     | `prompt`                                         |
+| `FileCommandLoader` (user/project) | `skill-dir-command` | `prompt`                                         |
+| `FileCommandLoader` (plugin)       | `plugin-command`    | `prompt`                                         |
+| `McpPromptLoader`                  | `mcp-prompt`        | `prompt`                                         |
 
-#### 2.2 prompt command 模型调用打通
+#### 1.3 Built-in commands declare `supportedModes` and `commandType`
 
-- 在 `CommandService`（或 `CommandRegistry`）中实现 `getModelInvocableCommands()`，返回所有 `modelInvocable: true` 的命令
-- 将 `BundledSkillLoader`、`FileCommandLoader`（用户/项目命令）加载的命令标记为 `modelInvocable: true`
-- **MCP prompt 不标记为 `modelInvocable`**：MCP prompt 通过独立的 MCP tool call 机制由模型调用，无需经过 `SkillTool` 中转
-- 改造 `SkillTool`：从只消费 `SkillManager.listSkills()` 改为同时消费 `CommandService.getModelInvocableCommands()`
-- 构建统一的模型可调用命令描述，注入 `SkillTool` 的 description
+Explicitly declare for all built-in commands:
 
-#### 2.3 mid-input slash command 检测（基础版）
+- `commandType`: `local` (no UI dependency) or `local-jsx` (depends on dialog/React)
+- `supportedModes`: `local`-type commands declare `['interactive', 'non_interactive', 'acp']`; `local-jsx`-type commands declare `['interactive']`
 
-- 在 `InputPrompt` 中检测光标附近的 slash token（不限于行首）
-- 检测到 slash token 后通过 inline ghost text 提示最佳匹配命令名（Tab 接受）
-- **不**包含 dropdown 补全菜单、argument hints、source badge 等（Phase 3 做）
-- ghost text 候选集仅限 `modelInvocable: true` 的命令（skill / file command）
+#### 1.4 Replace the hardcoded allowlist with capability-based filtering
 
-### 验收标准
+- Remove the `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` constant
+- Remove the `filterCommandsForNonInteractive` function
+- Add the `filterCommandsForMode(commands, mode)` function, which filters based on the `supportedModes` field
+- Add the `getEffectiveSupportedModes(cmd)` utility function (accounting for the CommandKind default policy)
+- Modify the `handleSlashCommand` / `getAvailableCommands` function signatures to remove the `allowedBuiltinCommandNames` parameter
 
-**2.1 命令扩展**
+#### 1.5 Upgrade CommandService into a unified Registry
 
-- [ ] A 类：`/copy`、`/export`、`/plan`、`/restore`、`/language`、`/statusline` 在 non-interactive 和 acp 模式下可正常执行并返回有意义的文本输出
-- [ ] A' 类：`/model`、`/approval-mode` 无参数时在 non-interactive/acp 下返回当前状态文本（不触发 dialog）；有参数时执行变更并返回确认文本
-- [ ] B 类：`/about`、`/stats`、`/docs` 在 non-interactive/acp 下返回纯文本，`/docs` 不打开浏览器；`/insight` 在 `non_interactive` 下同步生成并返回文件路径 message，在 `acp` 下通过 `stream_messages` 推送进度
-- [ ] C 类：`/clear` 在 non-interactive/acp 下返回上下文边界标记 message，不调用 `context.ui.clear()`
-- [ ] 所有扩展命令在 interactive 模式下行为与重构前完全一致（无退化）
+- Add the `getCommandsForMode(mode: ExecutionMode)` method
+- Add the `getModelInvocableCommands()` method (used by Phase 2/3; Phase 1 provides the interface)
+- The existing `getCommands()` stays unchanged (used by interactive)
 
-**2.2 模型调用**
+### Acceptance Criteria
 
-- [ ] 模型在对话中可以通过 `SkillTool` 调用 bundled skill、file command（用户/项目）
-- [ ] MCP prompt 不经过 `SkillTool`，通过 MCP tool call 机制由模型原生调用
-- [ ] 模型不可以调用 built-in commands（`userInvocable: true`，`modelInvocable: false`）
-- [ ] `SkillTool` 的 description 包含所有 `modelInvocable` 命令的描述
+- [ ] The `SlashCommand` interface includes all new fields, and TypeScript compiles.
+- [ ] All Loaders populate the `source` and `commandType` fields.
+- [ ] All built-in commands declare `commandType` and `supportedModes`.
+- [ ] `ALLOWED_BUILTIN_COMMANDS_NON_INTERACTIVE` is removed and replaced by the capability filter.
+- [ ] **The usable command set under non-interactive is exactly the same as before the refactor** (existing tests do not break).
+- [ ] MCP prompt commands execute normally under non-interactive/acp (fixing the original incorrect restriction).
+- [ ] `CommandService.getCommandsForMode('non_interactive')` returns the correct command set.
+- [ ] All existing tests pass.
+
+---
+
+## Phase 2: Capability Expansion (command cleanup and prompt command model invocation)
+
+### Goal
+
+Building on the Phase 1 metadata foundation, expand the range of available commands across the three modes and open up the model-invocation path for prompt commands.
+
+### Features
+
+#### 2.1 Expand the non-interactive / acp usable command set
+
+**ACP semantics design principles**
+
+Before expanding a command to ACP/non-interactive mode, follow these design principles:
+
+1. **The recipient is different**: in ACP mode, the message recipient is the IDE (Zed/VS Code plugin), not the terminal user. Message content is best in plain text or Markdown format, and should not contain terminal-specific ANSI styling.
+2. **The implementation strategy is to add a mode branch, not to replace**: the correct approach is to add a mode check inside the command's `action`—the interactive path keeps the existing UI rendering logic unchanged, while the non_interactive/acp path returns a `message` or `submit_prompt` suitable for machine consumption. The two paths coexist within the same `action` function.
+3. **Stateful operations need their semantics explained**: within a single non-interactive invocation (e.g. the CLI `-p` argument), changes from stateful commands like `/model set` and `/language set` are only effective within this session, which should be noted in the command response text.
+4. **Read-only vs. side-effecting**: read-only commands (e.g. `/about`, `/stats`) directly return current-state text; side-effecting commands (e.g. `/model set`, `/language set`) need to confirm the operation result in the response.
+5. **Avoid environment-dependent side effects**: operations that depend on a graphical environment, such as opening a browser (`/docs`, `/insight`) or manipulating the clipboard (`/copy`), should be skipped on the non_interactive/acp path and instead return the relevant URL or the content itself in the response text.
+
+**Overview of commands to be expanded**
+
+> Note: `btw`, `bug`, `compress`, `context`, `init`, `summary` were already expanded to all modes in Phase 1 and are not in this phase's list.
+
+The following 13 commands will be expanded to `non_interactive` and `acp` mode in Phase 2:
+
+**Class A: the action already returns `message` or `submit_prompt`; only need to extend `supportedModes` and design the ACP message content**
+
+| Command       | Return type     | ACP/non-interactive handling notes                                                       |
+| ------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| `/copy`       | `message`       | No clipboard under ACP; instead return the content itself or a hint in the response text |
+| `/export`     | `message`       | Return the full path of the exported file                                                |
+| `/plan`       | `submit_prompt` | No change needed; directly extend the mode                                               |
+| `/restore`    | `message`       | Return a description of the restore operation result                                     |
+| `/language`   | `message`       | Return the current language setting or change-confirmation text                          |
+| `/statusline` | `submit_prompt` | No change needed; directly extend the mode                                               |
+
+**Class A': executes normally when arguments are present, triggers a dialog when no arguments (needs a non-interactive handling path for the no-argument case)**
+
+| Command          | No-argument interactive behavior | No-argument non_interactive/acp behavior              |
+| ---------------- | -------------------------------- | ----------------------------------------------------- |
+| `/model`         | Open the model selection dialog  | Return the current model name and descriptive text    |
+| `/approval-mode` | Open the approval mode dialog    | Return the current approval mode and descriptive text |
+
+**Class B: the action internally uses `context.ui.addItem()` to render a React component; needs a mode branch to return plain text**
+
+| Command    | interactive behavior                     | non_interactive/acp return content                                                                                         |
+| ---------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `/about`   | Render version/config React component    | Plain-text summary of version number, current model, and key config                                                        |
+| `/stats`   | Render token/cost statistics component   | Plain-text format of the session statistics                                                                                |
+| `/insight` | Render analysis component + open browser | `non_interactive` synchronously generates and returns a file path; `acp` pushes progress and results via `stream_messages` |
+| `/docs`    | Render docs entry + open browser         | Return the docs URL, do not open the browser                                                                               |
+
+**Class C: special handling**
+
+| Command  | interactive behavior                                    | non_interactive/acp behavior                                                                                            |
+| -------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `/clear` | Call `context.ui.clear()` to clear the terminal display | Return a context-boundary marker message, with content `"Context cleared. Previous messages are no longer in context."` |
+
+#### 2.2 Open up prompt command model invocation
+
+- In `CommandService` (or `CommandRegistry`), implement `getModelInvocableCommands()`, returning all commands with `modelInvocable: true`
+- Mark commands loaded by `BundledSkillLoader` and `FileCommandLoader` (user/project commands) as `modelInvocable: true`
+- **MCP prompts are not marked as `modelInvocable`**: MCP prompts are invoked by the model via the independent MCP tool call mechanism, without going through the `SkillTool` relay
+- Refactor `SkillTool`: change from consuming only `SkillManager.listSkills()` to also consuming `CommandService.getModelInvocableCommands()`
+- Build a unified model-invocable command description and inject it into the `SkillTool` description
+
+#### 2.3 mid-input slash command detection (basic version)
+
+- In `InputPrompt`, detect a slash token near the cursor (not limited to the start of a line)
+- After detecting a slash token, suggest the best-matching command name via inline ghost text (Tab to accept)
+- Does **not** include the dropdown completion menu, argument hints, source badge, etc. (Phase 3 does these)
+- The ghost text candidate set is limited to `modelInvocable: true` commands (skill / file command)
+
+### Acceptance Criteria
+
+**2.1 Command expansion**
+
+- [ ] Class A: `/copy`, `/export`, `/plan`, `/restore`, `/language`, `/statusline` execute normally and return meaningful text output under non-interactive and acp modes.
+- [ ] Class A': `/model`, `/approval-mode` with no arguments return current-state text under non-interactive/acp (without triggering a dialog); with arguments they perform the change and return confirmation text.
+- [ ] Class B: `/about`, `/stats`, `/docs` return plain text under non-interactive/acp, and `/docs` does not open the browser; `/insight` synchronously generates and returns a file path message under `non_interactive`, and pushes progress via `stream_messages` under `acp`.
+- [ ] Class C: `/clear` returns a context-boundary marker message under non-interactive/acp and does not call `context.ui.clear()`.
+- [ ] All expanded commands behave exactly the same as before the refactor under interactive mode (no regression).
+
+**2.2 Model invocation**
+
+- [ ] The model can invoke bundled skills and file commands (user/project) via `SkillTool` during a conversation.
+- [ ] MCP prompts do not go through `SkillTool`; they are invoked natively by the model via the MCP tool call mechanism.
+- [ ] The model cannot invoke built-in commands (`userInvocable: true`, `modelInvocable: false`).
+- [ ] The `SkillTool` description includes the descriptions of all `modelInvocable` commands.
 
 **2.3 mid-input slash**
 
-- [ ] mid-input slash：在正文中输入 `/` 后通过 inline ghost text 提示最佳匹配命令（Tab 接受）
+- [ ] mid-input slash: after typing `/` within body text, the best-matching command is suggested via inline ghost text (Tab to accept).
 
 ---
 
-## Phase 3：体验对齐（补全增强 + Claude Code 命令补齐）
+## Phase 3: Experience Alignment (completion enhancements + Claude Code command parity)
 
-### 目标
+### Goal
 
-在 Phase 1/2 的元数据和命令能力基础上，补齐补全体验，并补充 Claude Code 中存在而 Qwen Code 缺失的命令。
+Building on the Phase 1/2 metadata and command capabilities, round out the completion experience and add the commands that exist in Claude Code but are missing in Qwen Code.
 
-### 功能点
+### Features
 
-#### 3.1 补全体验增强
+#### 3.1 Completion experience enhancements
 
 **source badge**
 
-- 在补全菜单中展示命令来源标签（`[MCP]` 已有，扩展为 `[Skill]`、`[Custom]` 等）
-- 使用 `source` / `sourceLabel` 字段渲染
+- Display a command source label in the completion menu (`[MCP]` already exists, extend it to `[Skill]`, `[Custom]`, etc.)
+- Render using the `source` / `sourceLabel` fields
 
 **argument hint**
 
-- 补全菜单中命令名后展示 `argumentHint`（如 `set <model-id>`）
-- `argumentHint` 由 Phase 1 元数据字段提供
+- Display the `argumentHint` after the command name in the completion menu (e.g. `set <model-id>`)
+- `argumentHint` is provided by the Phase 1 metadata field
 
-**recently used 排序**
+**recently used ordering**
 
-- 记录用户最近使用的命令（session 级别，无需持久化）
-- 在补全排序中给近期使用的命令加权
+- Record the commands the user has recently used (session level, no persistence needed)
+- Weight recently used commands in the completion ordering
 
-**alias 命中高亮**
+**alias hit highlighting**
 
-- 当补全命中 `altNames` 而非主名时，在展示时注明（如 `help (alias: ?)`）
+- When a completion hits `altNames` rather than the primary name, note it in the display (e.g. `help (alias: ?)`)
 
-**冲突策略对齐**
+**conflict policy alignment**
 
-- 明确优先级：built-in > bundled/skill-dir > plugin > mcp
-- 冲突时将低优先级命令重命名（如 `pluginName.commandName`）
+- Clarify the priority: built-in > bundled/skill-dir > plugin > mcp
+- On conflict, rename the lower-priority command (e.g. `pluginName.commandName`)
 
-#### 3.2 mid-input slash command 完整版
+#### 3.2 mid-input slash command full version
 
-- 在 Phase 2 基础版上增加 argument hints 和 source badge 展示
-- ghost text 提示（输入 `/he` 时显示 `/help` 的淡色提示）
-- 有效命令 token 高亮（已完成匹配的 slash command 显示不同颜色）
+- On top of the Phase 2 basic version, add argument hints and source badge display
+- ghost text suggestion (show the faded `/help` hint when typing `/he`)
+- Valid command token highlighting (a completed-match slash command is shown in a different color)
 
-#### 3.3 Help 目录重构
+#### 3.3 Help directory restructure
 
-将 `/help` 从平铺列表改为分组目录：
+Change `/help` from a flat list to a grouped directory:
 
-- **Built-in Commands**（local + local-jsx，注明 mode）
+- **Built-in Commands** (local + local-jsx, with mode noted)
 - **Bundled Skills**
-- **Custom Commands**（用户/项目 file commands）
+- **Custom Commands** (user/project file commands)
 - **Plugin Commands**
 - **MCP Commands**
 
-每条命令展示：名称、argumentHint、description、source、supportedModes 标记
+Each command displays: name, argumentHint, description, source, supportedModes marker
 
-#### 3.4 ACP available commands 元数据增强
+#### 3.4 ACP available commands metadata enhancement
 
-在 `sendAvailableCommandsUpdate()` 中将更多元数据暴露给 ACP 客户端：
+In `sendAvailableCommandsUpdate()`, expose more metadata to the ACP client:
 
 - `argumentHint`
 - `source`
 - `supportedModes`
-- `subcommands`（名称列表）
+- `subcommands` (name list)
 - `modelInvocable`
 
-#### 3.5 Claude Code 缺失命令补齐
+#### 3.5 Claude Code missing command parity
 
-确认并回归 Qwen Code 已有的 `/doctor` 命令；`/release-notes` 不纳入本阶段，避免引入无明确产品需求的 built-in 命令表面。
+Confirm and regression-test Qwen Code's existing `/doctor` command; `/release-notes` is not included in this phase, to avoid introducing a built-in command surface with no clear product need.
 
-| 命令      | 类型    | 说明                                 |
-| --------- | ------- | ------------------------------------ |
-| `/doctor` | `local` | 环境自检，输出配置/连接/工具状态诊断 |
+| Command   | Type    | Description                                                               |
+| --------- | ------- | ------------------------------------------------------------------------- |
+| `/doctor` | `local` | Environment self-check, outputs config/connection/tool status diagnostics |
 
-> 注：`/commit` 已作为内置 prompt 命令落地（见 #4000）；`/review` 等任务类命令仍以 bundled skill 形式提供，不在此列。
+> Note: `/commit` has landed as a built-in prompt command (see #4000); task-type commands like `/review` are still provided as bundled skills and are not listed here.
 
-### 验收标准
+### Acceptance Criteria
 
-- [ ] 补全菜单展示 source badge（`[MCP]`、`[Skill]`、`[Custom]`）
-- [ ] 补全菜单展示 argumentHint（如 `set <model-id>`）
-- [ ] 近期使用的命令在补全列表中优先出现
-- [ ] alias 命中时在补全项中注明原名
-- [ ] mid-input slash：ghost text 提示正确渲染
-- [ ] `/help` 以 Claude Code 风格分 tab 展示，避免命令堆砌，并在命令页展示支持模式标记
-- [ ] ACP available commands 包含 `argumentHint`、`source`、`subcommands` 字段
-- [ ] `/doctor` 命令可用
-- [ ] `/doctor` 在 non-interactive 模式下可执行（返回 `message`）
-- [ ] 不新增 `/release-notes`
+- [ ] The completion menu displays source badges (`[MCP]`, `[Skill]`, `[Custom]`).
+- [ ] The completion menu displays argumentHint (e.g. `set <model-id>`).
+- [ ] Recently used commands appear first in the completion list.
+- [ ] On an alias hit, the original name is noted in the completion item.
+- [ ] mid-input slash: the ghost text suggestion renders correctly.
+- [ ] `/help` is displayed Claude Code-style in tabs, avoiding command clutter, and shows the supported-modes marker on the command page.
+- [ ] ACP available commands include the `argumentHint`, `source`, and `subcommands` fields.
+- [ ] The `/doctor` command is available.
+- [ ] `/doctor` is executable under non-interactive mode (returns a `message`).
+- [ ] `/release-notes` is not added.
 
 ---
 
-## 各 Phase 依赖关系
+## Inter-Phase Dependencies
 
 ```
-Phase 1（元数据 + 统一过滤）
+Phase 1 (metadata + unified filtering)
     │
-    ├──► Phase 2（能力扩展）
+    ├──► Phase 2 (capability expansion)
     │        │
-    │        ├──► slash command 子命令拆分
-    │        └──► prompt command 模型调用（需要 getModelInvocableCommands()）
+    │        ├──► slash command subcommand split
+    │        └──► prompt command model invocation (needs getModelInvocableCommands())
     │
-    └──► Phase 3（体验对齐）
+    └──► Phase 3 (experience alignment)
              │
-             ├──► source badge（需要 Phase 1 source 字段）
-             ├──► argument hint（需要 Phase 1 argumentHint 字段）
-             └──► Help 分组（需要 Phase 1 source 字段）
+             ├──► source badge (needs the Phase 1 source field)
+             ├──► argument hint (needs the Phase 1 argumentHint field)
+             └──► Help grouping (needs the Phase 1 source field)
 ```
 
-Phase 2 和 Phase 3 不互相依赖，可以并行推进（或根据优先级调换部分子项）。
+Phase 2 and Phase 3 do not depend on each other and can proceed in parallel (or have some sub-items swapped based on priority).

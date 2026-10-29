@@ -26,8 +26,7 @@ import {
   getOpenTuiTheme,
   HLJS_TO_SYNTAX_TOKEN,
 } from './theme-parity.js';
-import { themeManager } from '../themes/theme-manager.js';
-import { QwenDark } from '../themes/qwen-dark.js';
+import { themeManager, DEFAULT_THEME } from '../themes/theme-manager.js';
 
 const PALETTE_KEYS = [
   'text',
@@ -224,8 +223,8 @@ describe('getOpenTuiTheme / unknown themes', () => {
 });
 
 describe('getActiveOpenTuiTheme (NO_COLOR parity)', () => {
-  it('returns the active theme (Qwen Dark by default)', () => {
-    expect(getActiveOpenTuiTheme().name).toBe(QwenDark.name);
+  it('returns the active theme (this build defaults to Qwen Minimal)', () => {
+    expect(getActiveOpenTuiTheme().name).toBe(DEFAULT_THEME.name);
   });
 
   it('switches to the empty NoColor palette under NO_COLOR', () => {

@@ -47,13 +47,7 @@ const common = {
   format: 'esm',
   target: 'node22',
   metafile: true,
-  external: [
-    '@lydell/node-pty',
-    'node-pty',
-    '@qwen-code/audio-capture',
-    '@teddyzhu/clipboard',
-    'sharp',
-  ],
+  external: ['@lydell/node-pty', 'node-pty', '@teddyzhu/clipboard', 'sharp'],
   inject: [path.join(root, 'scripts/esbuild-shims.js')],
   define: {
     'process.env.NODE_ENV': '"production"',
@@ -66,10 +60,6 @@ const common = {
   alias: {
     'is-in-ci': path.join(root, 'packages/cli/src/patches/is-in-ci.ts'),
     'jsonc-parser': require.resolve('jsonc-parser/lib/esm/main.js'),
-    '@qwen-code/web-templates': path.join(
-      root,
-      'packages/web-templates/src/index.ts',
-    ),
     punycode: require.resolve('punycode/'),
   },
   plugins: [
@@ -130,7 +120,7 @@ for (const name of (await fs.readdir(source))
 }
 for (const name of [
   'package.json',
-  'pnpm-lock.yaml',
+  'package-lock.json',
   'tsconfig.json',
   'packages/core/package.json',
   'packages/cli/package.json',

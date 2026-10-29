@@ -5,7 +5,6 @@
  */
 
 import type { GenerateContentParameters } from '@google/genai';
-import type Anthropic from '@anthropic-ai/sdk';
 import type OpenAI from 'openai';
 
 export interface RuntimeDiagnosticsSnapshot {
@@ -195,11 +194,7 @@ export class RuntimeDiagnosticsCollector {
     });
   }
 
-  recordAnthropicWireRequest(
-    request:
-      | Anthropic.MessageCreateParamsNonStreaming
-      | Anthropic.MessageCreateParamsStreaming,
-  ): void {
+  recordAnthropicWireRequest(request: unknown): void {
     if (!this.enabled) {
       return;
     }
@@ -335,9 +330,7 @@ export function summarizeOpenAIWireRequest(
 }
 
 export function summarizeAnthropicWireRequest(
-  request:
-    | Anthropic.MessageCreateParamsNonStreaming
-    | Anthropic.MessageCreateParamsStreaming,
+  request: unknown,
 ): AnthropicWireRequestDiagnostics {
   const requestRecord = asRecord(request);
   const messages = Array.isArray(requestRecord['messages'])

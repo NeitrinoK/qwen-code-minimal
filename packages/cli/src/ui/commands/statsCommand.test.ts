@@ -111,7 +111,7 @@ describe('statsCommand', () => {
       'model-a',
       100,
       'prompt-1',
-      AuthType.USE_GEMINI,
+      AuthType.USE_OPENAI,
       {
         promptTokenCount: 10,
         candidatesTokenCount: 20,
@@ -126,7 +126,7 @@ describe('statsCommand', () => {
       'model-b',
       200,
       'prompt-2',
-      AuthType.USE_VERTEX_AI,
+      AuthType.USE_OPENAI,
       {
         promptTokenCount: 7,
         candidatesTokenCount: 8,
@@ -688,7 +688,7 @@ describe('statsCommand', () => {
       expect(result.content).toContain('Cached (included in Input): 6');
       expect(result.content).toContain('model-a: 32 tokens');
       expect(result.content).toContain('model-b: 15 tokens');
-      expect(result.content).toContain('vertex-ai: 15 tokens');
+      expect(result.content).toContain('openai: 47 tokens');
       expect(result.content).toContain('main: 47 tokens');
       expect(result.content).not.toContain('API response duration only');
       expect(result.content).toContain('TTFT/TPS');
@@ -1294,7 +1294,7 @@ describe('statsCommand', () => {
 
     it('uses locale translations for historical token usage output', async () => {
       await seedUsage();
-      await setLanguageAsync('zh');
+      await setLanguageAsync('ru');
       const dailySubCommand = statsCommand.subCommands?.find(
         (sc) => sc.name === 'daily',
       );
@@ -1305,9 +1305,11 @@ describe('statsCommand', () => {
         throw new Error('Subcommand has no action');
       }
 
-      expect(dailySubCommand.description).toBe('显示每日 token 使用统计信息');
+      expect(dailySubCommand.description).toBe(
+        'Показать дневную статистику использования токенов.',
+      );
       expect(exportSubCommand.description).toBe(
-        '将 token 使用统计信息导出为 CSV 或 JSON',
+        'Экспортировать статистику использования токенов в CSV или JSON.',
       );
 
       const dailyResult = (await dailySubCommand.action(
@@ -1318,13 +1320,15 @@ describe('statsCommand', () => {
         '2025-07-14',
       )) as { type: string; messageType: string; content: string };
 
-      expect(dailyResult.content).toContain('2025-07-14 的每日 token 使用情况');
-      expect(dailyResult.content).toContain('总计：47 个 token');
-      expect(dailyResult.content).toContain('model-a：32 个 token（1 个请求）');
-      expect(dailyResult.content).toContain('缓存（已包含在输入中）：6');
-      expect(dailyResult.content).toContain('按来源：');
       expect(dailyResult.content).toContain(
-        '生成耗时（TTFT/TPS）归属于生成指标',
+        'Дневное использование токенов за 2025-07-14',
+      );
+      expect(dailyResult.content).toContain('Всего: 47 токенов');
+      expect(dailyResult.content).toContain('model-a: 32 токенов (1 запросов)');
+      expect(dailyResult.content).toContain('Кэш (включён во ввод): 6');
+      expect(dailyResult.content).toContain('По источнику:');
+      expect(dailyResult.content).toContain(
+        'Примечание: время генерации (TTFT/TPS) относится к метрикам генерации.',
       );
 
       const exportResult = (await exportSubCommand.action(
@@ -1337,7 +1341,7 @@ describe('statsCommand', () => {
 
       expect(exportResult.messageType).toBe('error');
       expect(exportResult.content).toContain(
-        'Token 使用导出路径必须位于项目工作目录内',
+        'Путь экспорта использования токенов должен находиться внутри рабочего каталога проекта.',
       );
     });
   });

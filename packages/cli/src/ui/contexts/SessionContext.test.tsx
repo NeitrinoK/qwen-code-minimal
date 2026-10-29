@@ -120,6 +120,41 @@ describe('SessionStatsContext', () => {
     expect(stats?.lastPromptTokenCount).toBe(100);
   });
 
+  it('latches the first reported prompt count as the fixed prompt overhead', () => {
+    // On the first request the conversation contributes almost nothing, so the
+    // provider's own prompt count IS the fixed overhead (system prompt + skill
+    // catalog + MCP tool catalog + tool schemas). Later turns add conversation
+    // on top, so the base must not follow them.
+    const contextRef: MutableRefObject<
+      ReturnType<typeof useSessionStats> | undefined
+    > = { current: undefined };
+
+    renderHook(() => (contextRef.current = useSessionStats()), {
+      wrapper: ({ children }) => (
+        <SessionStatsProvider>{children}</SessionStatsProvider>
+      ),
+    });
+
+    const metrics = uiTelemetryService.getMetrics();
+
+    act(() => {
+      uiTelemetryService.emit('update', {
+        metrics,
+        lastPromptTokenCount: 42000,
+      });
+    });
+    expect(contextRef.current?.stats.basePromptTokenCount).toBe(42000);
+
+    act(() => {
+      uiTelemetryService.emit('update', {
+        metrics,
+        lastPromptTokenCount: 90000,
+      });
+    });
+    expect(contextRef.current?.stats.lastPromptTokenCount).toBe(90000);
+    expect(contextRef.current?.stats.basePromptTokenCount).toBe(42000);
+  });
+
   it('should not update metrics if the data is the same', () => {
     const contextRef: MutableRefObject<
       ReturnType<typeof useSessionStats> | undefined

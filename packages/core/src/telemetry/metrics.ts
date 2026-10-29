@@ -8,7 +8,6 @@ import type { Attributes, Meter, Counter, Histogram } from '@opentelemetry/api';
 import { diag, metrics, ValueType } from '@opentelemetry/api';
 import { SERVICE_NAME, EVENT_CHAT_COMPRESSION } from './constants.js';
 import type { Config } from '../config/config.js';
-import type { TelemetryRuntimeConfig } from './runtime-config.js';
 import type { GoalLimitKind, GoalStatus } from '../goals/goal-protocol.js';
 import type {
   GoalStateEvent,
@@ -92,19 +91,10 @@ const MEMORY_RECALL_DELIVERY_COUNT = `${SERVICE_NAME}.memory.recall.delivery.cou
 const MEMORY_RECALL_DELIVERY_LATENCY = `${SERVICE_NAME}.memory.recall.delivery.latency`;
 
 const baseMetricDefinition = {
-  // session.id on metrics is opt-in: each session is a new value, so
-  // attaching it by default would create unbounded time-series fan-out on
-  // every metric backend. Operators who need session-level metric slicing
-  // can enable QWEN_TELEMETRY_METRICS_INCLUDE_SESSION_ID or
-  // telemetry.metrics.includeSessionId. Spans and logs always carry
-  // session.id for trace/log correlation.
-  getCommonAttributes: (config: TelemetryRuntimeConfig): Attributes => {
-    const out: Attributes = {};
-    if (config.getTelemetryMetricsIncludeSessionId()) {
-      out['session.id'] = config.getSessionId();
-    }
-    return out;
-  },
+  // session.id on metrics was opt-in; telemetry export has been removed so the
+  // record* functions below write only to the @opentelemetry/api no-op meter.
+  // Common attributes are now always empty.
+  getCommonAttributes: (_config?: unknown): Attributes => ({}),
 };
 
 const COUNTER_DEFINITIONS = {
@@ -547,7 +537,7 @@ export function getMeter(): Meter | undefined {
   return cliMeter;
 }
 
-export function initializeMetrics(config: TelemetryRuntimeConfig): void {
+export function initializeMetrics(): void {
   if (isMetricsInitialized) return;
 
   const meter = getMeter();
@@ -609,7 +599,7 @@ export function initializeMetrics(config: TelemetryRuntimeConfig): void {
   });
 
   // Increment session counter after all metrics are initialized
-  sessionCounter?.add(1, baseMetricDefinition.getCommonAttributes(config));
+  sessionCounter?.add(1, baseMetricDefinition.getCommonAttributes());
 
   // Auto-Memory metrics
   memoryExtractCounter = meter.createCounter(MEMORY_EXTRACT_COUNT, {
@@ -691,7 +681,7 @@ export function initializeMetrics(config: TelemetryRuntimeConfig): void {
     },
   );
   // Initialize performance monitoring metrics if enabled
-  initializePerformanceMonitoring(config);
+  initializePerformanceMonitoring();
 
   isMetricsInitialized = true;
 }
@@ -759,7 +749,7 @@ export function recordToolCallMetrics(
 }
 
 export function recordToolExecutionMetrics(
-  config: TelemetryRuntimeConfig,
+  config: Config,
   attributes: MetricDefinitions[typeof TOOL_EXECUTION_COUNT]['attributes'],
 ): void {
   if (!toolExecutionCounter || !isMetricsInitialized) return;
@@ -905,16 +895,12 @@ export function recordModelSlashCommand(
 
 // Performance Monitoring Functions
 
-export function initializePerformanceMonitoring(
-  config: TelemetryRuntimeConfig,
-): void {
+export function initializePerformanceMonitoring(): void {
   const meter = getMeter();
   if (!meter) return;
 
-  // Check if performance monitoring is enabled in config
-  // For now, enable performance monitoring when telemetry is enabled
-  // TODO: Add specific performance monitoring settings to config
-  isPerformanceMonitoringEnabled = config.getTelemetryEnabled();
+  // Telemetry export has been removed; performance monitoring is disabled.
+  isPerformanceMonitoringEnabled = false;
 
   if (!isPerformanceMonitoringEnabled) return;
 

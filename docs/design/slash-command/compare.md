@@ -1,106 +1,106 @@
-# Qwen Code Command 模块重构方案
+# Qwen Code Command Module Refactoring Plan
 
-## 1. 目标定义
+## 1. Goal Definition
 
-本方案以以下原则为唯一前提：
+This plan takes the following principles as its sole premise:
 
-- **代码架构可以不照搬 Claude Code**
-- **但命令系统的核心功能、使用体验、交互体验必须 95% 对齐 Claude Code**
+- **The code architecture does not have to copy Claude Code verbatim**
+- **But the core functionality, usage experience, and interaction experience of the command system must align 95% with Claude Code**
 
-这里的“对齐”指用户可直接感知的能力，包括：
+"Alignment" here refers to capabilities that users can directly perceive, including:
 
-1. 命令来源覆盖
-2. 命令帮助与发现性
-3. 命令补全与 mid-input slash command 体验
-4. ACP / non-interactive 可用性
-5. prompt command / skill 的模型调用能力
+1. Command source coverage
+2. Command help and discoverability
+3. Command completion and the mid-input slash command experience
+4. ACP / non-interactive availability
+5. Model invocation capability for prompt command / skill
 
-本次重构不是补几个字段，也不是把现有 `SlashCommand` 小修小补，而是把 command 模块从“interactive UI 附属能力”升级为“跨 interactive / ACP / non-interactive / model 的统一命令平台”。
-
----
-
-## 2. 重写后的结论
-
-Qwen 现有 command 系统的问题，不是完全没有能力，而是：
-
-1. 只在 interactive 主路径上较完整
-2. 类型模型太薄，无法承载 Claude 级别的产品面
-3. ACP / non-interactive 依赖白名单，扩展性极差
-4. command 来源虽然存在，但没有形成对用户可见的统一心智
-5. prompt command 与模型 skill 暴露体系割裂
-
-因此新的方案必须同时解决四件事：
-
-1. **补齐 Claude Code 的能力面**
-2. **保留 Qwen 统一 outcome 模型的工程优势**
-3. **建立统一 registry / resolver / executor / adapter 架构**
-4. **让帮助、补全、ACP available commands、文档共用同一套元数据**
+This refactoring is not about adding a few fields, nor about making minor tweaks to the existing `SlashCommand`. It is about upgrading the command module from an "interactive UI add-on capability" into a "unified command platform spanning interactive / ACP / non-interactive / model."
 
 ---
 
-## 3. 重构原则
+## 2. Conclusion After Rewriting
 
-### 3.1 功能对齐优先于实现对齐
+The problem with Qwen's existing command system is not that it has no capabilities at all, but that:
 
-允许不同：
+1. It is only relatively complete on the interactive main path
+2. The type model is too thin to support a Claude-level product surface
+3. ACP / non-interactive relies on an allowlist, making it extremely hard to extend
+4. Command sources exist, but they do not form a unified mental model visible to users
+5. The prompt command and model skill exposure systems are fragmented
 
-- 内部类名
-- 模块拆分方式
-- 执行器实现
-- effect / outcome 结构
+Therefore the new plan must solve four things simultaneously:
 
-不允许不同：
-
-- 命令来源覆盖明显缩水
-- 命令帮助和补全体验明显缩水
-- ACP / non-interactive 可用性明显缩水
-- prompt command 与模型能力融合明显缩水
-
-如果出现取舍，优先级应为：
-
-1. 用户体验对齐
-2. 命令能力覆盖对齐
-3. 模式一致性对齐
-4. 内部实现简洁
-
-### 3.2 保留 Qwen 的统一 outcome 模型
-
-不建议机械复制 Claude 的执行实现。
-
-Qwen 当前统一结果模型仍然值得保留，因为它天然适合：
-
-- UI 接管
-- 审批/确认
-- tool 调度
-- prompt 提交
-- 跨模式适配
-
-但它必须被升级为能够承载 Claude 级别的 command 能力，而不是继续作为简化版 UI 命令框架存在。
-
-### 3.3 类型、来源、模式、可见性必须彻底解耦
-
-新的 command 模型至少要把以下维度拆开：
-
-1. **类型**：命令怎么执行
-2. **来源**：命令从哪里来
-3. **模式能力**：在哪些运行环境可用
-4. **可见性**：对用户可见还是对模型可见
+1. **Fill in Claude Code's capability surface**
+2. **Preserve the engineering advantage of Qwen's unified outcome model**
+3. **Establish a unified registry / resolver / executor / adapter architecture**
+4. **Let help, completion, ACP available commands, and documentation share the same set of metadata**
 
 ---
 
-## 4. 需要对齐的 Claude Code 能力面
+## 3. Refactoring Principles
 
-### 4.1 命令类型
+### 3.1 Functional Alignment Takes Priority Over Implementation Alignment
 
-Qwen 需要显式支持三类命令：
+Differences are allowed in:
+
+- Internal class names
+- Module decomposition approach
+- Executor implementation
+- effect / outcome structure
+
+Differences are not allowed in:
+
+- Significant shrinkage of command source coverage
+- Significant shrinkage of command help and completion experience
+- Significant shrinkage of ACP / non-interactive availability
+- Significant shrinkage of the fusion between prompt command and model capabilities
+
+When trade-offs arise, the priority order should be:
+
+1. User experience alignment
+2. Command capability coverage alignment
+3. Mode consistency alignment
+4. Internal implementation simplicity
+
+### 3.2 Preserve Qwen's Unified Outcome Model
+
+Mechanically copying Claude's execution implementation is not recommended.
+
+Qwen's current unified outcome model is still worth keeping, because it is naturally suited to:
+
+- UI takeover
+- Approval / confirmation
+- tool dispatch
+- prompt submission
+- Cross-mode adaptation
+
+But it must be upgraded to carry Claude-level command capabilities, rather than continuing to exist as a simplified UI command framework.
+
+### 3.3 Type, Source, Mode, and Visibility Must Be Thoroughly Decoupled
+
+The new command model must at least separate the following dimensions:
+
+1. **Type**: how the command executes
+2. **Source**: where the command comes from
+3. **Mode capability**: which runtime environments it is available in
+4. **Visibility**: whether it is visible to the user or to the model
+
+---
+
+## 4. Claude Code Capability Surface to Align With
+
+### 4.1 Command Types
+
+Qwen needs to explicitly support three categories of commands:
 
 1. `prompt`
 2. `local`
 3. `local-jsx`
 
-### 4.2 命令来源
+### 4.2 Command Sources
 
-Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
+Qwen's command schema must cover the following sources from phase one onward:
 
 1. built-in commands
 2. bundled skills
@@ -112,11 +112,11 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 8. mcp prompts
 9. mcp skills
 
-这里不能再退回到“先只支持当前已有那几类”。
+We cannot fall back to "only support the few categories we already have" here.
 
-### 4.3 命令元数据
+### 4.3 Command Metadata
 
-至少补齐以下字段：
+At least fill in the following fields:
 
 1. `argumentHint`
 2. `whenToUse`
@@ -131,27 +131,27 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 11. `supportedModes`
 12. `requiresUi`
 
-### 4.4 体验能力
+### 4.4 Experience Capabilities
 
-至少补齐以下体验：
+At least fill in the following experiences:
 
-1. alias 命中补全
+1. alias-hit completion
 2. source badge
-3. 参数提示
-4. recently used 排序
-5. mid-input slash command 检测与补全
-6. 命令目录式 Help
-7. ACP available commands 的完整表达
+3. argument hints
+4. recently used ordering
+5. mid-input slash command detection and completion
+6. command-directory-style Help
+7. complete expression of ACP available commands
 
 ---
 
-## 5. 新 command 模型
+## 5. New Command Model
 
-## 5.1 核心结构
+## 5.1 Core Structure
 
-建议引入统一 `CommandDescriptor`，作为所有命令的注册格式。
+It is recommended to introduce a unified `CommandDescriptor` as the registration format for all commands.
 
-它至少包含四部分：
+It contains at least four parts:
 
 1. `identity`
 2. `metadata`
@@ -202,11 +202,11 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 
 ---
 
-## 5.2 三种命令类型的职责
+## 5.2 Responsibilities of the Three Command Types
 
 ### `prompt`
 
-用于：
+Used for:
 
 - skills
 - file commands
@@ -214,48 +214,48 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 - plugin skills
 - mcp prompt / skill
 
-特点：
+Characteristics:
 
-- 产生 prompt / skill 资产
-- 默认支持 interactive / ACP / non-interactive
-- 可以被用户调用，也可以被模型调用
+- Produces prompt / skill assets
+- Supports interactive / ACP / non-interactive by default
+- Can be invoked by the user and by the model
 
 ### `local`
 
-用于：
+Used for:
 
-- 查询类命令
-- 配置类命令
-- headless 可执行的状态类命令
-- 大多数 built-in commands 的核心执行入口
+- query-type commands
+- configuration-type commands
+- headless-executable state-type commands
+- the core execution entry point of most built-in commands
 
-特点：
+Characteristics:
 
-- 不依赖 UI
-- 应成为 ACP / non-interactive 的主承载类型
+- Does not depend on UI
+- Should become the primary carrier type for ACP / non-interactive
 
 ### `local-jsx`
 
-用于：
+Used for:
 
 - picker
-- 面板
+- panels
 - wizard
 - interactive UI shell
 
-特点：
+Characteristics:
 
-- 只处理 interactive UI
-- 不能再作为唯一执行入口
-- 必须提供 fallback 或对应 local 子命令
+- Handles only interactive UI
+- Can no longer be the sole execution entry point
+- Must provide a fallback or a corresponding local subcommand
 
 ---
 
-## 6. 命令来源模型
+## 6. Command Source Model
 
-## 6.1 外部来源模型
+## 6.1 External Source Model
 
-这是给用户看的来源模型，必须和 Claude Code 的心智尽量一致：
+This is the source model presented to users, and it must be as consistent as possible with Claude Code's mental model:
 
 - `builtin-command`
 - `bundled-skill`
@@ -268,16 +268,16 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 - `mcp-prompt`
 - `mcp-skill`
 
-这组字段将直接用于：
+This set of fields will be used directly for:
 
-- Help 分组
+- Help grouping
 - Completion source badge
 - ACP available commands
-- 文档导出
+- Documentation export
 
-## 6.2 内部归一化模型
+## 6.2 Internal Normalized Model
 
-为了不被外部命名绑死，内部再补一层实现字段：
+To avoid being locked into external naming, add an additional layer of implementation fields internally:
 
 - `providerType`
 - `artifactType`
@@ -286,41 +286,41 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 - `originPath`
 - `namespace`
 
-这样可以做到：
+This allows:
 
-- 外部体验按 Claude 对齐
-- 内部实现仍保持 Qwen 可维护性
+- External experience to align with Claude
+- Internal implementation to retain Qwen's maintainability
 
-## 6.3 冲突策略
+## 6.3 Conflict Strategy
 
-统一按稳定 `id` 管理，展示名和输入名分离：
+Manage everything by a stable `id`, with the display name and input name separated:
 
-1. `id`：稳定唯一标识
-2. `name`：输入主名
-3. `userFacingName`：帮助/补全展示名
+1. `id`: stable unique identifier
+2. `name`: primary input name
+3. `userFacingName`: display name for help / completion
 
-冲突优先级建议：
+Recommended conflict priority:
 
 1. built-in
 2. bundled / skill-dir / workflow
 3. plugin / builtin-plugin
 4. dynamic
-5. mcp 独立 namespace
+5. mcp in its own independent namespace
 
 ---
 
-## 7. 统一执行架构
+## 7. Unified Execution Architecture
 
 ## 7.1 `CommandRegistry`
 
-职责：
+Responsibilities:
 
-1. 聚合所有 loader/provider
-2. 建立多维索引
-3. 输出帮助、补全、ACP、文档视图
-4. 提供用户可见命令和模型可见命令的独立视图
+1. Aggregate all loaders / providers
+2. Build multi-dimensional indexes
+3. Output help, completion, ACP, and documentation views
+4. Provide independent views for user-visible commands and model-visible commands
 
-必须支持的 provider：
+Providers that must be supported:
 
 1. `BuiltinCommandLoader`
 2. `BundledSkillLoader`
@@ -332,49 +332,49 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 8. `DynamicSkillProvider`
 9. `BuiltinPluginSkillLoader`
 
-即便部分 provider 首期未完全落地，schema 和 API 也必须先支持。
+Even if some providers are not fully implemented in the first iteration, the schema and API must support them up front.
 
 ## 7.2 `CommandResolver`
 
-职责：
+Responsibilities:
 
-1. 解析 slash command
-2. 解析 alias
-3. 解析 subcommand path
-4. 识别 mid-input slash token
-5. 输出 canonical resolved command
+1. Parse slash commands
+2. Resolve aliases
+3. Resolve subcommand paths
+4. Detect mid-input slash tokens
+5. Output the canonical resolved command
 
 ## 7.3 `CommandExecutor`
 
-职责：
+Responsibilities:
 
-1. 做 capability 检查
-2. 执行 `prompt | local | local-jsx`
-3. 统一产出 outcome
-4. 处理 fallback / unsupported
+1. Perform capability checks
+2. Execute `prompt | local | local-jsx`
+3. Produce a unified outcome
+4. Handle fallback / unsupported
 
 ## 7.4 `ModeAdapter`
 
-必须拆出三种 adapter：
+Three adapters must be split out:
 
 1. `InteractiveModeAdapter`
 2. `AcpModeAdapter`
 3. `NonInteractiveModeAdapter`
 
-这样三种模式才能共用同一套 command registry 和 executor，而不是各自硬编码。
+This way the three modes can share the same command registry and executor, instead of each being hard-coded separately.
 
 ---
 
-## 8. UI 命令重构原则：核心命令与交互壳分离
+## 8. UI Command Refactoring Principle: Separate Core Commands from the Interaction Shell
 
-这是 ACP 和 non-interactive 真正可用的关键。
+This is the key to making ACP and non-interactive actually usable.
 
-凡是当前本质为“打开 dialog”的命令，都必须改造成：
+Any command that is essentially "open a dialog" today must be reshaped into:
 
-1. 一个 interactive shell
-2. 一组 local 子命令
+1. one interactive shell
+2. a set of local subcommands
 
-### 第一批必须拆分的命令
+### First Batch of Commands That Must Be Split
 
 1. `/model`
 2. `/permissions`
@@ -385,7 +385,7 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 7. `/agents`
 8. `/approval-mode`
 
-### 目标形态示例
+### Target Shape Examples
 
 #### `/model`
 
@@ -412,13 +412,13 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 
 ---
 
-## 9. Prompt Command / Skill 统一设计
+## 9. Unified Design for Prompt Command / Skill
 
-这是重构里的 P0，不是后补能力。
+This is a P0 of the refactoring, not a follow-up capability.
 
-## 9.1 目标
+## 9.1 Goal
 
-建立统一的 **Model-Invocable Prompt Command Registry**，把以下资产合并为一个模型可调用视图：
+Establish a unified **Model-Invocable Prompt Command Registry** that merges the following assets into a single model-invocable view:
 
 1. bundled skills
 2. file commands
@@ -426,38 +426,38 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 4. plugin skills
 5. mcp prompts / mcp skills
 
-## 9.2 关键字段
+## 9.2 Key Fields
 
-必须新增：
+Must add:
 
 1. `userInvocable`
 2. `modelInvocable`
 3. `allowedTools`
 4. `whenToUse`
-5. `argSchema` 或最小参数描述
+5. `argSchema` or a minimal parameter description
 6. `contextMode: inline | fork`
 7. `agent`
 8. `effort`
 
-## 9.3 与 `SkillTool` 的关系
+## 9.3 Relationship with `SkillTool`
 
-重构后不应再由 `SkillTool` 只消费狭义 skills。
+After the refactoring, `SkillTool` should no longer consume only narrowly defined skills.
 
-应改成：
+It should be changed so that:
 
-1. `CommandRegistry.getModelInvocablePromptCommands()` 产出统一视图
-2. `SkillTool` 或未来统一 command tool 消费该视图
-3. 用户 slash command 与模型 skill invocation 共用同一套 prompt-command 资产池
+1. `CommandRegistry.getModelInvocablePromptCommands()` produces a unified view
+2. `SkillTool`, or a future unified command tool, consumes that view
+3. User slash commands and model skill invocation share the same pool of prompt-command assets
 
-这样 Qwen 才能在体验上接近 Claude 对 `/review`、`/commit`、`/openspec-apply` 这类能力的处理方式。
+Only then can Qwen approach, in terms of experience, the way Claude handles capabilities like `/review`, `/commit`, and `/openspec-apply`.
 
 ---
 
-## 10. Help / Completion / Discoverability 重做
+## 10. Reworking Help / Completion / Discoverability
 
 ## 10.1 Completion
 
-补全项至少要展示：
+Completion items must at least display:
 
 1. `label`
 2. `description`
@@ -467,30 +467,30 @@ Qwen 的 command schema 从第一阶段开始就必须覆盖以下来源：
 6. `aliasHit`
 7. `recentlyUsedScore`
 
-排序至少考虑：
+Ordering must at least consider:
 
-1. 精确命中
-2. alias 命中
-3. 最近使用
-4. prefix 命中
-5. fuzzy 命中
+1. Exact match
+2. alias match
+3. Recently used
+4. prefix match
+5. fuzzy match
 
 ## 10.2 Mid-input slash command
 
-必须补齐：
+Must fill in:
 
-1. 光标附近 slash token 检测
-2. ghost text 提示
-3. Tab 完成
-4. 有效命令 token 高亮
+1. Detection of the slash token near the cursor
+2. ghost text hints
+3. Tab completion
+4. Highlighting of valid command tokens
 
-第一阶段先对齐输入体验；是否引入更强的“内嵌命令执行语义”可在后续迭代。
+The first phase aligns the input experience first; whether to introduce stronger "embedded command execution semantics" can be left to later iterations.
 
 ## 10.3 Help
 
-Help 不再是平铺列表，而是完整命令目录。
+Help is no longer a flat list, but a complete command directory.
 
-至少分组为：
+At least grouped into:
 
 1. Built-in Commands
 2. Bundled Skills
@@ -502,35 +502,35 @@ Help 不再是平铺列表，而是完整命令目录。
 8. Builtin Plugin Skills
 9. MCP Commands / MCP Skills
 
-每条命令至少展示：
+Each command must at least display:
 
-1. 名称
-2. 参数提示
-3. 描述
-4. 来源
-5. 支持模式
-6. 是否模型可调用
-7. 子命令摘要
+1. Name
+2. Argument hint
+3. Description
+4. Source
+5. Supported modes
+6. Whether it is model-invocable
+7. Subcommand summary
 
 ---
 
-## 11. ACP / Non-Interactive 重构
+## 11. ACP / Non-Interactive Refactoring
 
-## 11.1 彻底废弃白名单思路
+## 11.1 Completely Abandon the Allowlist Approach
 
-旧方案：
+Old approach:
 
 - built-in allowlist
-- FILE / SKILL 特判
-- 其它结果类型 unsupported
+- FILE / SKILL special-casing
+- other result types unsupported
 
-新方案：
+New approach:
 
-- 每个命令自己声明 capability
-- registry 负责过滤
-- adapter 负责执行和 fallback
+- Each command declares its own capability
+- The registry is responsible for filtering
+- The adapter is responsible for execution and fallback
 
-## 11.2 outcome 支持目标
+## 11.2 Outcome Support Goals
 
 ### interactive
 
@@ -563,9 +563,9 @@ Help 不再是平铺列表，而是完整命令目录。
 - `confirm_shell_commands`
 - `dialog fallback / structured failure`
 
-## 11.3 ACP available commands 输出
+## 11.3 ACP available commands Output
 
-必须至少包含：
+Must at least include:
 
 1. `name`
 2. `description`
@@ -579,38 +579,38 @@ Help 不再是平铺列表，而是完整命令目录。
 
 ---
 
-## 12. 文档、帮助、补全共用同一份元数据
+## 12. Documentation, Help, and Completion Share the Same Metadata
 
-重构后以下内容必须由同一个 registry 视图导出：
+After the refactoring, the following must all be exported from the same registry view:
 
 1. Help
 2. Completion
 3. ACP available commands
-4. 文档导出
+4. Documentation export
 
-这是为了解决当前“实现、帮助、文档三套命令面不一致”的问题。
+This is meant to solve the current problem of "implementation, help, and documentation being three inconsistent command surfaces."
 
 ---
 
-## 13. 实施分期
+## 13. Implementation Phasing
 
-## Phase 1：底座重建
+## Phase 1: Rebuild the Foundation
 
-交付：
+Deliverables:
 
-1. 新 `CommandDescriptor`
-2. 完整来源 schema
-3. capability 模型
+1. New `CommandDescriptor`
+2. Complete source schema
+3. capability model
 4. `userInvocable / modelInvocable`
 5. `CommandRegistry`
 6. `CommandResolver`
 7. `CommandExecutor`
-8. 三种 `ModeAdapter`
+8. The three `ModeAdapter`s
 9. `getModelInvocablePromptCommands()`
 
-## Phase 2：核心命令迁移
+## Phase 2: Migrate Core Commands
 
-交付：
+Deliverables:
 
 1. `/model`
 2. `/permissions`
@@ -621,51 +621,51 @@ Help 不再是平铺列表，而是完整命令目录。
 7. `/agents`
 8. `/approval-mode`
 
-这些命令都必须完成“interactive shell + local 子命令”重构。
+All of these commands must complete the "interactive shell + local subcommands" refactoring.
 
-## Phase 3：模型能力打通
+## Phase 3: Wire Up Model Capabilities
 
-交付：
+Deliverables:
 
-1. `SkillTool` 接入统一 registry 视图
-2. file command / bundled skill / mcp prompt / plugin skill 进入统一 model-invocable 集合
-3. prompt command 与 skill 资产彻底统一
+1. `SkillTool` integrated with the unified registry view
+2. file command / bundled skill / mcp prompt / plugin skill enter the unified model-invocable set
+3. prompt command and skill assets fully unified
 
-## Phase 4：体验层对齐 Claude
+## Phase 4: Align the Experience Layer with Claude
 
-交付：
+Deliverables:
 
-1. recently used 排序
+1. recently used ordering
 2. source badge
 3. argument hint
 4. mode badge
-5. 完整 help 目录
-6. mid-input slash command 体验
-7. 文档自动导出或校验
+5. complete help directory
+6. mid-input slash command experience
+7. automatic documentation export or validation
 
 ---
 
-## 14. 验收标准
+## 14. Acceptance Criteria
 
-完成后至少满足：
+Once complete, the following must at least hold:
 
-1. 帮助、补全、ACP、文档都能表达完整来源模型
-2. 除纯 UI 壳命令外，大多数 built-in command 可在 ACP / non-interactive 使用
-3. prompt command 与模型 skill 调用使用同一套资产池
-4. 命令体验在帮助、补全、来源表达、参数提示、mid-input 体验上达到 Claude Code 95% 水平
-5. 不再依赖 built-in allowlist 维持 ACP / non-interactive 命令能力
+1. Help, completion, ACP, and documentation can all express the complete source model
+2. Apart from pure UI shell commands, most built-in commands can be used in ACP / non-interactive
+3. prompt command and model skill invocation use the same asset pool
+4. The command experience reaches 95% of Claude Code's level in help, completion, source expression, argument hints, and mid-input experience
+5. ACP / non-interactive command capability no longer relies on a built-in allowlist
 
 ---
 
-## 15. 最终判断
+## 15. Final Judgment
 
-这次重构的本质不是“给现有 SlashCommand 多加几个字段”，而是：
+The essence of this refactoring is not "adding a few more fields to the existing SlashCommand," but:
 
-- **用 Qwen 的内部架构风格，交付一个在外部体验上 95% 对齐 Claude Code 的 command 平台**
+- **Delivering, in Qwen's internal architectural style, a command platform whose external experience aligns 95% with Claude Code**
 
-如果必须二选一：
+If a choice must be made between the two:
 
-- 内部实现更像 Claude
-- 外部体验更像 Claude
+- Internal implementation that more closely resembles Claude
+- External experience that more closely resembles Claude
 
-本方案明确选择后者。
+This plan explicitly chooses the latter.

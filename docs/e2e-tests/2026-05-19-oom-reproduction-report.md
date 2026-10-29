@@ -1,88 +1,88 @@
-# OOM 压力测试与长任务 Replay 报告
+# OOM Stress Test and Long-Task Replay Report
 
-**日期**: 2026-05-19
-**分支**: `codex/memory-diagnostics-local-run`
-**测试人**: yiliang114
-**结论**: 成功复现并定位根因。v0.15.7 (#3735) 引入的 auto-compaction 使 `structuredClone`
-调用频率倍增，在高 heap 压力时形成正反馈死循环导致 OOM。真实 debug 日志完整佐证了该机制。
+**Date**: 2026-05-19
+**Branch**: `codex/memory-diagnostics-local-run`
+**Tester**: yiliang114
+**Conclusion**: Successfully reproduced and root-caused. The auto-compaction introduced in v0.15.7 (#3735) multiplies the frequency of `structuredClone`
+calls, forming a positive-feedback deadlock under high heap pressure that leads to OOM. Real debug logs fully corroborate this mechanism.
 
 ---
 
-## 一、背景
+## 1. Background
 
-多个 issue（#4309, #4276, #4185, #4315, #4322, #2868）报告 qwen-code 在长会话中出现 V8 heap OOM crash：
+Multiple issues (#4309, #4276, #4185, #4315, #4322, #2868) report that qwen-code hits a V8 heap OOM crash during long sessions:
 
 ```
 FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
 ```
 
-用户报告的崩溃特征：
-| Issue | 崩溃时 Heap | 运行时长 | 平台 |
+Crash characteristics reported by users:
+| Issue | Heap at crash | Runtime | Platform |
 |-------|------------|---------|------|
-| #4276 | 4014 MB | ~110 分钟 | Linux x64 |
-| #4315 | 2027 MB | ~19.6 小时 | macOS (默认 2GB limit) |
-| #4322 | 4023 MB | ~7 小时 | Windows |
-| #2868 | 2035 MB | ~1.7 分钟 | Linux |
-| #4309 | 7020 MB | 未知 | Windows (设了 8GB limit 仍崩) |
+| #4276 | 4014 MB | ~110 minutes | Linux x64 |
+| #4315 | 2027 MB | ~19.6 hours | macOS (default 2GB limit) |
+| #4322 | 4023 MB | ~7 hours | Windows |
+| #2868 | 2035 MB | ~1.7 minutes | Linux |
+| #4309 | 7020 MB | unknown | Windows (still crashed with an 8GB limit set) |
 
 ---
 
-## 二、方法论修正
+## 2. Methodology Correction
 
-本报告区分两类测试：
+This report distinguishes two kinds of tests:
 
-1. **低 heap 压力测试**：通过降低 `--max-old-space-size` 放大问题，用于快速定位
-   “history 很大时整段复制导致瞬时峰值”的代码路径。它是诊断工具，不等价于用户真实
-   4G/8G OOM 复现。
-2. **默认 heap 长任务 replay**：不设置 `NODE_OPTIONS`，使用真实 JSONL 历史恢复并
-   继续执行 review 任务，同时从进程外采样 process-tree RSS。这类结果才用于判断
-   用户侧实际内存量级。
+1. **Low-heap stress test**: amplifies the problem by lowering `--max-old-space-size`, used to quickly pinpoint
+   the code path where "copying the entire history when it is very large causes a transient peak." It is a diagnostic tool and is not equivalent to a real user
+   4G/8G OOM reproduction.
+2. **Default-heap long-task replay**: does not set `NODE_OPTIONS`, restores from real JSONL history and
+   continues running a review task, while sampling process-tree RSS from outside the process. Only results of this kind are used to judge
+   the actual memory magnitude on the user side.
 
-因此，低 heap 结果不能单独作为“真实 OOM 已修复”的证明。它只能说明某条路径在
-history 足够大时会产生峰值放大，需要再用默认 heap 长任务验证。
+Therefore, low-heap results cannot serve on their own as proof that "the real OOM has been fixed." They can only show that a given path produces peak
+amplification when the history is large enough; this still needs to be verified again with a default-heap long task.
 
-## 三、低 heap 压力测试条件
+## 3. Low-Heap Stress Test Conditions
 
-| 参数                     | 值                                                           |
-| ------------------------ | ------------------------------------------------------------ |
-| CLI 版本                 | 0.15.11 (从 `codex/memory-diagnostics-local-run` 分支 build) |
-| Model                    | `qwen3.6-plus` (128K context window)                         |
-| Heap limit               | `--max-old-space-size=512`                                   |
-| Heap-pressure safety net | **禁用** (HEAP_PRESSURE_COMPRESSION_RATIO 设为 99.0)         |
-| 操作模式                 | YOLO + 自动化多轮 Read 文件任务                              |
-| 工作目录                 | qwen-code monorepo (3538 .ts files, 1.26M lines)             |
+| Parameter                | Value                                                                |
+| ------------------------ | -------------------------------------------------------------------- |
+| CLI version              | 0.15.11 (built from the `codex/memory-diagnostics-local-run` branch) |
+| Model                    | `qwen3.6-plus` (128K context window)                                 |
+| Heap limit               | `--max-old-space-size=512`                                           |
+| Heap-pressure safety net | **Disabled** (HEAP_PRESSURE_COMPRESSION_RATIO set to 99.0)           |
+| Operation mode           | YOLO + automated multi-round Read file tasks                         |
+| Working directory        | qwen-code monorepo (3538 .ts files, 1.26M lines)                     |
 
-### 关键配置修改
+### Key Configuration Change
 
-`packages/core/src/core/llm-chat.ts` 中将 heap-pressure compaction 阈值从 0.7 改为 99.0（使其永远不触发），模拟 #4186 修复前的状态。
+In `packages/core/src/core/llm-chat.ts`, the heap-pressure compaction threshold was changed from 0.7 to 99.0 (so it never triggers), simulating the state before the #4186 fix.
 
 ---
 
-## 四、低 heap 压力测试结果
+## 4. Low-Heap Stress Test Results
 
-### 崩溃时间线
+### Crash Timeline
 
 ```
-[21:26:59] #1 RSS:193.6MB Ctx:0%   → Read llm-chat.ts (1500 行)
+[21:26:59] #1 RSS:193.6MB Ctx:0%   → Read llm-chat.ts (1500 lines)
 [21:27:46] #2 RSS:270.4MB Ctx:4.2% → Read agent.ts
-[21:28:32] #3 RSS:397.5MB Ctx:4.3% → grep + Read 3 个文件
+[21:28:32] #3 RSS:397.5MB Ctx:4.3% → grep + Read 3 files
 [21:29:18] #4 RSS:452.7MB Ctx:5.7% → Read slashCommandProcessor.ts
 [21:30:04] #5 RSS:515.0MB Ctx:5.9% → Read chatCompressionService.ts
-[21:30:50] #6 RSS:649.1MB Ctx:4.0% ← TOKEN COMPACTION 触发 (5.9%→4.0%)
-                                       RSS 反增 134MB (structuredClone 峰值)
-[21:31:36] #7 RSS:666.7MB Ctx:3.2% ← 再次 compaction, RSS 继续涨
+[21:30:50] #6 RSS:649.1MB Ctx:4.0% ← TOKEN COMPACTION triggered (5.9%→4.0%)
+                                       RSS rose by 134MB instead (structuredClone peak)
+[21:31:36] #7 RSS:666.7MB Ctx:3.2% ← compaction again, RSS keeps rising
 [21:32:22] CRASH — FATAL ERROR: Ineffective mark-compacts near heap limit
 ```
 
-**总耗时**: ~5.5 分钟，7 轮任务后崩溃。
+**Total time**: ~5.5 minutes, crashed after 7 rounds of tasks.
 
-这证明在受限 heap 下，长 history + compaction/history clone 可以触发 V8 heap OOM。
-但该结果不代表默认 heap 下的真实用户 OOM 已经被完整复现。
+This proves that under a constrained heap, a long history + compaction/history clone can trigger a V8 heap OOM.
+But this result does not mean that the real user OOM under the default heap has been fully reproduced.
 
-### 更大 heap 的 synthetic 复现
+### Synthetic Reproduction with a Larger Heap
 
-为避免只依赖 512 MiB 低 heap 结论，补充了更大 heap 的 synthetic runtime
-pressure 测试。该测试不调用模型，而是构造类似长 review/subagent 任务的历史：
+To avoid relying solely on the 512 MiB low-heap conclusion, a synthetic runtime
+pressure test with a larger heap was added. This test does not call the model; instead it constructs a history resembling a long review/subagent task:
 
 - root review turns: 10
 - subagent calls: 30
@@ -91,13 +91,13 @@ pressure 测试。该测试不调用模型，而是构造类似长 review/subage
 - serialized history bytes: 195,620,061
 - pressure mode: retained `structuredClone(history)` copies
 
-| Heap limit |     Clone pressure | 结果                                     | 关键 GC / stack                                              |
-| ---------- | -----------------: | ---------------------------------------- | ------------------------------------------------------------ |
-| 2 GiB      |  8 retained clones | 未崩溃，RSS 2.42 GiB，heap used 1.87 GiB | 接近 heap limit                                              |
-| 2 GiB      | 10 retained clones | OOM                                      | `Reached heap limit`, `ValueDeserializer`, `StructuredClone` |
-| 4 GiB      | 20 retained clones | OOM                                      | `Reached heap limit`, `ValueDeserializer`, `StructuredClone` |
+| Heap limit |     Clone pressure | Result                                     | Key GC / stack                                               |
+| ---------- | -----------------: | ------------------------------------------ | ------------------------------------------------------------ |
+| 2 GiB      |  8 retained clones | No crash, RSS 2.42 GiB, heap used 1.87 GiB | Near the heap limit                                          |
+| 2 GiB      | 10 retained clones | OOM                                        | `Reached heap limit`, `ValueDeserializer`, `StructuredClone` |
+| 4 GiB      | 20 retained clones | OOM                                        | `Reached heap limit`, `ValueDeserializer`, `StructuredClone` |
 
-2 GiB 复现的 GC 摘要：
+GC summary from the 2 GiB reproduction:
 
 ```
 Mark-Compact 2042.9 (2081.9) -> 2042.9 (2081.1) MB
@@ -107,7 +107,7 @@ FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memor
 node::worker::(anonymous namespace)::StructuredClone
 ```
 
-4 GiB 复现的 GC 摘要：
+GC summary from the 4 GiB reproduction:
 
 ```
 Mark-Compact 4082.5 (4126.8) -> 4082.5 (4126.3) MB
@@ -117,12 +117,12 @@ FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memor
 node::worker::(anonymous namespace)::StructuredClone
 ```
 
-这组结果比 512 MiB 压力测试更接近用户报告的 2 GiB / 4 GiB heap OOM：
-只要 history 中保留足够多的大 tool result / subagent transcript，对整段 history
-做 retained 或瞬时 clone 都可以在 2-4 GiB heap 下触发 V8 OOM。它仍然是 synthetic
-复现，不等价于完整业务长任务 replay，但能直接证明问题不是“小 heap 人为制造”的。
+This set of results is closer to the user-reported 2 GiB / 4 GiB heap OOM than the 512 MiB stress test:
+as long as enough large tool results / subagent transcripts are retained in the history, doing a retained or transient clone
+of the entire history can trigger a V8 OOM under a 2-4 GiB heap. It is still a synthetic
+reproduction and is not equivalent to a full real long-task replay, but it directly proves that the problem is not "an artificially manufactured small heap."
 
-### 崩溃时 GC 状态
+### GC State at Crash
 
 ```
 [41381:0x130008000] 342468 ms: Mark-Compact 508.6 (526.7) -> 507.0 (526.9) MB,
@@ -137,51 +137,51 @@ FATAL ERROR: Ineffective mark-compacts near heap limit
 Allocation failed - JavaScript heap out of memory
 ```
 
-Mark-Compact 只能回收 1-2 MB（几乎所有对象都是 reachable），证明内存确实被合法持有的对象占满。
+Mark-Compact can only reclaim 1-2 MB (almost all objects are reachable), proving that memory is indeed filled with legitimately held objects.
 
 ---
 
-## 五、默认 heap 长任务 replay
+## 5. Default-Heap Long-Task Replay
 
-为了避免低 heap 结论过度外推，补充了默认 heap 的真实 JSONL replay：
+To avoid over-extrapolating the low-heap conclusion, a real JSONL replay under the default heap was added:
 
-- 不设置 `NODE_OPTIONS`
-- 不启用内部 runtime profiler，避免采样器自身影响 heap
-- 每个 CLI 从同一份 rewound JSONL 复制出 fresh session
-- 使用临时 `QWEN_HOME`，禁用 MCP 和 hooks，避免本地全局配置污染
-- 只用进程外采样统计 process-tree RSS
+- Do not set `NODE_OPTIONS`
+- Do not enable the internal runtime profiler, to avoid the sampler itself affecting the heap
+- Each CLI copies a fresh session from the same rewound JSONL
+- Use a temporary `QWEN_HOME`, disable MCP and hooks, to avoid local global configuration contamination
+- Use only out-of-process sampling to measure process-tree RSS
 
-| CLI                  | 结果 |   时长 | Tree RSS 峰值 | Root RSS 峰值 | Worker RSS 峰值 | 备注                                                        |
-| -------------------- | ---- | -----: | ------------: | ------------: | --------------: | ----------------------------------------------------------- |
-| installed `qwen`     | 成功 | 167.3s |     838.0 MiB |     230.2 MiB |       566.3 MiB | 第一次 fresh run 遇到模型服务端错误，未纳入结论；retry 成功 |
-| local rebuilt bundle | 成功 | 106.3s |     527.5 MiB |     182.1 MiB |       345.4 MiB | 包含本地 clone 热路径修复                                   |
+| CLI                  | Result  | Duration | Peak tree RSS | Peak root RSS | Peak worker RSS | Notes                                                                                            |
+| -------------------- | ------- | -------: | ------------: | ------------: | --------------: | ------------------------------------------------------------------------------------------------ |
+| installed `qwen`     | Success |   167.3s |     838.0 MiB |     230.2 MiB |       566.3 MiB | The first fresh run hit a model server-side error, excluded from the conclusion; retry succeeded |
+| local rebuilt bundle | Success |   106.3s |     527.5 MiB |     182.1 MiB |       345.4 MiB | Includes the local clone hot-path fix                                                            |
 
-默认 heap replay 的结论：
+Conclusions of the default-heap replay:
 
-1. 当前这份 review JSONL 可以稳定跑出数百 MiB 到约 0.8 GiB 的 process-tree RSS，
-   但没有复现 4G/8G OOM。
-2. 本地 rebuilt bundle 在同起点 replay 上的峰值低于 installed CLI，说明减少
-   history clone 热路径有实际收益。
-3. 这还不能证明所有用户 OOM 都已解决。真实 4G/8G OOM 仍需要更长任务、更大
-   tool-result 累积，或保留 MCP/tool schema 压力的 replay 继续验证。
+1. This current review JSONL can stably produce process-tree RSS from hundreds of MiB up to about 0.8 GiB,
+   but does not reproduce a 4G/8G OOM.
+2. The local rebuilt bundle's peak on a same-starting-point replay is lower than the installed CLI, indicating that reducing
+   the history clone hot path has real benefit.
+3. This still cannot prove that all user OOMs have been resolved. Reproducing a real 4G/8G OOM still requires longer tasks, larger
+   tool-result accumulation, or a replay that retains MCP/tool schema pressure for further verification.
 
-## 六、根因分析
+## 6. Root Cause Analysis
 
-### OOM 的三层机制
+### The Three-Layer Mechanism of OOM
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Layer 3: V8 Heap Limit (512MB/2GB/4GB)                  │ ← 用户最终撞到这里
+│ Layer 3: V8 Heap Limit (512MB/2GB/4GB)                  │ ← where users ultimately hit the wall
 ├─────────────────────────────────────────────────────────┤
-│ Layer 2: structuredClone() 峰值放大 (瞬时 ~2x)         │ ← 直接诱因
+│ Layer 2: structuredClone() peak amplification (transient ~2x) │ ← direct trigger
 ├─────────────────────────────────────────────────────────┤
-│ Layer 1: History 中 tool result 累积 (线性增长)         │ ← 基础增长
+│ Layer 1: tool result accumulation in history (linear growth) │ ← baseline growth
 ├─────────────────────────────────────────────────────────┤
-│ Layer 0: Token compaction 触发时机                      │ ← 控制点
+│ Layer 0: Token compaction trigger timing                │ ← control point
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 精确崩溃路径
+### Exact Crash Path
 
 ```
 sendMessage()
@@ -189,173 +189,173 @@ sendMessage()
     → heapPressureRatio < threshold (safety net disabled)
     → ChatCompressionService.compress()
       → chat.getHistory(true)
-        → structuredClone(this._history)   ← 峰值分配！
-          → V8 需要额外 ~N MB 来容纳 clone
-          → 如果 existing heap + N > limit → OOM
+        → structuredClone(this._history)   ← peak allocation!
+          → V8 needs an extra ~N MB to hold the clone
+          → if existing heap + N > limit → OOM
 ```
 
-### 关键证据
+### Key Evidence
 
-| 观察                                    | 含义                                           |
-| --------------------------------------- | ---------------------------------------------- |
-| Task #5→#6: Context 5.9%→4.0% (降了)    | Token compaction **成功执行**了                |
-| Task #5→#6: RSS 515→649 MB (涨了 134MB) | Compaction 过程的 `structuredClone` 制造了峰值 |
-| GC 只能回收 1-2 MB                      | 所有对象都是 live（history + clone 都在）      |
-| #4309 设 8GB limit 仍崩                 | history 足够大时，clone 峰值可超任何 limit     |
+| Observation                                | Meaning                                                               |
+| ------------------------------------------ | --------------------------------------------------------------------- |
+| Task #5→#6: Context 5.9%→4.0% (dropped)    | Token compaction **executed successfully**                            |
+| Task #5→#6: RSS 515→649 MB (rose by 134MB) | The `structuredClone` during compaction created a peak                |
+| GC can only reclaim 1-2 MB                 | All objects are live (both history + clone are present)               |
+| #4309 still crashed with an 8GB limit set  | When the history is large enough, the clone peak can exceed any limit |
 
-需要注意：以上证据来自低 heap 压力测试和 issue 现象的组合推断。默认 heap replay
-目前支持”clone 热路径会显著影响峰值 RSS”，但尚未单独复现 4G/8G OOM。
+Note: the evidence above is combined inference from the low-heap stress test and the issue symptoms. The default-heap replay
+currently supports "the clone hot path significantly affects peak RSS," but has not independently reproduced a 4G/8G OOM.
 
-### 为什么 128K context window 更容易触发
+### Why a 128K Context Window Triggers It More Easily
 
-- 128K × 70% = ~90K tokens 触发 compaction
-- 大 context window (1M) 的 70% = 700K tokens，几乎不会触发
-- **compaction 越频繁 → structuredClone 越频繁 → OOM 风险越高**
-- DeepSeek 等未配置 contextWindowSize 的模型默认 128K，更易触发
+- 128K × 70% = ~90K tokens triggers compaction
+- 70% of a large context window (1M) = 700K tokens, which almost never triggers
+- **more frequent compaction → more frequent structuredClone → higher OOM risk**
+- Models such as DeepSeek that have no contextWindowSize configured default to 128K, making them more prone to triggering
 
 ---
 
-## 六.5、真实运行日志佐证
+## 6.5. Corroboration from Real Runtime Logs
 
-以下日志提取自本地 crash session 的 debug 输出。为避免泄露本地路径和 session id，
-报告只保留时间线和关键日志内容。
+The following logs are extracted from the debug output of the local crash session. To avoid leaking local paths and session IDs,
+the report keeps only the timeline and key log content.
 
-该 session 启动于 `2026-05-19T13:26:35Z` (本地 21:26:35)，crash 于
-`2026-05-19T13:32:10Z` (本地 21:32:10)。
+This session started at `2026-05-19T13:26:35Z` (local 21:26:35) and crashed at
+`2026-05-19T13:32:10Z` (local 21:32:10).
 
-### Heap Pressure 与 Auto-Compaction 事件时间线
+### Timeline of Heap Pressure and Auto-Compaction Events
 
 ```
 13:29:43 [WARN]  Heap pressure at 74.9%; attempting auto-compaction before token threshold.
-13:30:06 [DEBUG] [FILE_READ_CACHE] clear after auto tryCompress    ← compaction #1 执行成功
+13:30:06 [DEBUG] [FILE_READ_CACHE] clear after auto tryCompress    ← compaction #1 executed successfully
 13:30:13 [WARN]  Heap pressure at 70.7%; attempting auto-compaction before token threshold.
-                 ← 刚压完 heap 从 74.9% 仅降到 70.7%，仍超阈值，立即再次尝试
+                 ← just after compaction, heap only dropped from 74.9% to 70.7%, still over threshold, retried immediately
 13:30:52 [DEBUG] Heap pressure at 86.0%; skipping heap-pressure auto-compaction during cooldown.
-                 ← 30s cooldown 期间拒绝执行
+                 ← refused to execute during the 30s cooldown
 13:30:56 [WARN]  Heap pressure at 85.3%; attempting auto-compaction before token threshold.
-                 ← cooldown 过期，heap 已升至 85.3%
-13:31:21 [DEBUG] [FILE_READ_CACHE] clear after auto tryCompress    ← compaction #2 执行成功
+                 ← cooldown expired, heap has risen to 85.3%
+13:31:21 [DEBUG] [FILE_READ_CACHE] clear after auto tryCompress    ← compaction #2 executed successfully
 13:31:37 [WARN]  Heap pressure at 88.8%; attempting auto-compaction before token threshold.
-                 ← 压完后 heap 反弹至 88.8%
+                 ← after compaction, heap rebounded to 88.8%
 13:32:09 [DEBUG] Heap pressure at 90.2%; skipping heap-pressure auto-compaction during cooldown.
-                 ← heap 已达 90.2%，cooldown 中无法执行
-13:32:10 ← 日志终止（进程 OOM crash）
+                 ← heap reached 90.2%, cannot execute during cooldown
+13:32:10 ← logs end (process OOM crash)
 ```
 
-### 日志证据解读
+### Interpreting the Log Evidence
 
-| 日志观察                                                                              | 含义                                                      |
-| ------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| 2.5 分钟内触发 **4 次** heap-pressure auto-compaction 尝试（另有 2 次 cooldown 拒绝） | #3735 引入的 `tryCompress` 在高压时频繁触发               |
-| 每次 compaction 执行后 heap 占比仍 >70%                                               | `structuredClone()` 制造的临时峰值抵消了压缩收益          |
-| 74.9% → 70.7% → 86% → 85.3% → 88.8% → 90.2% → crash                                   | 正反馈循环：压缩→clone 峰值→heap 更高→再压缩→更高         |
-| 日志在 90.2% 后 1 秒内断裂                                                            | 下一次 `getHistory(true)` 的 `structuredClone()` 瞬间超限 |
-| `[FILE_READ_CACHE] clear after auto tryCompress` 出现 2 次                            | 证实 compaction 确实走了完整的 compress → setHistory 路径 |
+| Log observation                                                                                            | Meaning                                                                               |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Within 2.5 minutes, **4** heap-pressure auto-compaction attempts were triggered (plus 2 cooldown refusals) | The `tryCompress` introduced by #3735 triggers frequently under high pressure         |
+| After every compaction, heap usage is still >70%                                                           | The transient peak created by `structuredClone()` cancels out the compression gain    |
+| 74.9% → 70.7% → 86% → 85.3% → 88.8% → 90.2% → crash                                                        | Positive feedback loop: compress → clone peak → higher heap → compress again → higher |
+| Logs break within 1 second after 90.2%                                                                     | The `structuredClone()` of the next `getHistory(true)` instantly exceeded the limit   |
+| `[FILE_READ_CACHE] clear after auto tryCompress` appears twice                                             | Confirms compaction did go through the full compress → setHistory path                |
 
-### 正反馈死循环机制
+### The Positive-Feedback Deadlock Mechanism
 
 ```
-heap 占比高 (>70%)
-  → 触发 heap-pressure auto-compaction
-    → tryCompress() 内部调用 getHistory(true)
-      → structuredClone(this._history)  ← 瞬时 heap 峰值 +30~40%
-        → compaction 成功，释放旧 history
-          → 但 clone 峰值已经把 heap 推高到更危险的水位
-            → 下一轮 send 继续累积
-              → heap 占比更高 → 更频繁触发 → crash
+high heap usage (>70%)
+  → triggers heap-pressure auto-compaction
+    → tryCompress() internally calls getHistory(true)
+      → structuredClone(this._history)  ← transient heap peak +30~40%
+        → compaction succeeds, releasing the old history
+          → but the clone peak has already pushed the heap to a more dangerous level
+            → the next send keeps accumulating
+              → higher heap usage → triggers more frequently → crash
 ```
 
 ---
 
-## 六.6、版本归因：为什么 0.15.7 ~ 0.15.11 期间 OOM 报告增多
+## 6.6. Version Attribution: Why OOM Reports Increased Between 0.15.7 and 0.15.11
 
-### 关键 commit 时间线
+### Key Commit Timeline
 
-| 版本         | PR                                                   | 改动                                                                                | 对 `structuredClone` 调用频率的影响 |
-| ------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------- |
-| **v0.15.6**  | —                                                    | `getHistory(true)` 仅在 `sendMessage` 入口调用 1 次                                 | 基线：每次 send 1 次 clone          |
-| **v0.15.7**  | **#3735** `auto-compact subagent context`            | 将 `tryCompress()` 下沉到 `GeminiChat`，**每次 send 前**先执行一次 compaction 检查  | **+1 次**：send 前 compress 检查    |
-| **v0.15.10** | **#3879** `reactive compression on context overflow` | 当 provider 返回 context overflow 时，再次触发 `tryCompress()` + `getHistory(true)` | **+1~2 次**：overflow retry 路径    |
-| **v0.15.10** | **#3985** `harden reactive compression`              | 强化 reactive compression 重试逻辑                                                  | 同上                                |
+| Version      | PR                                                   | Change                                                                                          | Effect on `structuredClone` call frequency |
+| ------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **v0.15.6**  | —                                                    | `getHistory(true)` called only once at the `sendMessage` entry point                            | Baseline: 1 clone per send                 |
+| **v0.15.7**  | **#3735** `auto-compact subagent context`            | Moved `tryCompress()` down into `GeminiChat`, running a compaction check **before each send**   | **+1**: compress check before send         |
+| **v0.15.10** | **#3879** `reactive compression on context overflow` | When the provider returns context overflow, triggers `tryCompress()` + `getHistory(true)` again | **+1~2**: overflow retry path              |
+| **v0.15.10** | **#3985** `harden reactive compression`              | Hardens the reactive compression retry logic                                                    | Same as above                              |
 
-### v0.15.6 vs v0.15.11 的 `getHistory(true)` 调用点对比
+### Comparison of `getHistory(true)` Call Sites in v0.15.6 vs v0.15.11
 
-**v0.15.6** (2 处)：
-
-```
-L367: const requestContents = this.getHistory(true);          ← send 构造 request
-L618: const recoveryContents = self.getHistory(true);         ← MAX_TOKENS escalation (极少触发)
-```
-
-**v0.15.11** (5 处)：
+**v0.15.6** (2 sites):
 
 ```
-L467: ChatCompressionService.compress() 内部调用              ← #3735: 每次 send 前的 auto-compact
-L574: requestContents = this.getHistory(true);                ← send 构造 request
-L724: reactive tryCompress() 内部调用                         ← #3879: context overflow 后 retry
-L739: requestContents = self.getHistory(true);                ← #3879: retry 构造新 request
+L367: const requestContents = this.getHistory(true);          ← send constructs request
+L618: const recoveryContents = self.getHistory(true);         ← MAX_TOKENS escalation (rarely triggered)
+```
+
+**v0.15.11** (5 sites):
+
+```
+L467: called internally by ChatCompressionService.compress()  ← #3735: auto-compact before each send
+L574: requestContents = this.getHistory(true);                ← send constructs request
+L724: called internally by reactive tryCompress()             ← #3879: retry after context overflow
+L739: requestContents = self.getHistory(true);                ← #3879: retry constructs a new request
 L943: const recoveryContents = self.getHistory(true);         ← MAX_TOKENS escalation
 ```
 
-### 最坏路径：一次 send 可触发 4 次 `structuredClone`
+### Worst-Case Path: a Single Send Can Trigger 4 `structuredClone` Calls
 
 ```
 sendMessage()
   → tryCompress()              ← #3735: getHistory(true) [clone #1]
-  → getHistory(true)           ← 构造 request [clone #2]
-  → API 返回 context overflow
+  → getHistory(true)           ← construct request [clone #2]
+  → API returns context overflow
     → reactive tryCompress()   ← #3879: getHistory(true) [clone #3]
     → getHistory(true)         ← retry request [clone #4]
 ```
 
-### 结论
+### Conclusion
 
-**#3735 (v0.15.7)** 是 OOM 频率显著上升的最可能触发因素（非唯一根因）——它使每次
-`sendMessage` 都会先跑一次 `tryCompress()`，而 `tryCompress` 内部通过
-`ChatCompressionService.compress()` → `chat.getHistory(true)` 做全量 `structuredClone`。
-在 history 较大时，这个 “先 clone 再判断是否需要压缩” 的设计让内存峰值从 ~1.3x 升至 ~2x+。
-注：issue history 显示 OOM 报告在 #3735 之前就已存在，但 #3735 大幅增加了 structuredClone
-的调用频率，从而显著提高了 OOM 的触发概率。
+**#3735 (v0.15.7)** is the most likely trigger for the significant rise in OOM frequency (not the sole root cause)—it makes every
+`sendMessage` first run a `tryCompress()`, while `tryCompress` internally does a full `structuredClone` via
+`ChatCompressionService.compress()` → `chat.getHistory(true)`.
+When the history is large, this "clone first, then decide whether compression is needed" design raises the memory peak from ~1.3x to ~2x+.
+Note: issue history shows OOM reports existed before #3735, but #3735 greatly increased the call frequency of structuredClone,
+thereby significantly raising the probability of triggering an OOM.
 
-**#3879 (v0.15.10)** 进一步恶化了问题——在已经处于 heap 边界时 (provider 返回 context overflow)
-再触发一次全量 clone，使原本就危险的 session 更容易 crash。
-
----
-
-## 七、#4186 修复效果验证（对比测试）
-
-启用 heap-pressure safety net (HEAP_PRESSURE_COMPRESSION_RATIO = 0.7) 后的对比测试：
-
-| 指标            | 禁用 safety net    | 启用 safety net           |
-| --------------- | ------------------ | ------------------------- |
-| OOM 发生        | 是（7 轮后 crash） | 否（持续运行 >10 分钟）   |
-| RSS 峰值        | 666 MB → crash     | 555 MB → GC 回收到 280 MB |
-| Compaction 触发 | 仅 token threshold | heap 70% 时提前触发       |
-| Context 行为    | 5.9%→4.0%→crash    | 22.7%→17.0%（安全回落）   |
-
-**结论**: #4186 的 heap-pressure safety net 有效防止了 OOM，但它是一个**缓解**而非根治：
-
-- 如果 history 本身已经占了 heap 的 60%+，即使提前 compact，clone 的峰值仍然可能超限
-- 这解释了为什么 #4309 用户设了 8GB limit 后仍然 crash
+**#3879 (v0.15.10)** further worsened the problem—when already at the heap boundary (provider returns context overflow),
+it triggers another full clone, making an already dangerous session more likely to crash.
 
 ---
 
-## 八、内存占用分布
+## 7. Verification of the #4186 Fix (Comparison Test)
 
-基于测试中的 RSS 增长模式估算：
+Comparison test after enabling the heap-pressure safety net (HEAP_PRESSURE_COMPRESSION_RATIO = 0.7):
 
-| 内存位置                         | 占比   | 增长特征                    |
-| -------------------------------- | ------ | --------------------------- |
-| `this._history[]` (tool results) | 40-50% | 线性累积，每轮 +30-100MB    |
-| `structuredClone()` 临时拷贝     | 30-40% | 瞬时峰值，compaction 时出现 |
-| V8 runtime (GC metadata, code)   | ~15%   | 基本恒定                    |
-| UI/logging/stream buffers        | ~5%    | 缓慢增长                    |
+| Metric             | Safety net disabled        | Safety net enabled                    |
+| ------------------ | -------------------------- | ------------------------------------- |
+| OOM occurrence     | Yes (crash after 7 rounds) | No (ran continuously for >10 minutes) |
+| Peak RSS           | 666 MB → crash             | 555 MB → GC reclaimed to 280 MB       |
+| Compaction trigger | Only token threshold       | Triggered early at 70% heap           |
+| Context behavior   | 5.9%→4.0%→crash            | 22.7%→17.0% (safe fallback)           |
+
+**Conclusion**: The heap-pressure safety net of #4186 effectively prevents OOM, but it is a **mitigation** rather than a cure:
+
+- If the history itself already occupies 60%+ of the heap, even with early compaction, the clone peak can still exceed the limit
+- This explains why the #4309 user still crashed after setting an 8GB limit
 
 ---
 
-## 九、复现脚本与环境
+## 8. Memory Footprint Distribution
 
-### 自动化驱动脚本
+Estimated from the RSS growth pattern observed in the test:
+
+| Memory location                    | Share  | Growth characteristic                     |
+| ---------------------------------- | ------ | ----------------------------------------- |
+| `this._history[]` (tool results)   | 40-50% | Linear accumulation, +30-100MB per round  |
+| `structuredClone()` temporary copy | 30-40% | Transient peak, appears during compaction |
+| V8 runtime (GC metadata, code)     | ~15%   | Essentially constant                      |
+| UI/logging/stream buffers          | ~5%    | Slow growth                               |
+
+---
+
+## 9. Reproduction Script and Environment
+
+### Automation Driver Script
 
 ```bash
 #!/bin/bash
@@ -363,14 +363,14 @@ sendMessage()
 SESSION="$1"
 
 TASKS=(
-  "用 Read 工具完整读取 packages/core/src/core/llm-chat.ts"
-  "用 Read 工具完整读取 packages/core/src/tools/agent/agent.ts"
-  "用 grep -rn structuredClone packages/core/src 然后 Read 前 3 个文件"
-  "用 Read 完整读取 packages/cli/src/ui/hooks/slashCommandProcessor.ts"
-  "用 Read 完整读取 packages/core/src/services/chatCompressionService.ts"
-  "用 find packages/cli/src/ui/commands -name '*.ts' 然后逐一 Read"
-  "用 Read 完整读取 packages/core/src/core/turn.ts"
-  # ... 更多任务
+  "Use the Read tool to fully read packages/core/src/core/llm-chat.ts"
+  "Use the Read tool to fully read packages/core/src/tools/agent/agent.ts"
+  "Use grep -rn structuredClone packages/core/src then Read the first 3 files"
+  "Use Read to fully read packages/cli/src/ui/hooks/slashCommandProcessor.ts"
+  "Use Read to fully read packages/core/src/services/chatCompressionService.ts"
+  "Use find packages/cli/src/ui/commands -name '*.ts' then Read each one"
+  "Use Read to fully read packages/core/src/core/turn.ts"
+  # ... more tasks
 )
 
 i=0
@@ -395,43 +395,43 @@ while true; do
 done
 ```
 
-### 启动命令
+### Launch Commands
 
 ```bash
-# 1. 禁用 heap-pressure safety net
+# 1. Disable the heap-pressure safety net
 # llm-chat.ts: HEAP_PRESSURE_COMPRESSION_RATIO = 99.0
 
 # 2. Build
 npm run build --workspace=packages/core && npm run build --workspace=packages/cli
 
-# 3. 启动 qwen (128K context model, 512MB heap)
+# 3. Launch qwen (128K context model, 512MB heap)
 SESSION="oom-test"
 tmux new-session -d -s "$SESSION" -c "$REPO_DIR"
 tmux send-keys -t "$SESSION" \
   "NODE_OPTIONS='--max-old-space-size=512' node packages/cli/dist/index.js --model 'qwen3.6-plus'" Enter
 
-# 4. 等待启动后运行驱动
+# 4. Wait for startup, then run the driver
 sleep 10
 bash /tmp/oom-simple-driver.sh "$SESSION"
 ```
 
 ---
 
-## 十、后续建议
+## 10. Follow-Up Recommendations
 
-### 短期缓解（已有）
+### Short-Term Mitigation (already in place)
 
 - [x] #4186: heap-pressure auto-compaction safety net (0.7 threshold)
-- [x] #4188: fileReadCache / crawlCache 上限
+- [x] #4188: fileReadCache / crawlCache size caps
 
-### 中期修复（建议）
+### Mid-Term Fix (suggested)
 
-- [ ] 减少 `structuredClone()` 调用 — `nextSpeakerChecker` 只需最后一条消息，不需 clone 全量
-- [ ] Compaction 使用 slice + 引用替代全量 deep clone
-- [ ] 大 tool result (>100KB) 写入临时文件，history 中只保留摘要引用
+- [ ] Reduce `structuredClone()` calls — `nextSpeakerChecker` only needs the last message, not a full clone
+- [ ] Compaction uses slice + references instead of a full deep clone
+- [ ] Write large tool results (>100KB) to a temporary file, keeping only a summary reference in the history
 
-### 长期方向
+### Long-Term Direction
 
-- [ ] Tool result offload 到磁盘 + lazy load (#4184)
-- [ ] 基于 RSS 的分级压缩策略（不仅是 token count）
-- [ ] History 分段存储，避免单次全量操作
+- [ ] Offload tool results to disk + lazy load (#4184)
+- [ ] RSS-based tiered compression strategy (not just token count)
+- [ ] Segmented history storage to avoid single full-history operations

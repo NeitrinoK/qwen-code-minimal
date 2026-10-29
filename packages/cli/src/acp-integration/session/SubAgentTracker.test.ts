@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { SubAgentTracker } from './SubAgentTracker.js';
 import type { SessionContext } from './types.js';
 import type {
@@ -24,8 +24,16 @@ import {
   ToolConfirmationOutcome,
   ToolNames,
 } from '@qwen-code/qwen-code-core';
-import type { AgentSideConnection } from '@agentclientprotocol/sdk';
+import type {
+  AgentSideConnection,
+  SessionUpdate,
+} from '@agentclientprotocol/sdk';
 import { EventEmitter } from 'node:events';
+
+// vitest 4 types a bare vi.fn() as callable-or-constructable; tests call
+// these mocks directly, so pin a callable signature.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MockAny = Mock<(...args: any[]) => any>;
 
 // Helper to create a mock AgentToolCallEvent with required fields
 function createToolCallEvent(
@@ -119,14 +127,18 @@ function createStreamTextEvent(
 describe('SubAgentTracker', () => {
   let mockContext: SessionContext;
   let mockClient: AgentSideConnection;
-  let sendUpdateSpy: ReturnType<typeof vi.fn>;
-  let requestPermissionSpy: ReturnType<typeof vi.fn>;
+  let sendUpdateSpy: ReturnType<
+    typeof vi.fn<(update: SessionUpdate) => Promise<void>>
+  >;
+  let requestPermissionSpy: MockAny;
   let tracker: SubAgentTracker;
   let eventEmitter: AgentEventEmitter;
   let abortController: AbortController;
 
   beforeEach(() => {
-    sendUpdateSpy = vi.fn().mockResolvedValue(undefined);
+    sendUpdateSpy = vi
+      .fn<(update: SessionUpdate) => Promise<void>>()
+      .mockResolvedValue(undefined);
     requestPermissionSpy = vi.fn().mockResolvedValue({
       outcome: { optionId: ToolConfirmationOutcome.ProceedOnce },
     });
@@ -202,15 +214,23 @@ describe('SubAgentTracker', () => {
     );
     await Promise.resolve();
     const frames = sendUpdateSpy.mock.calls
-      .map(([update]) => update)
-      .filter((update) => update._meta?.toolLifecycle);
-    expect(frames.map((update) => update._meta.toolLifecycle)).toEqual([
-      lifecycle,
-      ended,
-    ]);
+      .map(([update]) => update as Record<string, unknown>)
+      .filter(
+        (update) =>
+          (update['_meta'] as Record<string, unknown> | undefined)?.[
+            'toolLifecycle'
+          ],
+      );
+    expect(
+      frames.map(
+        (update) =>
+          (update['_meta'] as Record<string, unknown>)['toolLifecycle'],
+      ),
+    ).toEqual([lifecycle, ended]);
     expect(
       frames.every(
-        (update) => update.content === undefined && update.status === undefined,
+        (update) =>
+          update['content'] === undefined && update['status'] === undefined,
       ),
     ).toBe(true);
     cleanups[0]();
@@ -391,7 +411,7 @@ describe('SubAgentTracker', () => {
       tracker.setup(eventEmitter, abortController.signal);
       const mockToolRegistry =
         mockContext.config.getToolRegistry() as unknown as {
-          getTool: ReturnType<typeof vi.fn>;
+          getTool: MockAny;
         };
       mockToolRegistry.getTool = vi.fn().mockReturnValue({
         displayName: 'ReadFile',
@@ -409,7 +429,10 @@ describe('SubAgentTracker', () => {
       await vi.waitFor(() => {
         expect(sendUpdateSpy).toHaveBeenCalled();
       });
-      const text = sendUpdateSpy.mock.calls[0][0].content[0].content.text;
+      const update = sendUpdateSpy.mock.calls[0][0] as unknown as {
+        content: Array<{ content: { text: string } }>;
+      };
+      const text = update.content[0].content.text;
       expect(text).toBe('ReadFile: Reading file');
     });
 
@@ -417,7 +440,7 @@ describe('SubAgentTracker', () => {
       tracker.setup(eventEmitter, abortController.signal);
       const mockToolRegistry =
         mockContext.config.getToolRegistry() as unknown as {
-          getTool: ReturnType<typeof vi.fn>;
+          getTool: MockAny;
         };
       mockToolRegistry.getTool = vi.fn().mockReturnValue({
         displayName: 'ReadFile',
@@ -437,7 +460,10 @@ describe('SubAgentTracker', () => {
       await vi.waitFor(() => {
         expect(sendUpdateSpy).toHaveBeenCalled();
       });
-      const text = sendUpdateSpy.mock.calls[0][0].content[0].content.text;
+      const update = sendUpdateSpy.mock.calls[0][0] as unknown as {
+        content: Array<{ content: { text: string } }>;
+      };
+      const text = update.content[0].content.text;
       expect(text).toBe('Running tool: ReadFile');
     });
   });
@@ -733,7 +759,7 @@ describe('SubAgentTracker', () => {
       });
 
       const progressCalls = sendUpdateSpy.mock.calls.filter(
-        (call) => call[0]?._meta?.subagentProgress === true,
+        (call) => call[0]?._meta?.['subagentProgress'] === true,
       );
       expect(progressCalls).toHaveLength(1);
     });

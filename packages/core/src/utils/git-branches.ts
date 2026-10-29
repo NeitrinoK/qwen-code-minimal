@@ -807,6 +807,12 @@ function gitDetail(err: unknown): string {
   if (err && typeof err === 'object' && ('stdout' in err || 'stderr' in err)) {
     const e = err as { stdout?: string; stderr?: string };
     const detail = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim();
+    // Newer git (2.4x) reports a wedged index as "could not write index"
+    // without naming the lock that caused it; add the hint older git gave by
+    // exiting silently.
+    if (/could not write index/i.test(detail) && !/lock/i.test(detail)) {
+      return `${detail}\n(a stale .git/index.lock or another git process is the usual cause)`;
+    }
     if (detail) return detail;
     // Some git commands exit silently against a stale lock; say so rather
     // than surfacing only the command line.

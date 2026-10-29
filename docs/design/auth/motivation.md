@@ -7,7 +7,7 @@ produce the same kind of output: updates to the user's provider configuration in
 
 This refactor makes provider setup the shared abstraction. A provider describes
 how it is shown, how credentials are collected, which models it installs, and
-which settings patch should be applied. API keys, OAuth, coding plans, token
+which settings patch should be applied. API keys, OAuth, token
 plans, and custom wizards are setup methods for a provider, not separate auth
 architectures.
 
@@ -17,7 +17,6 @@ architectures.
   - Alibaba ModelStudio for first-party Qwen setup.
   - Third-party providers for common built-in integrations such as DeepSeek,
     MiniMax, and Z.AI.
-  - OAuth providers such as OpenRouter.
   - Custom providers for local servers, proxies, or providers that are not built
     in.
 - Move provider-specific data into small declarative provider configs.
@@ -67,7 +66,6 @@ collected the inputs.
 the same provider install path:
 
 1. **Alibaba ModelStudio**
-   - Coding Plan
    - Token Plan
    - Standard API key
 
@@ -80,7 +78,7 @@ the same provider install path:
      - Standard API key: `https://api.z.ai/api/paas/v4`
 
 3. **OAuth**
-   - Browser-based authorization for routing platforms such as OpenRouter.
+   - Browser-based authorization for routing platforms.
    - OAuth-specific mechanics can live in the provider implementation, but the
      final result should still be a provider install plan.
 
@@ -103,7 +101,7 @@ be treated as an auto-updatable built-in model list.
 
 ## Non-goals
 
-- Do not make API key, OAuth, coding plan, or token plan the top-level settings
+- Do not make API key, OAuth, or token plan the top-level settings
   architecture.
 - Do not couple settings writes to React components or CLI command handlers.
 - Do not make UI groups a business-logic axis.

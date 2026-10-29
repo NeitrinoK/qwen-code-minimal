@@ -20,7 +20,7 @@ describe('initializeWarningHandler', () => {
   // This is the channel the real Node default printer travels on, so
   // asserting fan-out here is equivalent to asserting "the default printer
   // would have fired" without coupling tests to internal Node behavior.
-  let priorListener: ReturnType<typeof vi.fn>;
+  let priorListener: ReturnType<typeof vi.fn<(warning: Error) => void>>;
 
   beforeEach(() => {
     for (const k of ENV_KEYS) originalEnv[k] = process.env[k];
@@ -28,7 +28,7 @@ describe('initializeWarningHandler', () => {
     originalListeners = [...process.listeners('warning')];
     process.removeAllListeners('warning');
     resetWarningHandlerForTests();
-    priorListener = vi.fn();
+    priorListener = vi.fn<(warning: Error) => void>();
     process.on('warning', priorListener);
   });
 

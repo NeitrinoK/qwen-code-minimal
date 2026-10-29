@@ -9,7 +9,7 @@
 // Mock 'os' first.
 import * as osActual from 'node:os'; // Import for type info for the mock factory
 
-vi.mock('os', async (importOriginal) => {
+vi.mock('node:os', async (importOriginal) => {
   const actualOs = await importOriginal<typeof osActual>();
   return {
     ...actualOs,
@@ -4234,6 +4234,34 @@ describe('Settings Loading and Merging', () => {
   });
 
   describe('WORKSPACE_RESTRICTED_SETTINGS as the single source', () => {
+    it('ignores hub from workspace settings and warns, keeping the user hub', () => {
+      const userHub = {
+        label: 'User Hub',
+        endpoints: [{ name: 'prod', baseUrl: 'https://hub.example.com/v1' }],
+      };
+      (mockFsExistsSync as Mock).mockReturnValue(true);
+      (fs.readFileSync as Mock).mockImplementation(
+        (p: fs.PathOrFileDescriptor) => {
+          if (p === USER_SETTINGS_PATH) return JSON.stringify({ hub: userHub });
+          if (p === MOCK_WORKSPACE_SETTINGS_PATH)
+            return JSON.stringify({
+              hub: {
+                label: 'Evil',
+                endpoints: [{ name: 'x', baseUrl: 'https://evil.example/v1' }],
+              },
+            });
+          return '{}';
+        },
+      );
+      const settings = loadSettings(MOCK_WORKSPACE_DIR);
+      expect(settings.merged.hub).toEqual(userHub);
+      expect(
+        getSettingsWarnings(settings).some((w) =>
+          w.startsWith('Warning: hub in workspace settings'),
+        ),
+      ).toBe(true);
+    });
+
     it.each([undefined, 0, 25])(
       'ignores workspace memory budget zero while preserving user budget %s',
       (budget) => {
@@ -4968,123 +4996,6 @@ describe('Settings Loading and Merging', () => {
     });
   });
 
-  describe('allowedInsecureVoiceBaseUrls scope handling', () => {
-    it('should honor the allowlist from user scope', () => {
-      (mockFsExistsSync as Mock).mockReturnValue(true);
-      (fs.readFileSync as Mock).mockImplementation(
-        (p: fs.PathOrFileDescriptor) => {
-          if (p === USER_SETTINGS_PATH)
-            return JSON.stringify({
-              security: {
-                allowedInsecureVoiceBaseUrls: [
-                  'http://voice.region-a.internal.example/v1',
-                ],
-              },
-            });
-          return '{}';
-        },
-      );
-
-      const settings = loadSettings(MOCK_WORKSPACE_DIR);
-      expect(settings.merged.security?.allowedInsecureVoiceBaseUrls).toEqual([
-        'http://voice.region-a.internal.example/v1',
-      ]);
-    });
-
-    it('should strip and warn about the allowlist from workspace scope', () => {
-      (mockFsExistsSync as Mock).mockReturnValue(true);
-      (fs.readFileSync as Mock).mockImplementation(
-        (p: fs.PathOrFileDescriptor) => {
-          if (p === MOCK_WORKSPACE_SETTINGS_PATH)
-            return JSON.stringify({
-              security: {
-                allowedInsecureVoiceBaseUrls: [
-                  'http://voice.region-a.internal.example/v1',
-                ],
-                allowedHttpHookUrls: ['https://hooks.example.com/*'],
-              },
-            });
-          return '{}';
-        },
-      );
-
-      const settings = loadSettings(MOCK_WORKSPACE_DIR);
-      expect(
-        settings.merged.security?.allowedInsecureVoiceBaseUrls,
-      ).toBeUndefined();
-      expect(settings.merged.security?.allowedHttpHookUrls).toEqual([
-        'https://hooks.example.com/*',
-      ]);
-      expect(
-        getSettingsWarnings(settings).some((warning) =>
-          warning.includes('security.allowedInsecureVoiceBaseUrls'),
-        ),
-      ).toBe(true);
-    });
-
-    it('should preserve a user allowlist when workspace defines another', () => {
-      (mockFsExistsSync as Mock).mockReturnValue(true);
-      (fs.readFileSync as Mock).mockImplementation(
-        (p: fs.PathOrFileDescriptor) => {
-          if (p === USER_SETTINGS_PATH)
-            return JSON.stringify({
-              security: {
-                allowedInsecureVoiceBaseUrls: [
-                  'http://voice.region-a.internal.example/v1',
-                ],
-              },
-            });
-          if (p === MOCK_WORKSPACE_SETTINGS_PATH)
-            return JSON.stringify({
-              security: {
-                allowedInsecureVoiceBaseUrls: [
-                  'http://voice.region-b.internal.example/v1',
-                ],
-              },
-            });
-          return '{}';
-        },
-      );
-
-      const settings = loadSettings(MOCK_WORKSPACE_DIR);
-      expect(settings.merged.security?.allowedInsecureVoiceBaseUrls).toEqual([
-        'http://voice.region-a.internal.example/v1',
-      ]);
-    });
-
-    it('should let a system-scope empty allowlist revoke a user entry', () => {
-      const systemSettingsPath = '/mock/system/settings.json';
-      process.env['QWEN_CODE_SYSTEM_SETTINGS_PATH'] = systemSettingsPath;
-      try {
-        (mockFsExistsSync as Mock).mockReturnValue(true);
-        (fs.readFileSync as Mock).mockImplementation(
-          (p: fs.PathOrFileDescriptor) => {
-            if (p === USER_SETTINGS_PATH)
-              return JSON.stringify({
-                security: {
-                  allowedInsecureVoiceBaseUrls: [
-                    'http://voice.region-a.internal.example/v1',
-                  ],
-                },
-              });
-            if (p === systemSettingsPath)
-              return JSON.stringify({
-                security: { allowedInsecureVoiceBaseUrls: [] },
-              });
-            return '{}';
-          },
-        );
-
-        const settings = loadSettings(MOCK_WORKSPACE_DIR);
-        expect(settings.merged.security?.allowedInsecureVoiceBaseUrls).toEqual(
-          [],
-        );
-      } finally {
-        delete process.env['QWEN_CODE_SYSTEM_SETTINGS_PATH'];
-      }
-    });
-  });
-
   describe('getSystemHooks', () => {
     const hook = (command: string) => [
       { hooks: [{ type: 'command', command }] },
@@ -5663,12 +5574,12 @@ describe('Settings Loading and Merging', () => {
         (p: fs.PathOrFileDescriptor) => {
           if (p === USER_SETTINGS_PATH) {
             return JSON.stringify({
-              general: { voice: { language: 'en' } },
+              general: { gitCoAuthor: { commit: true } },
             });
           }
           if (p === MOCK_WORKSPACE_SETTINGS_PATH) {
             return JSON.stringify({
-              general: { voice: { enabled: false } },
+              general: { gitCoAuthor: { pr: false } },
             });
           }
           return '{}';
@@ -5685,12 +5596,12 @@ describe('Settings Loading and Merging', () => {
           [
             {
               scope: SettingScope.User,
-              key: 'general.voice.language',
-              value: 'zh',
+              key: 'general.gitCoAuthor.commit',
+              value: false,
             },
             {
               scope: SettingScope.Workspace,
-              key: 'general.voice.enabled',
+              key: 'general.gitCoAuthor.pr',
               value: true,
             },
           ],
@@ -5701,9 +5612,9 @@ describe('Settings Loading and Merging', () => {
       );
 
       expect(committed).toEqual([SettingScope.User]);
-      expect(settings.user.settings.general?.voice?.language).toBe('zh');
-      expect(settings.workspace.settings.general?.voice?.enabled).toBe(false);
-      expect(settings.merged.general?.voice?.enabled).toBe(false);
+      expect(settings.user.settings.general?.gitCoAuthor?.commit).toBe(false);
+      expect(settings.workspace.settings.general?.gitCoAuthor?.pr).toBe(false);
+      expect(settings.merged.general?.gitCoAuthor?.pr).toBe(false);
     });
   });
 

@@ -29,7 +29,6 @@ export default {
   rules: 'Rules',
   sandbox: 'Sandboxing',
   language: 'i18n',
-  channels: 'Channels',
   hooks: 'Hooks',
   'status-line': 'Status Line',
   'scheduled-tasks': 'Scheduled Tasks',

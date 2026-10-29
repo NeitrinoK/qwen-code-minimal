@@ -262,7 +262,6 @@ vi.mock('./hooks/useBracketedPaste.js');
 vi.mock('./hooks/useKeypress.js');
 vi.mock('./hooks/useLoadingIndicator.js');
 vi.mock('./hooks/useFolderTrust.js');
-vi.mock('./hooks/useIdeTrustListener.js');
 vi.mock('./hooks/useMessageQueue.js');
 vi.mock('./hooks/useAutoAcceptIndicator.js');
 vi.mock('./hooks/useGitBranchName.js');
@@ -296,7 +295,6 @@ vi.mock('../services/prompt-stash.js');
 
 // Mock external utilities
 vi.mock('../utils/events.js');
-vi.mock('./handleAutoUpdate.js');
 vi.mock('../utils/cleanup.js');
 
 const mockLoadHierarchicalMemory = vi.hoisted(() => vi.fn());
@@ -318,7 +316,6 @@ import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useLlmStream } from './hooks/use-llm-stream.js';
 import { useVim } from './hooks/vim.js';
 import { useFolderTrust } from './hooks/useFolderTrust.js';
-import { useIdeTrustListener } from './hooks/useIdeTrustListener.js';
 import { useMessageQueue } from './hooks/useMessageQueue.js';
 import { useAutoAcceptIndicator } from './hooks/useAutoAcceptIndicator.js';
 import { useGitBranchName } from './hooks/useGitBranchName.js';
@@ -399,7 +396,6 @@ describe('AppContainer State Management', () => {
   const mockedUseLlmStream = useLlmStream as Mock;
   const mockedUseVim = useVim as Mock;
   const mockedUseFolderTrust = useFolderTrust as Mock;
-  const mockedUseIdeTrustListener = useIdeTrustListener as Mock;
   const mockedUseMessageQueue = useMessageQueue as Mock;
   const mockedUseAutoAcceptIndicator = useAutoAcceptIndicator as Mock;
   const mockedUseGitBranchName = useGitBranchName as Mock;
@@ -421,7 +417,7 @@ describe('AppContainer State Management', () => {
   // Shared helper to extract AppContainer's global keypress handler
   // (handleGlobalKeypress) from the useKeypress mock. The handler stringifies
   // to include TOGGLE_THINKING_EXPANDED, so that token is the stable
-  // discovery idiom. Used by the Ctrl+O and Cancel Handler describe blocks.
+  // discovery idiom. Used by the Alt+T and Cancel Handler describe blocks.
   const getGlobalKeypress = (): ((key: Key) => void) | undefined =>
     mockedUseKeypress.mock.calls
       .map((call) => call[0])
@@ -546,10 +542,6 @@ describe('AppContainer State Management', () => {
       isFolderTrustDialogOpen: false,
       handleFolderTrustSelect: vi.fn(),
       isRestarting: false,
-    });
-    mockedUseIdeTrustListener.mockReturnValue({
-      needsRestart: false,
-      restartReason: 'NONE',
     });
     // Complete UseMessageQueueReturn shape. AppContainer destructures all
     // of these and passes the drain fields straight into
@@ -7081,7 +7073,7 @@ describe('AppContainer State Management', () => {
     });
   });
 
-  describe('Thinking expansion (Ctrl+O) integration', () => {
+  describe('Thinking expansion (Alt+T) integration', () => {
     const makeKey = (overrides: Partial<Key>): Key =>
       ({
         name: '',
@@ -7093,9 +7085,9 @@ describe('AppContainer State Management', () => {
         ...overrides,
       }) as Key;
 
-    const ctrlO = makeKey({ name: 'o', ctrl: true, sequence: '\x0f' });
+    const altT = makeKey({ name: 't', meta: true, sequence: '\u001bt' });
 
-    it('Ctrl+O flips the full-detail state that expands thoughts and tool output', () => {
+    it('Alt+T flips the full-detail state that expands thoughts and tool output', () => {
       mockedUseLlmStream.mockReturnValue({
         streamingState: 'idle',
         submitQuery: vi.fn(),
@@ -7122,10 +7114,10 @@ describe('AppContainer State Management', () => {
 
       expect(capturedThoughtExpanded.allExpanded).toBe(false);
 
-      // Behavioural: the handler must reach the Ctrl+O code path,
+      // Behavioural: the handler must reach the Alt+T code path,
       // which calls refreshStatic → clearTerminal.
       mockStdout.write.mockClear();
-      handleKeypress!(ctrlO);
+      handleKeypress!(altT);
       expect(mockStdout.write).toHaveBeenCalledWith(ansiEscapes.clearTerminal);
 
       // Structural (M1): the handler must contain the state flip.
@@ -7141,6 +7133,112 @@ describe('AppContainer State Management', () => {
       // (e.g. (prev) => true) makes this assertion fail (mutation M1).
       expect(handleKeypress!.toString()).toMatch(
         /setThoughtExpanded\(\s*\(prev\)\s*=>\s*!prev/,
+      );
+    });
+  });
+
+  describe('Ctrl+O compact mode toggle (issue #3899)', () => {
+    const ctrlOKey: Key = {
+      name: 'o',
+      ctrl: true,
+      meta: false,
+      shift: false,
+      paste: false,
+      sequence: '',
+    };
+
+    // The global handler is the one that calls compactToggleHasVisualEffect.
+    // Mirrors the discriminator pattern used by the renderMode test above.
+    const findGlobalKeypressHandler = () =>
+      mockedUseKeypress.mock.calls
+        .map((call) => call[0])
+        .reverse()
+        .find(
+          (handler): handler is (key: Key) => void =>
+            typeof handler === 'function' &&
+            handler.toString().includes('compactToggleHasVisualEffect'),
+        );
+
+    it('skips refreshStatic on Ctrl+O when history has no tool_group/thought items', () => {
+      mockedUseHistory.mockReturnValue({
+        history: [
+          { type: 'user', id: 1, text: 'hi' },
+          { type: 'gemini', id: 2, text: 'hello' },
+        ],
+        addItem: vi.fn(),
+        updateItem: vi.fn(),
+        clearItems: vi.fn(),
+        loadHistory: vi.fn(),
+        truncateToItem: vi.fn(),
+      });
+
+      render(
+        <AppContainer
+          config={mockConfig}
+          settings={mockSettings}
+          version="1.0.0"
+          initializationResult={mockInitResult}
+        />,
+      );
+      mockStdout.write.mockClear();
+
+      const handler = findGlobalKeypressHandler();
+      expect(handler).toBeDefined();
+      handler!(ctrlOKey);
+
+      // Ctrl+O toggles compact mode (thinking-expand is on Alt+T in this
+      // fork). With no tool_group/thought items the toggle has no visual
+      // effect, so refreshStatic — and its clearTerminal write — is skipped
+      // (#3899).
+      expect(mockStdout.write).not.toHaveBeenCalledWith(
+        ansiEscapes.clearTerminal,
+      );
+    });
+
+    it('skips refreshStatic on Ctrl+O when history contains only tool_group (no visual effect)', () => {
+      mockedUseHistory.mockReturnValue({
+        history: [
+          { type: 'user', id: 1, text: 'run ls' },
+          {
+            type: 'tool_group',
+            id: 2,
+            tools: [
+              {
+                callId: 'c1',
+                name: 'shell',
+                description: 'shell description',
+                status: ToolCallStatus.Success,
+                resultDisplay: undefined,
+                confirmationDetails: undefined,
+              },
+            ],
+          },
+        ],
+        addItem: vi.fn(),
+        updateItem: vi.fn(),
+        clearItems: vi.fn(),
+        loadHistory: vi.fn(),
+        truncateToItem: vi.fn(),
+      });
+
+      render(
+        <AppContainer
+          config={mockConfig}
+          settings={mockSettings}
+          version="1.0.0"
+          initializationResult={mockInitResult}
+        />,
+      );
+      mockStdout.write.mockClear();
+
+      const handler = findGlobalKeypressHandler();
+      expect(handler).toBeDefined();
+      handler!(ctrlOKey);
+
+      // tool_group items produce no compact-mode visual change, so the Ctrl+O
+      // toggle skips refreshStatic and no clearTerminal is written (#3899).
+      expect(mockStdout.write).not.toHaveBeenCalledWith(
+        ansiEscapes.clearTerminal,
       );
     });
   });
@@ -7807,52 +7905,8 @@ describe('AppContainer State Management', () => {
     });
   });
 
-  describe('IDE mode rewind guard', () => {
-    it('shows info message instead of opening rewind selector when IDE mode is enabled', () => {
-      const mockAddItem = vi.fn();
-      mockedUseHistory.mockReturnValue({
-        history: [{ id: 1, type: 'user', text: 'hello' }],
-        addItem: mockAddItem,
-        updateItem: vi.fn(),
-        clearItems: vi.fn(),
-        loadHistory: vi.fn(),
-        truncateToItem: vi.fn(),
-      });
-      mockedUseLlmStream.mockReturnValue({
-        streamingState: 'idle',
-        submitQuery: vi.fn(),
-        initError: null,
-        pendingHistoryItems: [],
-        thought: null,
-        cancelOngoingRequest: vi.fn(),
-        retryLastPrompt: vi.fn(),
-        streamingResponseLengthRef: { current: 0 },
-        isReceivingContent: false,
-      });
-      vi.spyOn(mockConfig, 'getIdeMode').mockReturnValue(true);
-
-      render(
-        <AppContainer
-          config={mockConfig}
-          settings={mockSettings}
-          version="1.0.0"
-          initializationResult={mockInitResult}
-        />,
-      );
-
-      capturedUIActions.openRewindSelector();
-
-      expect(mockAddItem).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'info',
-          text: expect.stringMatching(/rewind.*disabled.*IDE/i),
-        }),
-        expect.any(Number),
-      );
-      expect(capturedUIState.isRewindSelectorOpen).toBeFalsy();
-    });
-
-    it('opens rewind selector normally when IDE mode is disabled', () => {
+  describe('Rewind selector', () => {
+    it('opens rewind selector without adding a history item', () => {
       const mockAddItemDisabled = vi.fn();
       mockedUseHistory.mockReturnValue({
         history: [{ id: 1, type: 'user', text: 'hello' }],
@@ -7873,7 +7927,6 @@ describe('AppContainer State Management', () => {
         streamingResponseLengthRef: { current: 0 },
         isReceivingContent: false,
       });
-      vi.spyOn(mockConfig, 'getIdeMode').mockReturnValue(false);
 
       render(
         <AppContainer
@@ -8694,7 +8747,7 @@ describe('AppContainer State Management', () => {
       // prevent, with every hook-level test still green.
       //
       // Structural rather than behavioural for the reason recorded on the
-      // Ctrl+O guard in 'Thinking expansion': under this harness the mount
+      // Alt+T guard in 'Thinking expansion': under this harness the mount
       // effect's
       // `setConfigInitialized(true)` never re-renders the tree, and the
       // drain is gated on it, so a rendered AppContainer can never reach a

@@ -35,7 +35,9 @@ describe('common', () => {
     mockedLoadSettings.mockReturnValue({
       merged: { advanced: { runtimeOutputDir: '/custom/runtime' } },
     });
-    mockSessionServiceConstructor.mockReturnValue({});
+    mockSessionServiceConstructor.mockImplementation(function () {
+      return {};
+    });
 
     initSessionService();
 
@@ -49,7 +51,9 @@ describe('common', () => {
     mockedLoadSettings.mockReturnValue({
       merged: { advanced: {} },
     });
-    mockSessionServiceConstructor.mockReturnValue({});
+    mockSessionServiceConstructor.mockImplementation(function () {
+      return {};
+    });
 
     initSessionService();
 
@@ -64,7 +68,9 @@ describe('common', () => {
     mockedLoadSettings.mockReturnValue({
       merged: { advanced: {} },
     });
-    mockSessionServiceConstructor.mockReturnValue(mockInstance);
+    mockSessionServiceConstructor.mockImplementation(function () {
+      return mockInstance;
+    });
 
     const result = initSessionService();
 

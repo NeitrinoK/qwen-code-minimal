@@ -102,8 +102,6 @@ describe('request lifecycle persistence', () => {
         model: 'test-model',
         chatRecording: true,
         sessionWriterLeaseEnabled: false,
-        usageStatisticsEnabled: false,
-        telemetry: { enabled: false },
       });
       const original = config.getChatRecordingService()!;
       const live = vi.fn();

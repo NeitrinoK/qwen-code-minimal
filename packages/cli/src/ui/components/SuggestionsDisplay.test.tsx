@@ -20,8 +20,8 @@ describe('SuggestionsDisplay', () => {
     await setLanguageAsync('en');
   });
 
-  it('renders localized loading text in zh', async () => {
-    await setLanguageAsync('zh');
+  it('renders localized loading text in ru', async () => {
+    await setLanguageAsync('ru');
 
     const { lastFrame } = render(
       <SuggestionsDisplay
@@ -35,7 +35,7 @@ describe('SuggestionsDisplay', () => {
       />,
     );
 
-    expect(lastFrame()).toContain('正在加载建议...');
+    expect(lastFrame()).toContain('Загрузка предложений...');
   });
 
   it('truncates long slash command descriptions to a single line by default', () => {

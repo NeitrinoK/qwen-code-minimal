@@ -30,7 +30,6 @@ import {
 import process from 'node:process';
 import { EventEmitter } from 'node:events';
 import {
-  AuthType,
   checkForExtensionUpdate,
   ExtensionUpdateState,
   getMCPServerStatus,
@@ -58,6 +57,7 @@ import type {
   Extension,
   MCPServerConfig,
   ResolvedModelId,
+  AuthType,
 } from '@qwen-code/qwen-code-core';
 import { SettingScope } from '../../config/settings.js';
 import type { LoadedSettings } from '../../config/settings.js';
@@ -71,10 +71,6 @@ import { getToolInvalidReasons, isToolValid } from '../components/mcp/utils.js';
 import { themeManager, AUTO_THEME_NAME } from '../themes/theme-manager.js';
 import { applyOpenTuiTheme } from './theme.js';
 import { getActiveOpenTuiTheme } from './theme-parity.js';
-import {
-  isSelectableVoiceModel,
-  formatUnsupportedVoiceModelMessage,
-} from '../voice/voice-model.js';
 import {
   ADVISOR_OFF_OPTION,
   buildModelSelectionKey,
@@ -120,7 +116,6 @@ export function buildModelEntries(
   mode: ModelDialogMode,
 ): OpenTuiModelEntry[] {
   const allModels = config?.getAllConfiguredModels?.() ?? [];
-  const authType = config?.getAuthType?.();
   const entries: OpenTuiModelEntry[] =
     mode === 'advisor'
       ? [
@@ -157,14 +152,8 @@ export function buildModelEntries(
     }
     if (mode !== 'image' && model.imageOnly) continue;
     if (!model.isRuntimeModel) {
-      if (
-        model.authType === AuthType.QWEN_OAUTH &&
-        authType !== AuthType.QWEN_OAUTH
-      ) {
-        continue;
-      }
       if (mode !== 'fast' && mode !== 'advisor' && model.fastOnly) continue;
-      if (mode !== 'voice' && model.voiceOnly) continue;
+      if (model.voiceOnly) continue;
       // ink keeps visionOnly models in vision AND image mode
       // (ModelDialog.tsx: isVisionModelMode || isImageModelMode || !m.visionOnly).
       if (mode !== 'vision' && mode !== 'image' && model.visionOnly) continue;
@@ -180,16 +169,15 @@ export function buildModelEntries(
               model.baseUrl,
             );
     const isRuntime = model.isRuntimeModel ?? false;
-    const isQwenOAuth = model.authType === AuthType.QWEN_OAUTH;
+    // Qwen OAuth is not an auth type in this build; the field stays for the
+    // shared entry shape.
+    const isQwenOAuth = false;
     // ink folds the runtime / discontinued markers into the row description as
     // well as its title, so a runtime model with no description of its own still
     // gets an explanatory line under the title.
     let description = model.description ?? '';
     if (isRuntime) {
       description = description ? `${description} (Runtime)` : 'Runtime model';
-    }
-    if (isQwenOAuth && !isRuntime) {
-      description = t('Discontinued — switch to Coding Plan or API Key');
     }
     entries.push({
       key,
@@ -319,13 +307,11 @@ export function computeModelDialogInitialKey(params: {
   const rawSetting =
     mode === 'fast'
       ? settings.merged.fastModel
-      : mode === 'voice'
-        ? settings.merged.voiceModel
-        : mode === 'vision'
-          ? settings.merged.visionModel
-          : mode === 'compaction'
-            ? settings.merged.compactionModel
-            : settings.merged.imageModel;
+      : mode === 'vision'
+        ? settings.merged.visionModel
+        : mode === 'compaction'
+          ? settings.merged.compactionModel
+          : settings.merged.imageModel;
   if (typeof rawSetting !== 'string' || !rawSetting.trim()) return undefined;
   const trimmed = rawSetting.trim();
   if (byKey.has(trimmed)) return trimmed;
@@ -439,37 +425,6 @@ export async function applyModelSelection(
     }
   }
 
-  if (mode === 'voice') {
-    if (!selectedEntry?.model) {
-      return { ok: false, error: t('Selected voice model is unavailable.') };
-    }
-    const voiceModel = selectedEntry.model.id;
-    if (!isSelectableVoiceModel(selectedEntry.model)) {
-      return {
-        ok: false,
-        error: formatUnsupportedVoiceModelMessage(voiceModel),
-      };
-    }
-    const matchingEntries = entries.filter(
-      (entry) => entry.model?.id === voiceModel,
-    );
-    if (matchingEntries.length > 1) {
-      return {
-        ok: false,
-        error: t(
-          "Voice model '{{model}}' is configured more than once. Remove duplicate model ids before selecting it for voice transcription.",
-          { model: voiceModel },
-        ),
-      };
-    }
-    const scope = resolveModelPersistScope(settings, persistScope);
-    settings.setValue(scope, 'voiceModel', voiceModel);
-    return {
-      ok: true,
-      message: `${t('Voice Model')}: ${voiceModel}${scopeSuffix}`,
-    };
-  }
-
   hydrateApiKeyEnvFromSettings(settings, selectedEntry?.model?.envKey);
 
   // Fast model mode: save authType:modelId (plus the baseUrl endpoint
@@ -571,25 +526,6 @@ export async function applyModelSelection(
     };
   }
 
-  // Primary mode. Block selection of discontinued qwen-oauth models
-  // (only block non-runtime OAuth; runtime OAuth models from existing
-  // cached tokens are still allowed to work until the server rejects them).
-  const isQwenOAuthSelection =
-    selectionKey.startsWith(`${AuthType.QWEN_OAUTH}::`) ||
-    (selectionKey.startsWith('$runtime|') &&
-      selectionKey.split('|')[1] === AuthType.QWEN_OAUTH);
-  const isRuntimeOAuthSelection = selectionKey.startsWith(
-    `$runtime|${AuthType.QWEN_OAUTH}|`,
-  );
-  if (isQwenOAuthSelection && !isRuntimeOAuthSelection) {
-    return {
-      ok: false,
-      error: t(
-        'Qwen OAuth free tier was discontinued on 2026-04-15. Please select a model from another provider or run /auth to switch.',
-      ),
-    };
-  }
-
   if (!config) {
     return { ok: true };
   }
@@ -616,10 +552,6 @@ export async function applyModelSelection(
   let after: ContentGeneratorConfig | undefined;
   try {
     await config.switchModel(selectedAuthType, modelId, {
-      ...(selectedAuthType !== authType &&
-      selectedAuthType === AuthType.QWEN_OAUTH
-        ? { requireCachedCredentials: true }
-        : {}),
       baseUrl: selectedBaseUrl,
     });
     if (!isRuntime) {

@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { scanForSecrets } from './secret-scanner.js';
+import { redactSecrets, scanForSecrets } from './secret-scanner.js';
 import { expectWithinLatencyBudget } from '../test-utils/latency-budget.js';
 
 describe('scanForSecrets', () => {
@@ -124,5 +124,34 @@ describe('scanForSecrets', () => {
   it('does not match a token one char short of the minimum length', () => {
     // 35-char body is just under the github-pat {36} floor.
     expect(scanForSecrets(`ghp_${'a'.repeat(35)} `)).toEqual([]);
+  });
+});
+
+describe('redactSecrets', () => {
+  it('redactSecrets replaces detected secrets with [REDACTED]', () => {
+    // Body must be >= 64 chars to satisfy the private-key rule's
+    // `{64,16384}` bound (see the "detects a PEM private key block" test).
+    const pem = `-----BEGIN PRIVATE KEY-----\n${'A'.repeat(120)}\n-----END PRIVATE KEY-----`;
+    const out = redactSecrets(`before ${pem} after`);
+    expect(out).not.toContain('BEGIN PRIVATE KEY');
+    expect(out).toContain('[REDACTED]');
+    expect(out).toContain('before');
+    expect(out).toContain('after');
+  });
+
+  it('redactSecrets leaves clean text untouched', () => {
+    expect(redactSecrets('just a normal sentence')).toBe(
+      'just a normal sentence',
+    );
+  });
+
+  it('redacts every occurrence when the same secret pattern appears twice', () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    const out = redactSecrets(`first ${token} middle ${token} last`);
+    expect(out).not.toContain(token);
+    expect(out.match(/\[REDACTED\]/g)).toHaveLength(2);
+    expect(out).toContain('first');
+    expect(out).toContain('middle');
+    expect(out).toContain('last');
   });
 });

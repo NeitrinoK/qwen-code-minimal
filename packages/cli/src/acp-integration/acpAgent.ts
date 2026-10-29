@@ -19,7 +19,6 @@ import {
   resolveModelProtocol,
   tryResolveModelProtocol,
   resolveModelSelectionAuthType,
-  hasVertexProjectConfigured,
   BTW_MAX_INPUT_LENGTH,
   buildBtwCacheSafeParams,
   buildBtwPrompt,
@@ -27,7 +26,6 @@ import {
   applyProviderInstallPlan,
   buildInstallPlan,
   getModelsForProviderProtocol,
-  clearCachedCredentialFile,
   createDebugLogger,
   generateSessionRecap,
   findProviderById,
@@ -37,8 +35,6 @@ import {
   getDefaultBaseUrlForProtocol,
   getDefaultModelIds,
   getScopedEnvContents,
-  QwenOAuth2Event,
-  qwenOAuth2Events,
   resolveBaseUrl,
   MCP_BUDGET_WARN_FRACTION,
   MCPServerConfig,
@@ -130,7 +126,6 @@ import {
   type Config,
   type ConfigParameters,
   type ConfigInitializeOptions,
-  type DeviceAuthorizationData,
   type DiscoveredMCPPrompt,
   type DiscoveredMCPResource,
   type HookConfig,
@@ -230,11 +225,6 @@ import { pickAuthMethodsForAuthRequired } from './authMethods.js';
 import { AcpFileSystemService } from './service/filesystem.js';
 import { ndJsonStream } from '@qwen-code/acp-bridge/ndJsonStream';
 import { createAcpOutput } from './acp-output.js';
-import {
-  ACP_EVENT_LOOP_STALL_RESTART_MS,
-  CHANNEL_PROMPT_META_KEY,
-  CHANNEL_OUTPUT_MODE_META_KEY,
-} from '@qwen-code/channel-base';
 import { observeAcpToolResultWire } from '../nonInteractive/tool-result-boundary-diagnostics.js';
 import { Readable } from 'node:stream';
 import { normalizeDisabledToolList } from '../config/normalizeDisabledTools.js';
@@ -276,8 +266,6 @@ import {
   type PermissionRuleSet,
 } from '../config/permission-settings.js';
 import { createLoadedSettingsAdapter } from '../config/loadedSettingsAdapter.js';
-import { isCompatibleLiveSessionSource } from '../runtime/live-session-source.js';
-import { isUnprovenSweepReport } from '../runtime/managed-quarantine-report.js';
 import {
   getConversationDirectoryName,
   hasVerifiableInode,
@@ -523,6 +511,7 @@ import {
   GENERATION_TIMEOUT_MS,
   type GenerationEvent,
 } from './generation.js';
+import { isUnprovenSweepReport } from '../runtime/managed-quarantine-report.js';
 
 type SessionOwnedWorkflowTool = {
   buildSessionOwnedBackground(
@@ -632,6 +621,9 @@ const POSIX_TMP_LOCAL_READ_ROOT = '/tmp';
 // Must be less than SESSION_BTW_TIMEOUT_MS (60s) in bridge.ts so the child
 // aborts before the bridge's backstop timer fires.
 const BTW_CHILD_TIMEOUT_MS = 55_000;
+// Inlined from the removed @qwen-code/channel-base package: restart the ACP
+// event loop watchdog if a single tick stalls longer than this.
+const ACP_EVENT_LOOP_STALL_RESTART_MS = 5 * 60 * 1000;
 const MCP_OAUTH_START_TIMEOUT_MS = 30_000;
 const SESSION_DRAIN_TIMEOUT_MS = 30_000;
 const SESSION_ID_RE = /^[0-9a-fA-F-]{32,36}$/;
@@ -3230,9 +3222,10 @@ export async function runAcpAgent(
         }
         initializeRequestId = undefined;
         if ('result' in message) {
-          void initializeTelemetry(config).then(() => {
-            registerAcpEventLoopLagGauge(() => eventLoopMonitor.snapshot());
-          });
+          // Telemetry is removed in this fork; initializeTelemetry() is a no-op
+          // stub. Register the event-loop lag gauge directly.
+          initializeTelemetry();
+          registerAcpEventLoopLagGauge(() => eventLoopMonitor.snapshot());
         }
       },
     });
@@ -5639,39 +5632,20 @@ class QwenAgent implements Agent {
       }
     }
 
-    let authUri: string | undefined;
-    const authUriHandler = (deviceAuth: DeviceAuthorizationData) => {
-      authUri = deviceAuth.verification_uri_complete;
-      void this.connection.extNotification('authenticate/update', {
-        _meta: { authUri },
-      });
-    };
-
-    if (method === AuthType.QWEN_OAUTH) {
-      qwenOAuth2Events.once(QwenOAuth2Event.AuthUri, authUriHandler);
-    }
-
-    await clearCachedCredentialFile();
-    try {
-      await this.refreshAuthWithPersistedReasoning(
-        this.config,
-        this.settings,
-        authType,
-      );
-      this.settings.setValue(
-        SettingScope.User,
-        'security.auth.selectedType',
-        method === AuthType.USE_OPENAI &&
-          this.settings.forScope(SettingScope.User).settings.security?.auth
-            ?.selectedType === AuthType.USE_OPENAI_RESPONSES
-          ? AuthType.USE_OPENAI_RESPONSES
-          : method,
-      );
-    } finally {
-      if (method === AuthType.QWEN_OAUTH) {
-        qwenOAuth2Events.off(QwenOAuth2Event.AuthUri, authUriHandler);
-      }
-    }
+    await this.refreshAuthWithPersistedReasoning(
+      this.config,
+      this.settings,
+      authType,
+    );
+    this.settings.setValue(
+      SettingScope.User,
+      'security.auth.selectedType',
+      method === AuthType.USE_OPENAI &&
+        this.settings.forScope(SettingScope.User).settings.security?.auth
+          ?.selectedType === AuthType.USE_OPENAI_RESPONSES
+        ? AuthType.USE_OPENAI_RESPONSES
+        : method,
+    );
   }
 
   private reserveStartingSessionId(sessionId: string): () => void {
@@ -6259,9 +6233,6 @@ class QwenAgent implements Agent {
                     ),
                 }
               : {}),
-            enableLiveScreenContext: isCompatibleLiveSessionSource(
-              sessionSource ?? {},
-            ),
             replayHistory: false,
             prepareBeforeSessionCreate: async () => {
               if (bulkReplay && projection?.replay) {
@@ -6672,9 +6643,6 @@ class QwenAgent implements Agent {
                     ),
                 }
               : {}),
-            enableLiveScreenContext: isCompatibleLiveSessionSource(
-              sessionSource ?? {},
-            ),
             replayHistory: false,
             beforeSessionPublish: () => {
               response = profiler.timeSync('response_build', () => ({
@@ -7040,8 +7008,6 @@ class QwenAgent implements Agent {
       this.privateParentState === 'trusted'
         ? meta[DAEMON_SUBMITTED_PROMPT_META_KEY]
         : meta[SUBMITTED_PROMPT_META_KEY];
-    const suppliedChannelPrompt = meta[CHANNEL_PROMPT_META_KEY];
-    const suppliedChannelOutputMode = meta[CHANNEL_OUTPUT_MODE_META_KEY];
     const suppliedGoalProposalApproval = meta['qwen.goalProposalApproval'];
     const suppliedChannelDelivery = meta[DAEMON_CHANNEL_DELIVERY_META_KEY];
     delete meta[INVOCATION_CONTEXT_META_KEY];
@@ -7050,12 +7016,26 @@ class QwenAgent implements Agent {
     delete meta[DAEMON_PROMPT_DISPLAY_TEXT_META_KEY];
     delete meta[SUBMITTED_PROMPT_META_KEY];
     delete meta[DAEMON_SUBMITTED_PROMPT_META_KEY];
-    if (typeof submittedPrompt === 'string' && suppliedChannelPrompt !== true) {
+    if (typeof submittedPrompt === 'string') {
       meta[DAEMON_SUBMITTED_PROMPT_META_KEY] = submittedPrompt;
     }
-    delete meta[CHANNEL_PROMPT_META_KEY];
-    delete meta[CHANNEL_OUTPUT_MODE_META_KEY];
     delete meta['qwen.goalProposalApproval'];
+    // Channel classification is trusted-parent metadata: it opts the turn out
+    // of loop-detected rejection and the repeated-failure guard, so an
+    // untrusted caller must not be able to mark its own prompt with it.
+    const suppliedChannelPrompt = meta['qwen.channel.prompt'];
+    const suppliedChannelOutputMode = meta['qwen.channel.outputMode'];
+    delete meta['qwen.channel.prompt'];
+    delete meta['qwen.channel.outputMode'];
+    if (
+      this.privateParentState === 'trusted' &&
+      suppliedChannelPrompt === true
+    ) {
+      meta['qwen.channel.prompt'] = true;
+      if (suppliedChannelOutputMode === 'per_task') {
+        meta['qwen.channel.outputMode'] = suppliedChannelOutputMode;
+      }
+    }
     if (
       this.privateParentState === 'trusted' &&
       suppliedGoalProposalApproval === true
@@ -7071,20 +7051,6 @@ class QwenAgent implements Agent {
       typeof suppliedPromptDisplayText === 'string'
     ) {
       meta[DAEMON_PROMPT_DISPLAY_TEXT_META_KEY] = suppliedPromptDisplayText;
-    }
-    // Channel classification is trusted-parent metadata: only the channel
-    // bridges and the daemon bridge hold the private parent capability. An
-    // untrusted caller must not be able to mark its own prompt as a channel
-    // turn — that opts the turn out of loop-detected rejection and the
-    // repeated-failure guard.
-    if (
-      this.privateParentState === 'trusted' &&
-      suppliedChannelPrompt === true
-    ) {
-      meta[CHANNEL_PROMPT_META_KEY] = true;
-      if (suppliedChannelOutputMode === 'per_task') {
-        meta[CHANNEL_OUTPUT_MODE_META_KEY] = suppliedChannelOutputMode;
-      }
     }
     // Channel delivery is a daemon-managed side effect (the prompt route
     // injects it from the trusted context); an untrusted direct-ACP caller
@@ -8659,25 +8625,6 @@ class QwenAgent implements Agent {
           hasToken = true;
         }
       }
-      // Keyless Vertex: a configured project selects the ADC path, but it is
-      // routing configuration, not evidence that a usable credential exists.
-      // Report indeterminate rather than a confirmed token and let the session
-      // boot settle it.
-      if (
-        !hasToken &&
-        authType === AuthType.USE_VERTEX_AI &&
-        hasVertexProjectConfigured()
-      ) {
-        return this.acpCell('auth', {
-          status: 'unknown',
-          hint: 'Vertex AI is configured for Application Default Credentials; whether they resolve is only known at session start.',
-          detail: {
-            source: String(authType),
-            hasToken: 'unknown' as const,
-            envVarCandidates: apiKeyVars,
-          },
-        });
-      }
       // No env-var registration → either OAuth-style auth (qwen-oauth) or
       // a custom provider whose key is sourced from settings rather than
       // env. If the resolved generation config already contains an apiKey
@@ -9549,7 +9496,6 @@ class QwenAgent implements Agent {
               : 0,
             commandCount: ext.commands?.length ?? 0,
             contextFileCount: ext.contextFiles.length,
-            channelCount: ext.channels ? Object.keys(ext.channels).length : 0,
             hasSettings: (ext.settings?.length ?? 0) > 0,
           };
           return {
@@ -11827,20 +11773,6 @@ class QwenAgent implements Agent {
           }
         }
         const session = this.sessionOrThrow(sessionId);
-        if (
-          source.sourceType === AGENT_HOST_SESSION_SOURCE_TYPE &&
-          (!this.isTrustedManagedParent() ||
-            session.getConfig().getSessionSourceType() !==
-              AGENT_HOST_SESSION_SOURCE_TYPE)
-        ) {
-          throw RequestError.invalidParams(
-            undefined,
-            '`agent-host` is reserved for daemon-owned host creation',
-          );
-        }
-        if (isCompatibleLiveSessionSource(source)) {
-          await session.enableLiveScreenContext();
-        }
         const recording = session.getConfig().getChatRecordingService();
         let ok = false;
         if (recording) {
@@ -11864,90 +11796,6 @@ class QwenAgent implements Agent {
               }
             : {}),
         };
-      }
-      case SERVE_CONTROL_EXT_METHODS.sessionLiveConversation: {
-        const sessionId = params['sessionId'];
-        const active = params['active'];
-        if (typeof sessionId !== 'string' || sessionId.length === 0) {
-          throw RequestError.invalidParams(
-            undefined,
-            'Invalid or missing sessionId',
-          );
-        }
-        if (typeof active !== 'boolean') {
-          throw RequestError.invalidParams(
-            undefined,
-            'Invalid or missing active state',
-          );
-        }
-        await this.sessionOrThrow(sessionId).setLiveConversationActive(active);
-        return { sessionId, active };
-      }
-      case SERVE_CONTROL_EXT_METHODS.sessionLiveTranscript: {
-        const sessionId = params['sessionId'];
-        const entries = params['entries'];
-        const model = params['model'];
-        if (typeof sessionId !== 'string' || sessionId.length === 0) {
-          throw RequestError.invalidParams(
-            undefined,
-            'Invalid or missing sessionId',
-          );
-        }
-        if (
-          typeof model !== 'string' ||
-          model.length === 0 ||
-          model.length > 256
-        ) {
-          throw RequestError.invalidParams(
-            undefined,
-            'Invalid or missing realtime model',
-          );
-        }
-        if (!Array.isArray(entries) || entries.length > 128) {
-          throw RequestError.invalidParams(
-            undefined,
-            'Invalid realtime transcript entries',
-          );
-        }
-        const transcript: Array<{
-          role: 'user' | 'assistant';
-          text: string;
-        }> = [];
-        let totalLength = 0;
-        for (const entry of entries) {
-          if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-            throw RequestError.invalidParams(
-              undefined,
-              'Invalid realtime transcript entry',
-            );
-          }
-          const role = (entry as Record<string, unknown>)['role'];
-          const text = (entry as Record<string, unknown>)['text'];
-          if (
-            (role !== 'user' && role !== 'assistant') ||
-            typeof text !== 'string' ||
-            text.length === 0 ||
-            text.length > 32_768
-          ) {
-            throw RequestError.invalidParams(
-              undefined,
-              'Invalid realtime transcript entry',
-            );
-          }
-          totalLength += text.length;
-          if (totalLength > 131_072) {
-            throw RequestError.invalidParams(
-              undefined,
-              'Realtime transcript is too large',
-            );
-          }
-          transcript.push({ role, text });
-        }
-        await this.sessionOrThrow(sessionId).appendLiveConversationTranscript(
-          transcript,
-          model,
-        );
-        return { sessionId, persisted: transcript.length };
       }
       case SERVE_CONTROL_EXT_METHODS.sessionBackgroundNotification: {
         const sessionId = params['sessionId'];
@@ -15774,9 +15622,7 @@ class QwenAgent implements Agent {
         });
         if (model?.authType && model.authType !== currentAuthType) {
           await config.switchModel(model.authType, model.modelId, {
-            requireCachedCredentials:
-              model.authType === AuthType.QWEN_OAUTH &&
-              model.authType !== currentAuthType,
+            requireCachedCredentials: false,
           });
         } else if (model) {
           await config.setModel(model.modelId, { reason: 'workspace-agent' });
@@ -16242,7 +16088,6 @@ class QwenAgent implements Agent {
     sessionData?: ResumedSessionData,
     options: {
       replayHistory?: boolean;
-      enableLiveScreenContext?: boolean;
       deferWorkspaceActivation?: boolean;
       configProviderRevision?: number;
       fileDerivedApprovalMode?: ApprovalMode;
@@ -16463,9 +16308,6 @@ class QwenAgent implements Agent {
       // learns about this Session from a report rather than inferring it.
       this.activeWorkReporter?.notifyChanged();
       this.initializingConfigs.delete(config);
-      if (options.enableLiveScreenContext) {
-        await session.enableLiveScreenContext();
-      }
 
       if (
         options.deferWorkspaceActivation !== true &&
@@ -16697,38 +16539,6 @@ class QwenAgent implements Agent {
       return [modeConfigOption, modelConfigOption];
     }
     const currentModelEffort = config.getReasoningEffort?.();
-    const reasoningOverride = config.getReasoningEffortOverride?.();
-    const reasoningOverrideValue = reasoningOverride
-      ? generation[reasoningOverride.source]?.[reasoningOverride.field]
-      : undefined;
-    const normalizedEffortOverride =
-      reasoningOverride?.field === 'reasoning_effort' &&
-      typeof reasoningOverrideValue === 'string'
-        ? reasoningOverrideValue === 'minimal'
-          ? 'low'
-          : REASONING_EFFORT_TIERS.find(
-              (effort) => effort === reasoningOverrideValue,
-            )
-        : undefined;
-    const normalizedBudgetOverride =
-      reasoningOverride?.field === 'thinking_budget' &&
-      typeof reasoningOverrideValue === 'number' &&
-      Number.isFinite(reasoningOverrideValue) &&
-      reasoningOverrideValue >= 0 &&
-      reasoningOverrideValue <= 262_144
-        ? reasoningOverrideValue <= 4_096
-          ? 'low'
-          : reasoningOverrideValue <= 16_384
-            ? 'medium'
-            : 'xhigh'
-        : undefined;
-    const normalizedOverrideEffort =
-      normalizedEffortOverride ?? normalizedBudgetOverride;
-    const overrideDisablesReasoning =
-      (reasoningOverride?.field === 'enable_thinking' &&
-        reasoningOverrideValue === false) ||
-      (reasoningOverride?.field === 'reasoning_effort' &&
-        reasoningOverrideValue === REASONING_EFFORT_NONE);
     const gptOverride = getGptReasoningOverrideState(
       generation,
       modelReasoning,
@@ -16747,29 +16557,16 @@ class QwenAgent implements Agent {
             modelReasoning,
           )
         : gptOverride;
-    const mandatoryUsesDefaultEffort =
-      generation.thinkingMandatory === true &&
-      (overrideDisablesReasoning ||
-        (generation.reasoning === false &&
-          reasoningOverride?.field === 'reasoning_effort'));
     const effectiveModelEffort =
       modelReasoning && !modelReasoning.toggleOnly
-        ? mandatoryUsesDefaultEffort || gptOverride?.useDefaultEffort
+        ? gptOverride?.useDefaultEffort
           ? modelReasoning.defaultEffort
-          : normalizedOverrideEffort
-            ? (modelReasoning.efforts?.find(
-                (effort) => effort === normalizedOverrideEffort,
-              ) ?? modelReasoning.defaultEffort)
-            : (gptOverride?.effort ?? currentModelEffort)
+          : (gptOverride?.effort ?? currentModelEffort)
         : currentModelEffort;
     const reasoningEnabled =
-      generation.reasoning === undefined &&
-      !reasoningOverride &&
-      gptOverride?.enabled === undefined
+      generation.reasoning === undefined && gptOverride?.enabled === undefined
         ? undefined
-        : generation.reasoning !== false &&
-          (!reasoningOverride || !overrideDisablesReasoning) &&
-          gptOverride?.enabled !== false;
+        : generation.reasoning !== false && gptOverride?.enabled !== false;
     const canDisableReasoning = generation.thinkingMandatory !== true;
     const reasoningEffortConfigOption: SessionConfigOption = (modelReasoning
       ? buildModelReasoningConfigOption(
@@ -16846,16 +16643,9 @@ class QwenAgent implements Agent {
   }
 
   private buildSelectableModelOptions(config: Config) {
-    const currentAuthType = config.getAuthType();
-    return buildAcpModelOptions(
-      config
-        .getAllConfiguredModels()
-        .filter(
-          (model) =>
-            model.authType !== AuthType.QWEN_OAUTH ||
-            currentAuthType === AuthType.QWEN_OAUTH,
-        ),
-    );
+    // This fork is OpenAI-only; there is no QWEN_OAUTH auth to filter against,
+    // so every configured model is offered.
+    return buildAcpModelOptions(config.getAllConfiguredModels());
   }
 }
 

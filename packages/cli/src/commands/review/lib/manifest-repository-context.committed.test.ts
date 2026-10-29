@@ -176,7 +176,16 @@ describe('committed review context manifest', () => {
       expect(context).not.toBeNull();
       for (const pattern of rule.relatedPaths) {
         const sentinel = relatedPathSentinels[pattern];
-        expect(context?.relatedPaths).toContain(sentinel);
+        // The fork removed packages/web-shell but keeps its rules in the pinned
+        // policy manifest (see the "matches the pinned repository review policy"
+        // test). The provider expands relatedPaths against the live worktree, so
+        // patterns whose sentinel file is no longer present resolve to nothing.
+        // Only assert resolution for sentinels that still exist in this tree.
+        if (existsSync(join(repoRoot, sentinel))) {
+          expect(context?.relatedPaths).toContain(sentinel);
+        } else {
+          expect(context?.relatedPaths).not.toContain(sentinel);
+        }
       }
     }
   });

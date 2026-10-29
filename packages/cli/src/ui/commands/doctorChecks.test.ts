@@ -11,6 +11,7 @@ import { createMockCommandContext } from '../../test-utils/mockCommandContext.js
 import * as systemInfoUtils from '../systemInfo.js';
 import * as authModule from '../../config/auth.js';
 import * as allProviders from '@qwen-code/qwen-code-core';
+import { buildHubProviders, setHubProviders } from '@qwen-code/qwen-code-core';
 
 vi.mock('../systemInfo.js');
 vi.mock('../../config/auth.js');
@@ -34,6 +35,15 @@ describe('runDoctorChecks', () => {
   let mockContext: CommandContext;
 
   beforeEach(() => {
+    setHubProviders(
+      buildHubProviders({
+        label: 'Test Hub',
+        endpoints: [
+          { name: 'prod', baseUrl: 'https://hub.example.com/openai/v1' },
+        ],
+        envKey: 'HUB_API_KEY',
+      }),
+    );
     mockContext = createMockCommandContext({
       services: {
         config: {
@@ -43,9 +53,9 @@ describe('runDoctorChecks', () => {
           }),
           getModel: vi.fn().mockReturnValue('gpt-4'),
           getContentGeneratorConfig: vi.fn().mockReturnValue({
-            model: 'openrouter/auto',
-            baseUrl: 'https://openrouter.ai/api/v1',
-            apiKeyEnvKey: 'OPENROUTER_API_KEY',
+            model: 'Qwen/Qwen3.6-27B',
+            baseUrl: 'https://hub.example.com/openai/v1',
+            apiKeyEnvKey: 'HUB_API_KEY',
           }),
           getMcpServers: vi.fn().mockReturnValue({}),
           getToolRegistry: vi.fn().mockReturnValue({
@@ -68,7 +78,8 @@ describe('runDoctorChecks', () => {
   });
 
   afterEach(() => {
-    delete process.env['OPENROUTER_API_KEY'];
+    setHubProviders([]);
+    delete process.env['HUB_API_KEY'];
     vi.clearAllMocks();
   });
 
@@ -137,37 +148,35 @@ describe('runDoctorChecks', () => {
   });
 
   it('should show provider detail when credentials match a known provider', async () => {
-    process.env['OPENROUTER_API_KEY'] = 'test-key';
+    process.env['HUB_API_KEY'] = 'test-key';
 
     const results = await runDoctorChecks(mockContext);
     const authCheck = results.find((r) => r.name === 'API key');
 
-    expect(authCheck!.detail).toContain('Provider: OpenRouter');
+    expect(authCheck!.detail).toContain('Provider: Test Hub');
     expect(authCheck!.detail).toContain(
-      'Base URL: https://openrouter.ai/api/v1',
+      'Base URL: https://hub.example.com/openai/v1',
     );
-    expect(authCheck!.detail).toContain('Model: openrouter/auto');
-    expect(authCheck!.detail).toContain(
-      'API key: configured (OPENROUTER_API_KEY)',
-    );
+    expect(authCheck!.detail).toContain('Model: Qwen/Qwen3.6-27B');
+    expect(authCheck!.detail).toContain('API key: configured (HUB_API_KEY)');
   });
 
   it('should show a missing API key in provider detail', async () => {
-    delete process.env['OPENROUTER_API_KEY'];
+    delete process.env['HUB_API_KEY'];
 
     const results = await runDoctorChecks(mockContext);
     const authCheck = results.find((r) => r.name === 'API key');
 
-    expect(authCheck!.detail).toContain('API key: OPENROUTER_API_KEY not set');
+    expect(authCheck!.detail).toContain('API key: HUB_API_KEY not set');
   });
 
   it('should treat an empty API key environment variable as not set', async () => {
-    process.env['OPENROUTER_API_KEY'] = '';
+    process.env['HUB_API_KEY'] = '';
 
     const results = await runDoctorChecks(mockContext);
     const authCheck = results.find((r) => r.name === 'API key');
 
-    expect(authCheck!.detail).toContain('API key: OPENROUTER_API_KEY not set');
+    expect(authCheck!.detail).toContain('API key: HUB_API_KEY not set');
   });
 
   it('should omit provider detail when credentials do not match a known provider', async () => {
@@ -180,7 +189,7 @@ describe('runDoctorChecks', () => {
 
     expect(authCheck!.detail).not.toContain('Provider:');
     expect(authCheck!.detail).toContain(
-      'Base URL: https://openrouter.ai/api/v1',
+      'Base URL: https://hub.example.com/openai/v1',
     );
   });
 

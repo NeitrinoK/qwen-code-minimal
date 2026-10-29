@@ -18,7 +18,11 @@ import {
   type SetupGithubFileOps,
 } from './setup-github.js';
 
-const mockProxyAgent = vi.hoisted(() => vi.fn((proxy: string) => ({ proxy })));
+const mockProxyAgent = vi.hoisted(() =>
+  vi.fn(function (proxy: string) {
+    return { proxy };
+  }),
+);
 const mockWriteStderrLine = vi.hoisted(() => vi.fn());
 
 vi.mock('../utils/gitUtils.js', () => ({
@@ -45,7 +49,9 @@ describe('setupGithub service', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    mockProxyAgent.mockImplementation((proxy: string) => ({ proxy }));
+    mockProxyAgent.mockImplementation(function (proxy: string) {
+      return { proxy };
+    });
     scratchDir = await fsp.mkdtemp(
       path.join(os.tmpdir(), 'setup-github-service-'),
     );

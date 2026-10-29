@@ -110,8 +110,12 @@ describe('mcp reconnect command', () => {
       getLoadedExtensions: vi.fn().mockReturnValue([]),
     };
 
-    MockedConfig.mockImplementation(() => mockConfig);
-    MockedExtensionManager.mockImplementation(() => mockExtensionManager);
+    MockedConfig.mockImplementation(function () {
+      return mockConfig;
+    });
+    MockedExtensionManager.mockImplementation(function () {
+      return mockExtensionManager;
+    });
     mockGetPendingGatedMcpServers.mockReturnValue([]);
     // Discovery is best-effort and swallows connect errors, so the command
     // verifies the outcome through the status registry; default to a live
@@ -991,98 +995,15 @@ describe('mcp reconnect command', () => {
     });
   });
 
-  describe('usage-statistics opt-out and proxy passthrough (issue #12844)', () => {
-    // createMinimalConfig must mirror loadCliConfig's usage-statistics and
-    // proxy resolution (env ?? settings ?? true; settings.proxy ?? standard
-    // proxy env vars): without them the throwaway Config defaults
-    // `usageStatisticsEnabled` to true, so `initialize()` flushes a
-    // session_start event even for users who opted out, and the flush
-    // bypasses the configured proxy.
+  describe('proxy passthrough (issue #12844)', () => {
+    // createMinimalConfig must mirror loadCliConfig's proxy resolution
+    // (settings.proxy ?? standard proxy env vars) so MCP connections honour
+    // the configured proxy.
     afterEach(() => {
       vi.unstubAllEnvs();
     });
 
-    it('passes usageStatisticsEnabled: false when the user opted out in settings', async () => {
-      mockedLoadSettings.mockReturnValue({
-        merged: {
-          mcpServers: {
-            'test-server': { command: '/path/to/server' },
-          },
-          privacy: { usageStatisticsEnabled: false },
-        },
-      });
-
-      const handler = reconnectCommand.handler as (
-        argv: Record<string, unknown>,
-      ) => Promise<void>;
-      await handler({ 'server-name': 'test-server', all: false });
-
-      expect(MockedConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ usageStatisticsEnabled: false }),
-      );
-    });
-
-    it('passes usageStatisticsEnabled: false when QWEN_USAGE_STATISTICS_ENABLED=0', async () => {
-      vi.stubEnv('QWEN_USAGE_STATISTICS_ENABLED', '0');
-      mockedLoadSettings.mockReturnValue({
-        merged: {
-          mcpServers: {
-            'test-server': { command: '/path/to/server' },
-          },
-        },
-      });
-
-      const handler = reconnectCommand.handler as (
-        argv: Record<string, unknown>,
-      ) => Promise<void>;
-      await handler({ 'server-name': 'test-server', all: false });
-
-      expect(MockedConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ usageStatisticsEnabled: false }),
-      );
-    });
-
-    it('lets the env flag override the settings opt-out like the main loader', async () => {
-      vi.stubEnv('QWEN_USAGE_STATISTICS_ENABLED', '1');
-      mockedLoadSettings.mockReturnValue({
-        merged: {
-          mcpServers: {
-            'test-server': { command: '/path/to/server' },
-          },
-          privacy: { usageStatisticsEnabled: false },
-        },
-      });
-
-      const handler = reconnectCommand.handler as (
-        argv: Record<string, unknown>,
-      ) => Promise<void>;
-      await handler({ 'server-name': 'test-server', all: false });
-
-      expect(MockedConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ usageStatisticsEnabled: true }),
-      );
-    });
-
-    it('keeps usage statistics enabled by default (main-session behavior unchanged)', async () => {
-      mockedLoadSettings.mockReturnValue({
-        merged: {
-          mcpServers: {
-            'test-server': { command: '/path/to/server' },
-          },
-        },
-      });
-
-      const handler = reconnectCommand.handler as (
-        argv: Record<string, unknown>,
-      ) => Promise<void>;
-      await handler({ 'server-name': 'test-server', all: false });
-
-      expect(MockedConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ usageStatisticsEnabled: true }),
-      );
-    });
-
-    it('passes the configured proxy so the telemetry flush does not bypass it', async () => {
+    it('passes the configured proxy to the MCP connection config', async () => {
       mockedLoadSettings.mockReturnValue({
         merged: {
           mcpServers: {

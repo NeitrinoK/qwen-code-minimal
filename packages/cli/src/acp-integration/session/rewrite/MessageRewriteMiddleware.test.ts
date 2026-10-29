@@ -21,9 +21,11 @@ vi.mock('@qwen-code/qwen-code-core', () => ({
 
 // Mock LlmRewriter to avoid real LLM calls
 vi.mock('./LlmRewriter.js', () => ({
-  LlmRewriter: vi.fn().mockImplementation(() => ({
-    rewrite: vi.fn().mockResolvedValue('rewritten text'),
-  })),
+  LlmRewriter: vi.fn().mockImplementation(function () {
+    return {
+      rewrite: vi.fn().mockResolvedValue('rewritten text'),
+    };
+  }),
 }));
 
 // Import after mocks are set up
@@ -31,11 +33,37 @@ const { MessageRewriteMiddleware } = await import(
   './MessageRewriteMiddleware.js'
 );
 
+/**
+ * vitest v4 (via @sinonjs/fake-timers) no longer drives `AbortSignal.timeout`
+ * through faked timers, so a faked clock never aborts the native signal.
+ * Replace `AbortSignal.timeout` with an equivalent that uses the (faked)
+ * global `setTimeout`, and return a restore function.
+ */
+function stubAbortSignalTimeout(): () => void {
+  const original = AbortSignal.timeout;
+  AbortSignal.timeout = ((ms: number) => {
+    const controller = new AbortController();
+    setTimeout(() => {
+      controller.abort(new DOMException('TimeoutError', 'TimeoutError'));
+    }, ms);
+    return controller.signal;
+  }) as typeof AbortSignal.timeout;
+  return () => {
+    AbortSignal.timeout = original;
+  };
+}
+
 function createMiddleware(
   target: 'message' | 'thought' | 'all' = 'all',
-  sendUpdate?: ReturnType<typeof vi.fn>,
+  sendUpdate?: ReturnType<
+    typeof vi.fn<(update: SessionUpdate) => Promise<void>>
+  >,
 ) {
-  const mockSendUpdate = sendUpdate ?? vi.fn().mockResolvedValue(undefined);
+  const mockSendUpdate =
+    sendUpdate ??
+    vi
+      .fn<(update: SessionUpdate) => Promise<void>>()
+      .mockResolvedValue(undefined);
   const middleware = new MessageRewriteMiddleware(
     {} as Config,
     { enabled: true, target, prompt: 'test prompt' },
@@ -334,6 +362,7 @@ describe('MessageRewriteMiddleware', () => {
   describe('timeoutMs config', () => {
     it('should use configured timeoutMs for the rewrite abort signal', async () => {
       vi.useFakeTimers();
+      const restoreAbortTimeout = stubAbortSignalTimeout();
       try {
         const capturedSignals: AbortSignal[] = [];
         const { LlmRewriter } = await import('./LlmRewriter.js');
@@ -341,16 +370,18 @@ describe('MessageRewriteMiddleware', () => {
           LlmRewriter as unknown as {
             mockImplementation: (fn: unknown) => void;
           }
-        ).mockImplementation(() => ({
-          rewrite: vi.fn((_content: unknown, signal: AbortSignal) => {
-            capturedSignals.push(signal);
-            return new Promise((_resolve, reject) => {
-              signal.addEventListener('abort', () =>
-                reject(new Error('aborted')),
-              );
-            });
-          }),
-        }));
+        ).mockImplementation(function () {
+          return {
+            rewrite: vi.fn((_content: unknown, signal: AbortSignal) => {
+              capturedSignals.push(signal);
+              return new Promise((_resolve, reject) => {
+                signal.addEventListener('abort', () =>
+                  reject(new Error('aborted')),
+                );
+              });
+            }),
+          };
+        });
 
         const mockSendUpdate = vi.fn().mockResolvedValue(undefined);
         const middleware = new MessageRewriteMiddleware(
@@ -379,12 +410,14 @@ describe('MessageRewriteMiddleware', () => {
 
         await middleware.waitForPendingRewrites();
       } finally {
+        restoreAbortTimeout();
         vi.useRealTimers();
       }
     });
 
     it('should default to 30s when timeoutMs is not provided', async () => {
       vi.useFakeTimers();
+      const restoreAbortTimeout = stubAbortSignalTimeout();
       try {
         const capturedSignals: AbortSignal[] = [];
         const { LlmRewriter } = await import('./LlmRewriter.js');
@@ -392,16 +425,18 @@ describe('MessageRewriteMiddleware', () => {
           LlmRewriter as unknown as {
             mockImplementation: (fn: unknown) => void;
           }
-        ).mockImplementation(() => ({
-          rewrite: vi.fn((_content: unknown, signal: AbortSignal) => {
-            capturedSignals.push(signal);
-            return new Promise((_resolve, reject) => {
-              signal.addEventListener('abort', () =>
-                reject(new Error('aborted')),
-              );
-            });
-          }),
-        }));
+        ).mockImplementation(function () {
+          return {
+            rewrite: vi.fn((_content: unknown, signal: AbortSignal) => {
+              capturedSignals.push(signal);
+              return new Promise((_resolve, reject) => {
+                signal.addEventListener('abort', () =>
+                  reject(new Error('aborted')),
+                );
+              });
+            }),
+          };
+        });
 
         const mockSendUpdate = vi.fn().mockResolvedValue(undefined);
         const middleware = new MessageRewriteMiddleware(
@@ -424,6 +459,7 @@ describe('MessageRewriteMiddleware', () => {
 
         await middleware.waitForPendingRewrites();
       } finally {
+        restoreAbortTimeout();
         vi.useRealTimers();
       }
     });
@@ -451,9 +487,11 @@ describe('MessageRewriteMiddleware', () => {
       };
 
       try {
-        mockable.mockImplementation(() => ({
-          rewrite: vi.fn(() => nextDeferred().promise),
-        }));
+        mockable.mockImplementation(function () {
+          return {
+            rewrite: vi.fn(() => nextDeferred().promise),
+          };
+        });
 
         const mockSendUpdate = vi.fn().mockResolvedValue(undefined);
         const middleware = new MessageRewriteMiddleware(

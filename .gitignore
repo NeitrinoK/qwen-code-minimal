@@ -70,8 +70,6 @@ Thumbs.db
 
 # Ignore built ts files
 dist
-packages/audio-capture/build/
-packages/audio-capture/prebuilds/
 
 # Docker folder to help skip auth refreshes
 .docker
@@ -92,9 +90,7 @@ pr_body.md
 # Generated files
 packages/cli/src/generated/
 packages/core/src/generated/
-packages/web-templates/src/generated/
 .integration-tests/
-packages/vscode-ide-companion/*.vsix
 
 logs/
 .repro-runs/

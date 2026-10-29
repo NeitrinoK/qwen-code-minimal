@@ -536,6 +536,19 @@ export function tmuxPlan(opts: {
       // typed — the worst kind of evidence corruption).
       '--',
       held,
+      // tmux 3.2 ignores new-session -x/-y for a detached session started
+      // without a client and falls back to 80x24 (measured on 3.2a, RHEL 9).
+      // resize-window pins the requested geometry, and it has to ride THIS
+      // invocation: a separate call lands after the command has already
+      // rendered at 80 columns. On newer tmux it is a no-op.
+      ';',
+      'resize-window',
+      '-t',
+      opts.session,
+      '-x',
+      String(opts.cols),
+      '-y',
+      String(opts.rows),
     ],
     // -p print, -e escapes, -N trailing spaces. Deliberately NOT -J: joining
     // wrapped lines re-flows the pane into logical lines, and for a layout

@@ -31,7 +31,6 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import type { StartupEventAttrs } from '@qwen-code/qwen-code-core';
-import { isServeFastPathArgv } from './serve-fast-path-argv.js';
 
 interface Checkpoint {
   name: string;
@@ -143,7 +142,8 @@ export function initStartupProfiler(): void {
 
   const inSandboxChild = !!process.env['SANDBOX'];
   const outerOptIn = process.env['QWEN_CODE_PROFILE_STARTUP_OUTER'] === '1';
-  const serveCommand = isServeFastPathArgv(process.argv.slice(2));
+  // The serve daemon has been removed; this is never a serve fast-path.
+  const serveCommand = false;
 
   // Non-serve outer (pre-sandbox) collection requires an explicit opt-in to
   // avoid accidentally producing duplicate reports. Serve has no sandbox child,

@@ -18,7 +18,18 @@ import {
   themeFromOscColor,
 } from './detect-terminal-theme.js';
 
-vi.mock('node:child_process');
+const { mockExecSync } = vi.hoisted(() => ({ mockExecSync: vi.fn() }));
+vi.mock('node:child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+  return {
+    ...actual,
+    default: { ...actual, execSync: mockExecSync },
+    execSync: mockExecSync,
+  };
+});
 
 describe('detectTerminalTheme', () => {
   const originalPlatform = process.platform;

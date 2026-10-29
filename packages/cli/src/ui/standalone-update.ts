@@ -19,8 +19,6 @@ import semver from 'semver';
 import { createDebugLogger } from '@qwen-code/qwen-code-core';
 import { loadUndici } from '../utils/load-undici.js';
 import { verifySignature } from '../utils/standalone-update-verify.js';
-import { updateEventEmitter } from '../utils/updateEventEmitter.js';
-import { t } from '../i18n/index.js';
 
 const debugLogger = createDebugLogger('STANDALONE_UPDATE');
 
@@ -1033,14 +1031,12 @@ function surfaceBinWrapperWarnings(artifacts?: BinWrapperArtifacts): void {
       `Update completed, but the existing wrapper at ${artifacts.wrapperPath} ` +
       'does not point to this standalone installation.';
     debugLogger.warn(message);
-    updateEventEmitter.emit('update-info', { message });
   }
   if (artifacts.shellPathUpdate?.error && artifacts.shellPathUpdate.rcFile) {
     const message =
       `Update completed, but ${artifacts.shellPathUpdate.rcFile} could not be updated. ` +
       'Add ~/.local/bin to PATH manually.';
     debugLogger.warn(message);
-    updateEventEmitter.emit('update-info', { message });
   }
 }
 
@@ -1251,9 +1247,6 @@ async function applyStandaloneUpdate(
     const archivePath = path.join(tempDir, filename);
     if (!preparedArchive) {
       debugLogger.info(`Downloading ${filename} (${versionPath})...`);
-      updateEventEmitter.emit('update-info', {
-        message: t('Downloading update...'),
-      });
       const archiveHash = await downloadToFile(
         versionPath,
         filename,
@@ -1319,13 +1312,13 @@ async function applyStandaloneUpdate(
       surfaceBinWrapperWarnings(migrationArtifacts);
     } catch (wrapperErr) {
       debugLogger.warn('Failed to refresh bin wrapper:', wrapperErr);
-      updateEventEmitter.emit('update-info', {
-        message: isFirstTimeMigration
+      debugLogger.warn(
+        isFirstTimeMigration
           ? 'Update installed, but the PATH wrapper could not be created. ' +
-            'Add the standalone bin directory to your PATH manually, or re-run the update.'
+              'Add the standalone bin directory to your PATH manually, or re-run the update.'
           : 'Update completed, but the PATH wrapper could not be refreshed. ' +
-            'The existing installation remains usable.',
-      });
+              'The existing installation remains usable.',
+      );
     }
 
     debugLogger.info('Standalone update complete.');

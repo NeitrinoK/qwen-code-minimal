@@ -47,6 +47,37 @@ let simpleGitModulePromise: Promise<SimpleGitModule> | undefined;
  * before the subcommand, and, as on the extension git client, no user- or
  * extension-derived config.
  */
+/**
+ * Git variables this repository's own code passes to simple-git clients.
+ *
+ * simple-git 4 blocks every `GIT_*` variable in a child environment unless it
+ * is allowlisted. The callers already scrub the inherited environment
+ * (`gitEnv` in git-branches.ts) and set only these on purpose: identity and
+ * TLS metadata, the protocol allowlist, the isolated-config and credential
+ * variables of the extension git client, and the remote transport keys of
+ * `gitRemoteEnv`. Anything else stays blocked.
+ */
+const ALLOWED_GIT_ENVIRONMENT = [
+  'GIT_ALLOW_PROTOCOL',
+  'GIT_AUTHOR_NAME',
+  'GIT_AUTHOR_EMAIL',
+  'GIT_AUTHOR_DATE',
+  'GIT_COMMITTER_NAME',
+  'GIT_COMMITTER_EMAIL',
+  'GIT_COMMITTER_DATE',
+  'GIT_SSL_CAINFO',
+  'GIT_SSL_CAPATH',
+  'GIT_CONFIG_NOSYSTEM',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_KEY_0',
+  'GIT_CONFIG_VALUE_0',
+  'GIT_TERMINAL_PROMPT',
+  'GIT_SSH_COMMAND',
+  'GIT_SSH',
+  'GIT_ASKPASS',
+] as const;
+
 function guardFsmonitor(factory: SimpleGitFactory): SimpleGitFactory {
   const guarded = (
     first?: string | Partial<SimpleGitOptions>,
@@ -58,6 +89,10 @@ function guardFsmonitor(factory: SimpleGitFactory): SimpleGitFactory {
       ...options,
       config: [...(options?.config ?? []), ...NO_EXEC_CONFIG_SETTINGS],
       unsafe: { ...options?.unsafe, allowUnsafeFsMonitor: true },
+      allowEnvironment: [
+        ...(options?.allowEnvironment ?? []),
+        ...ALLOWED_GIT_ENVIRONMENT,
+      ],
     };
     return baseDir === undefined ? factory(merged) : factory(baseDir, merged);
   };

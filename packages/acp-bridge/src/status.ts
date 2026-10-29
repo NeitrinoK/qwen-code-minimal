@@ -1573,7 +1573,6 @@ export interface ServeExtensionCapabilities {
   hookCount: number;
   commandCount: number;
   contextFileCount: number;
-  channelCount: number;
   hasSettings: boolean;
 }
 
@@ -1904,8 +1903,6 @@ const MODEL_CONFIG_ERROR_NAMES: ReadonlySet<string> = new Set([
   'StrictMissingModelIdError',
   'MissingApiKeyError',
   'MissingModelError',
-  'MissingBaseUrlError',
-  'MissingAnthropicBaseUrlEnvError',
 ]);
 
 /**

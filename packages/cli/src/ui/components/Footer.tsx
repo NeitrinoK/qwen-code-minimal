@@ -10,6 +10,7 @@ import { type RefObject, useRef } from 'react';
 import { type DOMElement, Box, Text, useBoxMetrics } from 'ink';
 import { theme } from '../semantic-colors.js';
 import { ContextUsageDisplay } from './ContextUsageDisplay.js';
+import { PromptOverheadDisplay } from './PromptOverheadDisplay.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { AutoAcceptIndicator } from './AutoAcceptIndicator.js';
 import { ShellModeIndicator } from './ShellModeIndicator.js';
@@ -23,6 +24,7 @@ import { useUIState } from '../contexts/UIStateContext.js';
 import { useConfig } from '../contexts/ConfigContext.js';
 import { useSettings } from '../contexts/SettingsContext.js';
 import { useVimModeState } from '../contexts/VimModeContext.js';
+import { ApprovalMode } from '@qwen-code/qwen-code-core/config/approval-mode.js';
 import { Spinner } from './RespondingSpinner.js';
 import {
   GoalPill,
@@ -30,9 +32,9 @@ import {
   useFooterGoalState,
 } from './GoalPill.js';
 import { CronPill, useFooterCronTaskCount } from './CronPill.js';
+import { HubLoadPill, useFooterHubLoad } from './HubLoadPill.js';
 import { t } from '../../i18n/index.js';
 import { useKeypressContext } from '../contexts/KeypressContext.js';
-import { StreamingState } from '../types.js';
 
 import type { PasteProgress } from '../contexts/KeypressContext.js';
 
@@ -96,6 +98,7 @@ export const Footer: React.FC<FooterProps> = ({ containerRef }) => {
   // Check if debug mode is enabled
   const debugMode = config.getDebugMode();
 
+  // Measure the context pill against the session model's window.
   const contextWindowSize =
     config.getContentGeneratorConfig()?.contextWindowSize;
 
@@ -134,27 +137,8 @@ export const Footer: React.FC<FooterProps> = ({ containerRef }) => {
     <Text color={theme.text.secondary}>
       <Spinner /> {configInitMessage}
     </Text>
-  ) : uiState.startupIdeConnectionStatus.state === 'connecting' ? (
-    <Text color={theme.text.secondary}>
-      <Spinner /> {t('IDE connecting... context may be unavailable')}
-    </Text>
-  ) : uiState.startupIdeConnectionStatus.state === 'failed' ? (
-    <Text color={theme.status.warning}>
-      {t('IDE connection unavailable: {{message}}', {
-        message: uiState.startupIdeConnectionStatus.message,
-      })}
-    </Text>
-  ) : uiState.streamingState === StreamingState.Responding ? (
-    <Text color={theme.text.secondary}>
-      {t('Enter to steer · Ctrl+Q to queue')}
-      {showAutoAcceptIndicator !== undefined && (
-        <>
-          {' · '}
-          <AutoAcceptIndicator approvalMode={showAutoAcceptIndicator} />
-        </>
-      )}
-    </Text>
-  ) : showAutoAcceptIndicator !== undefined ? (
+  ) : showAutoAcceptIndicator !== undefined &&
+    showAutoAcceptIndicator !== ApprovalMode.DEFAULT ? (
     <AutoAcceptIndicator approvalMode={showAutoAcceptIndicator} />
   ) : suppressHint ? null : (
     <Text color={theme.text.secondary}>{t('? for shortcuts')}</Text>
@@ -183,6 +167,25 @@ export const Footer: React.FC<FooterProps> = ({ containerRef }) => {
   // alongside the other background-task kinds. The previous `◆ dreaming`
   // right-column indicator was removed to avoid two simultaneous signals
   // for the same underlying state.
+  // Prompt-overhead pill: what a request costs before the conversation
+  // contributes anything. Read straight off the SkillManager rather than held
+  // in React state — the counts only change alongside a turn, which is exactly
+  // when the footer re-renders for the token counts below.
+  const skillManager = config.getSkillManager();
+  const catalogSkillCount = skillManager?.getCatalogSkillCount() ?? 0;
+  if (catalogSkillCount > 0 && !hideContextIndicator) {
+    rightItems.push({
+      key: 'prompt-overhead',
+      node: (
+        <PromptOverheadDisplay
+          invokedSkillCount={skillManager?.getInvokedSkillCount() ?? 0}
+          catalogSkillCount={catalogSkillCount}
+          basePromptTokenCount={uiState.sessionStats.basePromptTokenCount}
+          terminalWidth={terminalWidth}
+        />
+      ),
+    });
+  }
   if (promptTokenCount > 0 && contextWindowSize && !hideContextIndicator) {
     rightItems.push({
       key: 'context',
@@ -210,6 +213,21 @@ export const Footer: React.FC<FooterProps> = ({ containerRef }) => {
   const cronTaskCount = useFooterCronTaskCount();
   if (cronTaskCount > 0) {
     rightItems.push({ key: 'cron', node: <CronPill count={cronTaskCount} /> });
+  }
+  // Hub load indicator: only present when the active provider is a
+  // configured hub with `hub.loadPill` set.
+  const hubLoad = useFooterHubLoad();
+  if (hubLoad) {
+    rightItems.push({
+      key: 'hub-load',
+      node: (
+        <HubLoadPill
+          state={hubLoad.state}
+          entries={hubLoad.entries}
+          queueWarn={hubLoad.queueWarn}
+        />
+      ),
+    });
   }
 
   // Layout matches upstream: left column has status line (top) + hints/mode

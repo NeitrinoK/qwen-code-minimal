@@ -13,7 +13,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -23,8 +22,6 @@ import { dirname, join } from 'node:path';
 import { globSync } from 'glob';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { PUBLISHED_PACKAGES } from '../assert-release-version.mjs';
-import { RELEASE_WORKSPACES } from '../release-packages.mjs';
 import { getTestCiWorkspacePackageJsonPaths } from '../workspaces.js';
 
 // `realpath -m` (the script's canonicalization line) is a GNU coreutils
@@ -49,133 +46,6 @@ const dockerIntegrationScript = readFileSync(
   '.github/scripts/run-release-docker-integration.sh',
   'utf8',
 );
-const cuaReleaseWorkflow = readFileSync(
-  '.github/workflows/cd-cua-driver.yml',
-  'utf8',
-);
-const nodeReplPackage = JSON.parse(
-  readFileSync('packages/node-repl/package.json', 'utf8'),
-);
-const cuaSdkPackage = JSON.parse(
-  readFileSync('packages/cua-driver/typescript/package.json', 'utf8'),
-);
-const cuaSdkPackageLock = JSON.parse(
-  readFileSync('packages/cua-driver/typescript/package-lock.json', 'utf8'),
-);
-const cuaInstallScript = readFileSync(
-  'packages/cua-driver/scripts/install.sh',
-  'utf8',
-);
-const computerUseGuide = readFileSync(
-  'docs/users/features/computer-use.md',
-  'utf8',
-);
-const desktopReleaseWorkflow = readFileSync(
-  '.github/workflows/desktop-release.yml',
-  'utf8',
-);
-const liveHostInstaller = readFileSync(
-  'packages/cli/src/serve/live/live-host-installer.ts',
-  'utf8',
-);
-const liveHostCiWorkflow = readFileSync(
-  '.github/workflows/live-host.yml',
-  'utf8',
-);
-const liveHostReleaseWorkflow = readFileSync(
-  '.github/workflows/live-host-release.yml',
-  'utf8',
-);
-const liveHostOssWorkflow = readFileSync(
-  '.github/workflows/sync-live-host-to-oss.yml',
-  'utf8',
-);
-
-describe('CUA release workflow', () => {
-  it('keeps the Node REPL package independently versioned', () => {
-    expect(nodeReplPackage.name).toBe('@qwen-code/node-repl-mcp');
-    expect(nodeReplPackage.version).toBe('0.1.7');
-    expect(cuaReleaseWorkflow).toContain(
-      "node_repl_version: '${{ steps.release.outputs.node_repl_version }}'",
-    );
-    expect(cuaReleaseWorkflow).not.toContain(
-      'NODE_REPL_VERSION does not match release version',
-    );
-    expect(cuaSdkPackageLock.version).toBe(cuaSdkPackage.version);
-    expect(cuaSdkPackageLock.packages[''].version).toBe(cuaSdkPackage.version);
-  });
-
-  it('dry-runs and clean-installs the packed Node REPL MCP server', () => {
-    expect(cuaReleaseWorkflow).toMatch(
-      /verify-node-repl-package:[\s\S]*?pnpm install --frozen-lockfile --ignore-scripts[\s\S]*?npm run typecheck[\s\S]*?npm test[\s\S]*?npm run smoke:mcp[\s\S]*?npm run smoke:lifecycle[\s\S]*?node packages\/node-repl\/scripts\/verify-package\.mjs[\s\S]*?node-repl-mcp-npm-\$\{\{[\s\S]*?node_repl_version/,
-    );
-  });
-
-  it('publishes the verified Node REPL tarball immutably with provenance', () => {
-    expect(cuaReleaseWorkflow).toMatch(
-      /publish-node-repl:[\s\S]*?needs: \['validate-version', 'verify-node-repl-package', 'release'\][\s\S]*?npm view "@qwen-code\/node-repl-mcp@\$\{VERSION\}" dist\.integrity[\s\S]*?npm publish "\$TARBALL" --provenance --access public --tag "\$NPM_TAG"[\s\S]*?Verify npm registry integrity/,
-    );
-  });
-
-  it('keeps installer version changes in the feature PR', () => {
-    expect(cuaReleaseWorkflow).not.toContain('sync-installer-version:');
-    expect(cuaReleaseWorkflow).not.toContain('gh pr create');
-    expect(cuaReleaseWorkflow).not.toContain('gh pr merge');
-    expect(cuaInstallScript).toContain(
-      `CUA_DRIVER_RS_VERSION=${cuaSdkPackage.version}`,
-    );
-    expect(cuaInstallScript).toContain(
-      `CUA_DRIVER_VERSION=${cuaSdkPackage.version}`,
-    );
-    expect(cuaReleaseWorkflow).toContain(
-      'INSTALL_ENTRYPOINT_RS_VERSION=$(sed -nE',
-    );
-  });
-
-  it('ships the Windows UIAccess worker for target-machine signing', () => {
-    expect(cuaReleaseWorkflow).toMatch(
-      /Build \(release\)[\s\S]*?Remove-Item[^\n]*cua-driver-uia\.exe[^\n]*\n[^\n]*cargo build[\s\S]*?Verify unsigned UIAccess worker/,
-    );
-    expect(cuaReleaseWorkflow).toMatch(
-      /Build \(release\)[\s\S]*?Verify unsigned UIAccess worker[\s\S]*?Get-AuthenticodeSignature[\s\S]*?NotSigned[\s\S]*?qwen-cua-driver-uia\.exe[\s\S]*?release artifact contract/,
-    );
-    expect(cuaReleaseWorkflow).not.toMatch(/WINDOWS_CERTIFICATE|WIN_CSC_LINK/);
-    expect(cuaReleaseWorkflow).toContain(
-      '- **Windows**: unsigned UIAccess worker + native SDK payload',
-    );
-  });
-
-  it('pins exact Computer Use package versions across the skill and user guide', () => {
-    expect(computerUseGuide).toContain(
-      `@qwen-code/node-repl-mcp@${nodeReplPackage.version}`,
-    );
-    expect(computerUseGuide).toContain(
-      `@qwen-code/cua-sdk@${cuaSdkPackage.version}`,
-    );
-    expect(cuaReleaseWorkflow).toContain('SKILL_NODE_REPL_VERSION=$(sed -nE');
-    expect(cuaReleaseWorkflow).toContain(
-      'USER_GUIDE_NODE_REPL_VERSION=$(sed -nE',
-    );
-    expect(cuaReleaseWorkflow).toContain('SKILL_SDK_VERSION=$(sed -nE');
-    expect(cuaReleaseWorkflow).toContain('USER_GUIDE_SDK_VERSION=$(sed -nE');
-    expect(cuaReleaseWorkflow).not.toContain(
-      'grep -Fq "@qwen-code/node-repl-mcp@',
-    );
-    expect(cuaReleaseWorkflow).not.toContain('grep -Fq "@qwen-code/cua-sdk@');
-  });
-
-  it('bootstraps only Node REPL without replacing an existing CUA release', () => {
-    expect(cuaReleaseWorkflow).toMatch(
-      /node_repl_only:[\s\S]*?type: 'boolean'[\s\S]*?default: false/,
-    );
-    expect(cuaReleaseWorkflow).toMatch(
-      /publish-node-repl:[\s\S]*?needs\.release\.result == 'success'[\s\S]*?inputs\.node_repl_only == true[\s\S]*?inputs\.dry_run == false/,
-    );
-    expect(cuaReleaseWorkflow).toContain(
-      'A production dispatch must run from protected main',
-    );
-  });
-});
 
 // The canonical workspace restoration script shared by all nine
 // 'Restore workspace ownership' copies in release.yml. The full wipe (vs
@@ -440,7 +310,7 @@ describe('release workflow', () => {
         'fetch-depth': 1,
         'persist-credentials': false,
         'sparse-checkout':
-          '/.github/scripts\n/scripts/assert-release-version.mjs\n/scripts/release-packages.mjs\n/scripts/workspaces.js\n/package.json\n/packages/*/package.json\n/packages/channels/*/package.json\n/integrations/*/package.json',
+          '/.github/scripts\n/scripts/assert-release-version.mjs\n/scripts/release-packages.mjs\n/scripts/workspaces.js\n/package.json\n/packages/*/package.json\n/integrations/*/package.json',
         'sparse-checkout-cone-mode': false,
         path: '.release-workflow',
       });
@@ -504,34 +374,6 @@ describe('release workflow', () => {
     expect(swept).toBeGreaterThan(10);
   });
 
-  it('uses workflow-pinned manifests for publishing and the version guard', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'release-selection-'));
-    try {
-      // A release-ref cwd must not change the workflow's trusted selection.
-      writeFileSync(join(directory, 'package.json'), '{"workspaces":[]}');
-      const result = spawnSync(
-        process.execPath,
-        [join(process.cwd(), 'scripts/release-packages.mjs')],
-        {
-          cwd: directory,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            PUBLISH_AUDIO_CAPTURE: 'true',
-            PUBLISH_EXTERNAL_CONTEXT_MEM0: 'true',
-          },
-        },
-      );
-      expect(result.status, result.stderr).toBe(0);
-      expect([
-        '@qwen-code/qwen-code',
-        ...result.stdout.trim().split('\n'),
-      ]).toEqual(PUBLISHED_PACKAGES);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-
   it('keeps the workflow focused on orchestration', () => {
     // 850, raised from 830 for the pool-wide disk-floor gate: one anchored
     // step plus one alias per pool-routed job is still orchestration — the
@@ -579,92 +421,6 @@ describe('release workflow', () => {
         expect(readFileSync(output, 'utf8')).toBe(
           'is_nightly=true\nis_preview=false\nis_dry_run=true\n',
         );
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.skipIf(process.platform === 'win32').each([
-    { dryRun: 'false', optional: 'false', failure: '0', cliPublished: '1' },
-    { dryRun: 'false', optional: 'true', failure: '0', cliPublished: '0' },
-    { dryRun: 'true', optional: 'true', failure: '0', cliPublished: '0' },
-    { dryRun: 'false', optional: 'true', failure: '7', cliPublished: '1' },
-  ])(
-    'publishes the selected workspaces and CLI safely: %j',
-    ({ dryRun, optional, failure, cliPublished }) => {
-      const directory = mkdtempSync(join(tmpdir(), 'release-publish-'));
-      const bin = join(directory, 'bin');
-      const publishLog = join(directory, 'published');
-      mkdirSync(bin);
-      mkdirSync(join(directory, 'dist'));
-      writeFileSync(
-        join(directory, 'dist/package.json'),
-        JSON.stringify({ name: '@qwen-code/qwen-code' }),
-      );
-      writeFileSync(join(bin, 'npm'), '#!/bin/sh\nexit "$CLI_PUBLISHED"\n', {
-        mode: 0o755,
-      });
-      writeFileSync(
-        join(bin, 'corepack'),
-        '#!/bin/sh\nprintf "%s\\t%s\\n" "$PWD" "$*" >> "$PUBLISH_LOG"\nexit "$PUBLISH_FAILURE"\n',
-        { mode: 0o755 },
-      );
-      try {
-        const result = spawnSync(
-          'bash',
-          [releaseStepScriptAbsolutePath, 'publish-packages'],
-          {
-            cwd: directory,
-            encoding: 'utf8',
-            env: {
-              ...process.env,
-              PATH: `${bin}:${process.env.PATH}`,
-              IS_DRY_RUN: dryRun,
-              NPM_TAG: 'preview',
-              PUBLISH_AUDIO_CAPTURE: optional,
-              PUBLISH_EXTERNAL_CONTEXT_MEM0: optional,
-              PUBLISH_FAILURE: failure,
-              CLI_PUBLISHED: cliPublished,
-              PUBLISH_LOG: publishLog,
-              RELEASE_VERSION: '1.2.3',
-            },
-          },
-        );
-        expect(result.status, result.stderr).toBe(Number(failure));
-        const canonicalDirectory = realpathSync(directory);
-        const publishCalls = readFileSync(publishLog, 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => line.split('\t'));
-        const publishesCli =
-          failure === '0' && (dryRun === 'true' || cliPublished !== '0');
-        expect(publishCalls.map(([cwd]) => cwd)).toEqual([
-          canonicalDirectory,
-          ...(publishesCli ? [join(canonicalDirectory, 'dist')] : []),
-        ]);
-        const selected = publishCalls[0][1]
-          .split(' ')
-          .filter((arg) => arg.startsWith('--filter='))
-          .map((arg) => arg.slice('--filter='.length));
-        expect(selected).toEqual(
-          RELEASE_WORKSPACES.filter(
-            (name) =>
-              optional === 'true' ||
-              ![
-                '@qwen-code/audio-capture',
-                '@qwen-code/external-context-mem0',
-              ].includes(name),
-          ),
-        );
-        expect(publishCalls[0][1]).toContain('pnpm -r publish');
-        for (const [cwd, args] of publishCalls) {
-          expect(args, cwd).toContain('--access public');
-          expect(args, cwd).toContain('--tag=preview');
-          expect(args, cwd).toContain('--provenance');
-          expect(args.includes('--dry-run'), cwd).toBe(dryRun === 'true');
-        }
-        expect(publishCalls[0][1].includes('--force')).toBe(dryRun === 'true');
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
@@ -1014,41 +770,21 @@ describe('release workflow', () => {
     }
   });
 
-  it('shares generated web templates with build consumers', () => {
+  it('packs every build output for build consumers', () => {
     const pack = releaseYaml.jobs.quality_build.steps.find(
       (step) => step.name === 'Pack Build Outputs',
     );
     expect(pack.run).toContain('run-release-step.sh pack-build');
-    expect(releaseStepScript).toContain('packages/web-templates/src/generated');
     // npm ci leaves nested dependency dist dirs under workspace
     // node_modules; the find must prune them so only real build outputs
     // travel in release-quality-build.
     expect(releaseStepScript).toContain('-type d -name node_modules -prune');
     // Log what is packed and fail closed on a silent under-pack: a dropped
     // `-o` in the find turns the two -prune clauses into one conjunction
-    // that matches nothing, and tar would then ship only the two hardcoded
-    // paths while the symptom lands in downstream consumers.
+    // that matches nothing, and tar would then ship only the hardcoded
+    // path while the symptom lands in downstream consumers.
     expect(releaseStepScript).toContain('printf');
-    expect(releaseStepScript).toContain('${#build_paths[@]} -gt 2');
-  });
-
-  it('keeps the dist producer ahead of the pack step', () => {
-    // Pack hardcodes the repo-root `dist`, which only exists as a side
-    // effect of check:serve-fast-path-bundle (the check runs the esbuild
-    // bundle with outdir dist; scripts/build.js never writes it). The
-    // dependency must stay documented and ordered: moving the check after
-    // Pack, or dropping it, leaves tar without the bundle outputs.
-    const names = releaseYaml.jobs.quality_build.steps.map((step) => step.name);
-    const producer = names.indexOf('Check Serve Fast Path Bundle');
-    const pack = names.indexOf('Pack Build Outputs');
-    expect(producer).toBeGreaterThanOrEqual(0);
-    expect(pack).toBeGreaterThan(producer);
-    expect(workflow).toContain(
-      '# This materializes the repo-root dist packed below.',
-    );
-    expect(releaseStepScript).toContain(
-      "build_paths=('dist' 'packages/web-templates/src/generated')",
-    );
+    expect(releaseStepScript).toContain('${#build_paths[@]} -gt 1');
   });
 
   it('fans workspace tests into three complete Vitest shards', () => {
@@ -1099,7 +835,7 @@ describe('release workflow', () => {
       // test:release:workspaces appends --shard/--passWithNoTests to the
       // script body, so the flags only reach vitest when the vitest
       // invocation is the LAST command in the chain; commands before it
-      // (e.g. sdk-typescript's typecheck:public-surface) stay accepted.
+      // stay accepted.
       expect(
         packageJson.scripts['test:ci'].split('&&').pop()?.trim(),
         path,
@@ -1112,7 +848,7 @@ describe('release workflow', () => {
     // outranks the config. Every schedule now retries by default; the only
     // way off is the operator sentinel, and it must omit the flag rather
     // than zero it — --retry=0 would switch off a workspace's own retry
-    // (packages/sdk-typescript) on this lane alone.
+    // on this lane alone.
     for (const [retry, expected] of [
       ['2', '--retry=2'],
       ['', null],
@@ -2968,28 +2704,6 @@ exit 0`,
     expect(publishSetupNode?.with['package-manager-cache']).toBe(false);
   });
 
-  it('stages every integration package manifest after versioning', () => {
-    expect(releaseStepScript).toContain(
-      'git add package.json pnpm-lock.yaml packages/*/package.json packages/channels/*/package.json integrations/*/package.json integrations/*/qwen-extension.json',
-    );
-  });
-
-  it('publishes the Mem0 Extension only after trusted publishing bootstrap', () => {
-    const publishSteps = releaseYaml.jobs.publish.steps;
-    const publishStep = publishSteps.find(
-      (step) => step.name === 'Publish npm packages',
-    );
-    expect(publishStep.env.PUBLISH_EXTERNAL_CONTEXT_MEM0).toContain(
-      "vars.NPM_EXTERNAL_CONTEXT_MEM0_TRUSTED_PUBLISHING_ENABLED == 'true'",
-    );
-    // The audio-capture switch replaced a deleted step-level
-    // `if: github.repository == 'QwenLM/qwen-code'` gate. Unpinned, a fork
-    // running this workflow would publish @qwen-code/audio-capture.
-    expect(publishStep.env.PUBLISH_AUDIO_CAPTURE).toContain(
-      "github.repository == 'QwenLM/qwen-code'",
-    );
-  });
-
   it('fires the fleet-moving npm-published dispatch on stable releases only', () => {
     // This gate is the sole protection keeping a nightly/preview/dry-run
     // release from moving the ECS fleet; the triggered update workflow
@@ -3229,47 +2943,6 @@ exit 0`,
     );
     expect(releaseStepScript).toContain(
       'echo "::error::npm-published dispatch failed;',
-    );
-  });
-});
-
-describe('Live Host feed contract', () => {
-  it('keeps Live Host releases independent from desktop releases', () => {
-    expect(desktopReleaseWorkflow).not.toContain('live-host:');
-    expect(liveHostReleaseWorkflow).toContain(
-      "working-directory: 'packages/live-host'",
-    );
-    expect(liveHostReleaseWorkflow).toContain(
-      "run: 'npm run dist:mac:no-publish'",
-    );
-  });
-
-  it('resolves the ASAR verifier through the standalone package', () => {
-    expect(liveHostCiWorkflow).toContain('npx --no-install asar list');
-    expect(liveHostCiWorkflow).toContain('npx --no-install asar extract');
-    expect(liveHostCiWorkflow).not.toContain(
-      'node_modules/@electron/asar/bin/asar.mjs',
-    );
-  });
-
-  it('keeps a producer and recovery path for every installer asset', () => {
-    for (const asset of [
-      'Qwen-Live-Host-manifest.json',
-      'Qwen-Live-Host-arm64.zip',
-      'Qwen-Live-Host-x64.zip',
-    ]) {
-      expect(liveHostInstaller).toContain(asset);
-      expect(liveHostReleaseWorkflow).toContain(asset);
-      expect(liveHostOssWorkflow).toContain(asset);
-    }
-    expect(liveHostInstaller).toContain(
-      'https://github.com/QwenLM/qwen-code/releases/download/live-host-latest',
-    );
-    expect(liveHostReleaseWorkflow).toContain(
-      "FEED_TAG: '${{ env.LIVE_HOST_FEED_TAG }}'",
-    );
-    expect(liveHostOssWorkflow).toContain(
-      "gh release download 'live-host-latest'",
     );
   });
 });

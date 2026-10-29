@@ -27,14 +27,18 @@ import { AtFileProcessor } from './prompt-processors/atFileProcessor.js';
 const mockShellProcess = vi.hoisted(() => vi.fn());
 const mockAtFileProcess = vi.hoisted(() => vi.fn());
 vi.mock('./prompt-processors/atFileProcessor.js', () => ({
-  AtFileProcessor: vi.fn().mockImplementation(() => ({
-    process: mockAtFileProcess,
-  })),
+  AtFileProcessor: vi.fn().mockImplementation(function () {
+    return {
+      process: mockAtFileProcess,
+    };
+  }),
 }));
 vi.mock('./prompt-processors/shellProcessor.js', () => ({
-  ShellProcessor: vi.fn().mockImplementation(() => ({
-    process: mockShellProcess,
-  })),
+  ShellProcessor: vi.fn().mockImplementation(function () {
+    return {
+      process: mockShellProcess,
+    };
+  }),
   ConfirmationRequiredError: class extends Error {
     constructor(
       message: string,
@@ -52,9 +56,9 @@ vi.mock('./prompt-processors/argumentProcessor.js', async (importOriginal) => {
       typeof import('./prompt-processors/argumentProcessor.js')
     >();
   return {
-    DefaultArgumentProcessor: vi
-      .fn()
-      .mockImplementation(() => new original.DefaultArgumentProcessor()),
+    DefaultArgumentProcessor: vi.fn().mockImplementation(function () {
+      return new original.DefaultArgumentProcessor();
+    }),
   };
 });
 vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
@@ -1120,12 +1124,11 @@ describe('FileCommandLoader', () => {
         ]),
       );
 
-      vi.mocked(DefaultArgumentProcessor).mockImplementation(
-        () =>
-          ({
-            process: defaultProcessMock,
-          }) as unknown as DefaultArgumentProcessor,
-      );
+      vi.mocked(DefaultArgumentProcessor).mockImplementation(function () {
+        return {
+          process: defaultProcessMock,
+        } as unknown as DefaultArgumentProcessor;
+      });
 
       const loader = new FileCommandLoader(null as unknown as Config);
       const commands = await loader.loadCommands(signal);
@@ -1216,12 +1219,11 @@ describe('FileCommandLoader', () => {
       );
 
       // Prevent default processor from interfering
-      vi.mocked(DefaultArgumentProcessor).mockImplementation(
-        () =>
-          ({
-            process: (p: PromptPipelineContent) => Promise.resolve(p),
-          }) as unknown as DefaultArgumentProcessor,
-      );
+      vi.mocked(DefaultArgumentProcessor).mockImplementation(function () {
+        return {
+          process: (p: PromptPipelineContent) => Promise.resolve(p),
+        } as unknown as DefaultArgumentProcessor;
+      });
 
       const loader = new FileCommandLoader(null as unknown as Config);
       const commands = await loader.loadCommands(signal);

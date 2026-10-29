@@ -85,7 +85,6 @@ const mockConfig = {
   getToolRegistry: vi.fn(() => mockToolRegistry as unknown as ToolRegistry),
   getApprovalMode: vi.fn(() => ApprovalMode.DEFAULT),
   getSessionId: () => 'test-session-id',
-  getUsageStatisticsEnabled: () => true,
   getDebugMode: () => false,
   storage: {
     getProjectTempDir: () => '/tmp',

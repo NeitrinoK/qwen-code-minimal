@@ -24,6 +24,22 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import type { HistoryItemGoalStatus } from '../../../ui/types.js';
 
 /**
+ * Terminal outcome of a goal loop, surfaced to clients as `_meta.goalTerminal`.
+ *
+ * Declared locally because core no longer exports the legacy goal store that
+ * defined it.
+ */
+export interface GoalTerminalEvent {
+  kind: 'achieved' | 'aborted' | 'failed';
+  condition: string;
+  iterations: number;
+  durationMs: number;
+  lastReason?: string;
+  /** Free-form note used for `aborted` (e.g. "max iterations reached"). */
+  systemMessage?: string;
+}
+
+/**
  * Build the `goalStatus` card without sending it.
  *
  * Split out of {@link MessageEmitter.emitGoalStatus} so the bulk load-replay
@@ -117,6 +133,16 @@ export class MessageEmitter extends BaseEmitter {
     previousGoal: GoalRecord | null = null,
   ): Promise<void> {
     await this.sendUpdate(buildGoalStateUpdate(snapshot, cause, previousGoal));
+  }
+
+  async emitGoalTerminal(event: GoalTerminalEvent): Promise<void> {
+    await this.sendUpdate({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: '' },
+      _meta: {
+        goalTerminal: event,
+      },
+    });
   }
 
   /**

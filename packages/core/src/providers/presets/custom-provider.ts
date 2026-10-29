@@ -95,11 +95,7 @@ export const customProvider: ProviderConfig = {
   description:
     'Manually connect a local server, proxy, or unsupported provider',
   protocol: AuthType.USE_OPENAI,
-  protocolOptions: [
-    AuthType.USE_OPENAI,
-    AuthType.USE_ANTHROPIC,
-    AuthType.USE_GEMINI,
-  ],
+  protocolOptions: [AuthType.USE_OPENAI],
   baseUrl: undefined,
   envKey: generateCustomEnvKey,
   models: undefined,

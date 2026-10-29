@@ -62,7 +62,7 @@ function getRouteEndpointIdentity(baseUrl: string | undefined): string | null {
  * format. If the encoding here evolves (new authTypes, runtime prefix changes,
  * etc.), update that file too.
  */
-function formatAcpModelId(modelId: string, authType: AuthType): string {
+export function formatAcpModelId(modelId: string, authType: AuthType): string {
   return `${modelId}(${authType})`;
 }
 
@@ -173,10 +173,7 @@ export function resolveAcpFastModelSelector(
     return null;
   }
   const { model } = option;
-  const selector = `${model.authType}:${model.id}`;
-  return model.authType === AuthType.QWEN_OAUTH
-    ? selector
-    : `${selector}\0${model.registryBaseUrl ?? ''}`;
+  return `${model.authType}:${model.id}\0${model.registryBaseUrl ?? ''}`;
 }
 
 export function getCurrentAcpModelId(

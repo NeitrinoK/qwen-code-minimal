@@ -27,8 +27,7 @@ import {
 // AutomationRuns, the durable occurrence ledger the scanner claims against
 // (docs/design/2026-10-04-managed-automation.md, decisions 1, 2, 6 and 7).
 // The shared fixtures in contracts/managed-automation-record-v1.fixtures.json
-// pin both bodies, and ManagedExtensionRecords in
-// packages/sdk-java/managed-agent-server replays the same cases.
+// pin both bodies.
 
 export const SCHEDULE_KIND = 'schedule';
 export const AUTOMATION_RUN_KIND = 'automation_run';

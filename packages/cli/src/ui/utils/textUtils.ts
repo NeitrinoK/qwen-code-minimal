@@ -594,3 +594,39 @@ export function sanitizeMultilineForDisplay(text: string): string {
     escapeControlChar,
   );
 }
+
+/**
+ * Wrap `text` into visual lines no wider than `width` display columns,
+ * preserving explicit newlines and accounting for wide (CJK/emoji) chars.
+ */
+export function wrapToVisualLines(text: string, width: number): string[] {
+  if (width <= 0) {
+    return [''];
+  }
+  const visualLines: string[] = [];
+  for (const logicalLine of text.split('\n')) {
+    if (logicalLine === '') {
+      visualLines.push('');
+      continue;
+    }
+    let currentLine = '';
+    let currentWidth = 0;
+    for (const char of logicalLine) {
+      const charWidth = getCachedStringWidth(char);
+      if (currentWidth + charWidth > width && currentWidth > 0) {
+        visualLines.push(currentLine);
+        currentLine = '';
+        currentWidth = 0;
+      }
+      currentLine += char;
+      currentWidth += charWidth;
+    }
+    if (currentLine) {
+      visualLines.push(currentLine);
+    }
+  }
+  if (visualLines.length === 0) {
+    visualLines.push('');
+  }
+  return visualLines;
+}

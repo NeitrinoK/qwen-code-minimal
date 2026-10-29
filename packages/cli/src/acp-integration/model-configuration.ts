@@ -640,6 +640,5 @@ export function getReasoningForDisplay(
   if (!resolved) return generation.reasoning;
   const override = getGptReasoningOverrideState(generation, resolved);
   if (override) return override.enabled ? { effort: override.effort } : false;
-  if (config.getReasoningEffortOverride?.()) return generation.reasoning;
   return getEffectiveReasoning(generation, resolved);
 }

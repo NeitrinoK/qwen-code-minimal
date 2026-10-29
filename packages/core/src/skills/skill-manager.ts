@@ -100,6 +100,15 @@ export class SkillManager {
   private refreshTimer: NodeJS.Timeout | null = null;
   private readonly bundledSkillsDir: string;
   private activationRegistry: SkillActivationRegistry | null = null;
+  /**
+   * Names of skills whose full content has been pulled into the prompt this
+   * session. A Set, not a counter: re-invoking a skill does not append its
+   * SKILL.md to the conversation a second time, so counting the repeat would
+   * overstate what the session actually dragged in.
+   */
+  private readonly invokedSkillNames = new Set<string>();
+  /** Entry count of the most recently built `<available_skills>` catalog. */
+  private catalogSkillCount = 0;
 
   constructor(private readonly config: Config) {
     // Anchor the bundled skills directory at the on-disk sibling of
@@ -425,10 +434,38 @@ export class SkillManager {
       return null;
     }
 
+    this.invokedSkillNames.add(skill.name);
     debugLogger.info(
       `Skill loaded for runtime: ${name} from ${skill.filePath}`,
     );
     return skill;
+  }
+
+  /**
+   * How many distinct skills this session has actually invoked. Distinct from
+   * the catalog size, which is injected into every request whether or not any
+   * skill is ever invoked.
+   */
+  getInvokedSkillCount(): number {
+    return this.invokedSkillNames.size;
+  }
+
+  /**
+   * Record how many entries the last `<available_skills>` build produced.
+   * Called by `collectAvailableSkillEntries` so the number reported here is
+   * the number the model actually received, not one re-derived by a second
+   * scan that could disagree with it.
+   */
+  recordCatalogSize(entryCount: number): void {
+    this.catalogSkillCount = entryCount;
+  }
+
+  /**
+   * Size of the skill catalog injected into every request, whether or not any
+   * skill is ever invoked. 0 until the first catalog build.
+   */
+  getCatalogSkillCount(): number {
+    return this.catalogSkillCount;
   }
 
   /**

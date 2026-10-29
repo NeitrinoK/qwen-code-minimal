@@ -10701,9 +10701,7 @@ exit 1
     expect(installAndBuildSteps).toHaveLength(2);
     for (const step of installAndBuildSteps) {
       expect(step).toContain('for attempt in 1 2 3; do');
-      expect(step).toContain(
-        'corepack pnpm install --frozen-lockfile --prefer-offline --reporter=append-only',
-      );
+      expect(step).toContain('npm ci --no-audit --progress=false');
       expect(step).toContain('sleep $((attempt * 15))');
       expect(step).toContain('npm run build');
       expect(step).toContain('npm run bundle');
@@ -10824,9 +10822,7 @@ exit 1
     // The leg itself never rebuilds the base bundle — that is the entire
     // point of the fan-out.
     const legInstall = stepOf(reviewAddressJob, 'Install dependencies');
-    expect(legInstall).toContain(
-      'pnpm install --frozen-lockfile --prefer-offline',
-    );
+    expect(legInstall).toContain('npm ci --no-audit --progress=false');
     expect(legInstall).not.toContain('npm run build');
     expect(legInstall).not.toContain('npm run bundle');
   });
@@ -29734,7 +29730,6 @@ describe('review-address: regression accounting (af-157)', () => {
       'PR self-report label',
       'Qwen PR Safety Precheck',
       'Comment Attachment Guard',
-      'PR Asset Branch Cleanup',
     ];
     const lanes = JSON.parse(loopOwnedLanesJson);
     expect([...lanes].sort()).toEqual([...expected].sort());

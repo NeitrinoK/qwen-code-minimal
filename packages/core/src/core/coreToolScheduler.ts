@@ -25,6 +25,7 @@ import type {
 import type {
   AutoModeFallbackConfirmation,
   ToolCallConfirmationDetails,
+  ToolInfoConfirmationDetails,
   ToolResult,
   ToolResultDisplay,
   ToolConfirmationPayload,
@@ -176,13 +177,22 @@ import * as Diff from 'diff';
 import levenshtein from 'fast-levenshtein';
 import { ShellToolInvocation } from '../tools/shell.js';
 import { DiscoveredMCPTool } from '../tools/mcp-tool.js';
-import { IdeClient } from '../ide/ide-client.js';
 import {
   getPlanRequiredTeammatePreApprovalMessage,
   isPlanRequiredTeammateAwaitingApproval,
   isPlanRequiredTeammatePreApprovalAllowedTool,
   shouldUsePlanOnlyReminderInSubagentContext,
 } from '../agents/runtime/subagent-plan-tool-policy.js';
+import {
+  shouldGatePlanFirst,
+  shouldAutoRedirectPlanGate,
+  extractGatedWritePath,
+  PLAN_GATE_SKILL,
+  BRAINSTORMING_SKILL,
+  PLAN_GATE_PROMPT,
+  PLAN_GATE_REDIRECT_MESSAGE,
+  PLAN_GATE_AUTO_REDIRECT_MESSAGE,
+} from './planFirstGate.js';
 import { safeSetStatus } from '../telemetry/tracer.js';
 import {
   TOOL_FAILURE_KIND_ATTRIBUTE,
@@ -2505,13 +2515,10 @@ export class CoreToolScheduler {
 
   /**
    * Best-effort attribution of the surface that resolved the blocked
-   * decision. When IDE mode is on, confirmations are most often resolved
-   * via the IDE diff flow (`openIdeDiffIfEnabled`) — but a CLI-fallback
-   * confirmation in IDE mode is also reported as 'ide' here. Operators
-   * can drill into the trace if they need finer-grained attribution.
+   * decision. Confirmations are resolved via the CLI flow.
    */
   private getBlockedSource(): ToolBlockedSource {
-    return this.config.getIdeMode?.() ? 'ide' : 'cli';
+    return 'cli';
   }
 
   /**
@@ -2761,7 +2768,7 @@ export class CoreToolScheduler {
 
     // MCP tool whose server is gone / unconfigured: explain in MCP terms
     // instead of falling through to a Levenshtein suggestion that would surface
-    // unrelated tools (e.g. "did you mean read_file?").
+    // unrelated tools (e.g. "did you mean some_unrelated_tool?").
     const mcpMessage = this.getMcpToolUnavailableMessage(unknownToolName);
     if (mcpMessage) {
       return mcpMessage;
@@ -3816,6 +3823,87 @@ export class CoreToolScheduler {
             continue;
           }
 
+          // ── Plan-first write gate ──────────────────────────────────────
+          // Deterministic, model-independent: block the first non-planning
+          // file write of an interactive session until
+          // superpowers:writing-plans has run this session. Placed before the
+          // allow / AUTO-mode fast-paths so it also catches writes that would
+          // otherwise be auto-approved. Non-interactive sessions fail open — a
+          // scripted run has no human to approve, and hard-blocking it would
+          // break automation.
+          //
+          // Deny and plan-mode enforcement take precedence over the gate: the
+          // `finalPermission !== 'deny'` and `!isPlanMode` guards ensure a
+          // user's "Yes" here can never execute a write those stronger
+          // controls would reject. A denied write still falls through to the
+          // `finalPermission === 'deny'` branch below, and a plan-mode write
+          // still falls through to the plan-mode block, rather than being
+          // gate-approved and scheduled.
+          //
+          // The write-path is resolved first and used as a fast guard so the
+          // gate's Config reads only run for actual gated writes.
+          // `shouldGatePlanFirst` already returns false for any non-write /
+          // pathless call, so this is behaviorally identical to passing the
+          // path straight in — it just avoids touching the gate Config
+          // surface on the (common) non-write path.
+          const gatedWritePath = extractGatedWritePath(
+            canonicalName,
+            toolParams,
+          );
+          if (
+            gatedWritePath &&
+            !isPlanMode &&
+            this.config.isInteractive() &&
+            shouldGatePlanFirst({
+              enabled: this.config.getPlanFirstGateEnabled(),
+              sessionOverride: this.config.getPlanGateOverride(),
+              toolName: canonicalName,
+              filePath: gatedWritePath,
+              writingPlansInvoked: this.config.hasInvokedSkill(PLAN_GATE_SKILL),
+            })
+          ) {
+            if (
+              shouldAutoRedirectPlanGate({
+                brainstormingActive:
+                  this.config.hasInvokedSkill(BRAINSTORMING_SKILL),
+                writingPlansInvoked:
+                  this.config.hasInvokedSkill(PLAN_GATE_SKILL),
+                autoRedirectCount: this.config.getPlanGateAutoRedirectCount(),
+              })
+            ) {
+              // During an active brainstorming session with no plan yet, deny
+              // the write with the model-facing redirect (no user prompt) so
+              // the model self-invokes superpowers:writing-plans. Bounded by
+              // PLAN_GATE_AUTO_REDIRECT_CAP; at the cap we fall through to the
+              // Yes/No confirmation below.
+              this.config.markPlanGateAutoRedirect();
+              this.setStatusInternal(
+                reqInfo.callId,
+                'error',
+                createErrorResponse(
+                  reqInfo,
+                  new Error(PLAN_GATE_AUTO_REDIRECT_MESSAGE),
+                  ToolErrorType.EXECUTION_DENIED,
+                  'not_started',
+                ),
+              );
+              setToolSpanFailure(
+                toolSpan,
+                TOOL_FAILURE_KIND_PLAN_MODE_BLOCKED,
+                TOOL_SPAN_STATUS_PLAN_MODE_BLOCKED,
+              );
+              this.finalizeToolSpan(reqInfo.callId);
+              continue;
+            }
+            this.presentPlanFirstGateConfirmation(
+              reqInfo,
+              canonicalName,
+              toolSpan,
+              signal,
+            );
+            continue;
+          }
+
           let planShellAmbientWorkingDirectory: string | undefined;
           if (isPlanShellCall) {
             const directory = toolParams['directory'];
@@ -4588,18 +4676,6 @@ export class CoreToolScheduler {
               }
             }
 
-            // Allow IDE to resolve confirmation
-            if (
-              confirmationDetails.type !== 'edit' ||
-              !confirmationDetails.skipIdeDiff
-            ) {
-              this.openIdeDiffIfEnabled(
-                confirmationDetails,
-                reqInfo.callId,
-                signal,
-              );
-            }
-
             const originalOnConfirm = confirmationDetails.onConfirm;
             const invocationContext = getInvocationContext();
             let planShellResponseClaimed = false;
@@ -4756,6 +4832,54 @@ export class CoreToolScheduler {
       this.isScheduling = false;
       this.drainRequestQueueIfIdle();
     }
+  }
+
+  /**
+   * Opens the plan-first gate confirmation on a gated write. Reuses the
+   * standard awaiting-approval machinery: an `info` confirmation whose
+   * wrapper (a) sets the session override on any proceed outcome so the rest
+   * of the session is not gated, and (b) injects the redirect as the
+   * model-facing cancel message when the user chooses "run planning first".
+   */
+  private presentPlanFirstGateConfirmation(
+    reqInfo: ToolCallRequestInfo,
+    canonicalName: string,
+    toolSpan: ReturnType<typeof startToolSpan>,
+    signal: AbortSignal,
+  ): void {
+    const gateDetails: ToolInfoConfirmationDetails = {
+      type: 'info',
+      title: 'Plan-first gate',
+      hideAlwaysAllow: true,
+      prompt: PLAN_GATE_PROMPT,
+      onConfirm: async (outcome: ToolConfirmationOutcome) => {
+        if (outcome !== ToolConfirmationOutcome.Cancel) {
+          this.config.setPlanGateOverride(true);
+        }
+      },
+    };
+    const wrapped: ToolCallConfirmationDetails = {
+      ...gateDetails,
+      onConfirm: (
+        outcome: ToolConfirmationOutcome,
+        payload?: ToolConfirmationPayload,
+      ) =>
+        this.handleConfirmationResponse(
+          reqInfo.callId,
+          gateDetails.onConfirm,
+          outcome,
+          signal,
+          outcome === ToolConfirmationOutcome.Cancel && !payload?.cancelMessage
+            ? { ...payload, cancelMessage: PLAN_GATE_REDIRECT_MESSAGE }
+            : payload,
+        ),
+    };
+    this.setStatusInternal(reqInfo.callId, 'awaiting_approval', wrapped);
+    const blockedSpan = startToolBlockedOnUserSpan(toolSpan, {
+      tool_name: canonicalName,
+      call_id: reqInfo.callId,
+    });
+    this.blockedSpans.set(reqInfo.callId, blockedSpan);
   }
 
   async handleConfirmationResponse(
@@ -5136,80 +5260,6 @@ export class CoreToolScheduler {
           `${formatDenialStateLog(before)} -> ${formatDenialStateLog(after)}`,
       );
       this.config.setAutoModeDenialState(after);
-    }
-  }
-
-  /**
-   * Opens an IDE diff view for edit-type tools when IDE mode is active.
-   * The IDE resolution is handled asynchronously — if the user accepts or
-   * rejects from the IDE, it triggers handleConfirmationResponse.
-   *
-   * Uses confirmationDetails.filePath / newContent (the same data shown in
-   * CLI diff) rather than ModifyContext so that the IDE diff is always
-   * consistent with the CLI and with resolveDiffFromCli.
-   */
-  private async openIdeDiffIfEnabled(
-    confirmationDetails: ToolCallConfirmationDetails,
-    callId: string,
-    signal: AbortSignal,
-  ) {
-    if (
-      confirmationDetails.type !== 'edit' ||
-      !this.config.getIdeMode() ||
-      this.config.getExecutionEnvironment?.()
-    ) {
-      return;
-    }
-
-    let resolution: Awaited<ReturnType<IdeClient['openDiff']>>;
-    try {
-      const ideClient = await IdeClient.getInstance();
-      if (!ideClient.isDiffingEnabled()) return;
-
-      resolution = await ideClient.openDiff(
-        confirmationDetails.filePath,
-        confirmationDetails.newContent,
-      );
-    } catch (error) {
-      if (!signal.aborted) {
-        debugLogger.warn(
-          `IDE diff open failed for ${callId}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      return;
-    }
-
-    // Guard: skip if the tool was already handled (e.g. by CLI
-    // confirmation).  Without this check, resolveDiffFromCli
-    // triggers this handler AND the CLI's onConfirm, causing a
-    // race where ProceedOnce overwrites ProceedAlways.
-    const still = this.toolCalls.find(
-      (c) => c.request.callId === callId && c.status === 'awaiting_approval',
-    );
-    if (!still) return;
-
-    if (resolution.status === 'accepted') {
-      // When content is unchanged, skip the inline modify path so that
-      // the original tool params (e.g. partial old_string for edit tool)
-      // are preserved. Mitigate the multi-edit-on-same-file issue (#2702)
-      // for the common accept-without-edit case.
-      const userEdited =
-        resolution.content != null &&
-        resolution.content !== confirmationDetails.newContent;
-      await this.handleConfirmationResponse(
-        callId,
-        confirmationDetails.onConfirm,
-        ToolConfirmationOutcome.ProceedOnce,
-        signal,
-        userEdited ? { newContent: resolution.content } : undefined,
-      );
-    } else {
-      await this.handleConfirmationResponse(
-        callId,
-        confirmationDetails.onConfirm,
-        ToolConfirmationOutcome.Cancel,
-        signal,
-      );
     }
   }
 

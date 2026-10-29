@@ -70,9 +70,8 @@ Lift history (#4175 Mode B daemon roadmap):
   scrub + override + defense-in-depth ordering invariant the security
   argument relies on). Production spawn of the `qwen --acp` child
   with stderr prefix-and-forward, kill cascade, and env passthrough.
-  Channels (`packages/channels/base/AcpBridge.ts`) and the VSCode IDE
-  companion consume this directly instead of each reimplementing the
-  child lifecycle.
+  Consumers use this directly instead of each reimplementing the child
+  lifecycle.
 - `bridgeClient` (F1) — `BridgeClient` class implementing the ACP
   `Client` surface: permission requests delegated to
   `PermissionMediator`, session-update fan-out into `EventBus`,

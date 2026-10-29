@@ -7,35 +7,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   getAvailableModelsForAuthType,
-  getFilteredQwenModels,
   getOpenAIAvailableModelFromEnv,
 } from './availableModels.js';
 import { AuthType, type Config } from '@qwen-code/qwen-code-core';
 
 describe('availableModels', () => {
-  describe('Qwen models', () => {
-    const qwenModels = getFilteredQwenModels();
-
-    it('should include only coder-model', () => {
-      expect(qwenModels.length).toBe(1);
-      expect(qwenModels[0].id).toBe('coder-model');
-    });
-
-    it('should have coder-model with vision capability', () => {
-      const coderModel = qwenModels[0];
-      expect(coderModel.isVision).toBe(true);
-    });
-  });
-
-  describe('getFilteredQwenModels', () => {
-    it('should return coder-model with vision capability', () => {
-      const models = getFilteredQwenModels();
-      expect(models.length).toBe(1);
-      expect(models[0].id).toBe('coder-model');
-      expect(models[0].isVision).toBe(true);
-    });
-  });
-
   describe('getOpenAIAvailableModelFromEnv', () => {
     const originalEnv = process.env;
 
@@ -77,34 +53,27 @@ describe('availableModels', () => {
       process.env = originalEnv;
     });
 
-    it('should return hard-coded qwen models for qwen-oauth', () => {
-      const models = getAvailableModelsForAuthType(AuthType.QWEN_OAUTH);
-      expect(models.length).toBe(1);
-      expect(models[0].id).toBe('coder-model');
-      expect(models[0].isVision).toBe(true);
-    });
-
-    it('should use config models for qwen-oauth when config is provided', () => {
+    it('should use config models when config is provided', () => {
       const mockConfig = {
         getAvailableModelsForAuthType: vi.fn().mockReturnValue([
           {
             id: 'custom',
             label: 'Custom',
             description: 'Custom model',
-            authType: AuthType.QWEN_OAUTH,
+            authType: AuthType.USE_OPENAI,
             isVision: false,
           },
           {
             id: 'image',
             label: 'Image',
-            authType: AuthType.QWEN_OAUTH,
+            authType: AuthType.USE_OPENAI,
             imageOnly: true,
           },
         ]),
       } as unknown as Config;
 
       const models = getAvailableModelsForAuthType(
-        AuthType.QWEN_OAUTH,
+        AuthType.USE_OPENAI,
         mockConfig,
       );
       expect(models).toEqual([
@@ -190,11 +159,6 @@ describe('availableModels', () => {
     it('should return empty array for openai without config or env', () => {
       delete process.env['OPENAI_MODEL'];
       const models = getAvailableModelsForAuthType(AuthType.USE_OPENAI);
-      expect(models).toEqual([]);
-    });
-
-    it('should return empty array for other auth types', () => {
-      const models = getAvailableModelsForAuthType(AuthType.USE_GEMINI);
       expect(models).toEqual([]);
     });
   });

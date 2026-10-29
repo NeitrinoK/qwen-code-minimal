@@ -4743,10 +4743,26 @@ exit 0
           ].join('\n'),
         );
         const { spawn } = await import('node:child_process');
-        const child = spawn(process.execPath, ['--import', 'tsx', driver], {
-          cwd: process.cwd(),
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        // Cap the child's fd table: Node raises the soft limit to the hard
+        // one at startup (Linux), so a hard limit in the hundreds of
+        // thousands takes the open() loop past the 20 s killer before EMFILE
+        // (measured: 524288 fds in 24 s on RHEL 9). Soft first — a hard
+        // limit cannot drop below the current soft one, which this worker
+        // has already raised — then hard, so the child cannot raise it back.
+        // The exhaustion stays real and the loop fast on every platform.
+        const child = spawn(
+          '/bin/sh',
+          [
+            '-c',
+            'ulimit -Sn 4096 2>/dev/null; ulimit -Hn 4096 2>/dev/null; exec "$0" --import tsx "$1"',
+            process.execPath,
+            driver,
+          ],
+          {
+            cwd: process.cwd(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
         let out = '';
         child.stdout.on('data', (b: Buffer) => (out += b.toString()));
         child.stderr.on('data', (b: Buffer) => (out += b.toString()));

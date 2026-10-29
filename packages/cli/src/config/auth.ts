@@ -6,9 +6,7 @@
 
 import {
   AuthType,
-  hasVertexProjectConfigured,
   resolveModelSelectionAuthType,
-  VERTEX_ADC_HINT,
   type Config,
   type ModelProvidersConfig,
   type ProviderModelConfig,
@@ -24,9 +22,6 @@ import { t } from '../i18n/index.js';
 const DEFAULT_ENV_KEYS: Record<string, string> = {
   [AuthType.USE_OPENAI]: 'OPENAI_API_KEY',
   [AuthType.USE_OPENAI_RESPONSES]: 'OPENAI_API_KEY',
-  [AuthType.USE_ANTHROPIC]: 'ANTHROPIC_API_KEY',
-  [AuthType.USE_GEMINI]: 'GEMINI_API_KEY',
-  [AuthType.USE_VERTEX_AI]: 'GOOGLE_API_KEY',
 };
 
 /**
@@ -209,68 +204,6 @@ function hasApiKeyForAuth(
 }
 
 /**
- * Whether the selected Vertex entry can take the Application Default
- * Credentials path at all. An entry that declares its own key variable never
- * does: falling back to ADC there would authenticate as a different principal,
- * silently, whenever that variable failed to be injected.
- */
-function isVertexAdcEligible(settings: Settings, config?: Config): boolean {
-  const { modelId, baseUrl } = resolveSelectedModel(settings, config);
-  const modelConfig = findModelConfig(
-    settings.modelProviders as ModelProvidersConfig | undefined,
-    settings.providerProtocol,
-    AuthType.USE_VERTEX_AI,
-    modelId,
-    baseUrl,
-  );
-  return !modelConfig?.envKey;
-}
-
-/** Reads the project through the shared predicate, settings.env included. */
-function hasVertexProject(settings: Settings): boolean {
-  const settingsEnv = settings.env as Record<string, unknown> | undefined;
-  return hasVertexProjectConfigured((key) => {
-    const fromProcess = process.env[key];
-    if (fromProcess !== undefined) {
-      return fromProcess;
-    }
-    const fromSettings = settingsEnv?.[key];
-    return typeof fromSettings === 'string' ? fromSettings : undefined;
-  });
-}
-
-/**
- * Generate API key error message based on auth check result.
- * Returns null if API key is present, otherwise returns the appropriate error message.
- */
-function getApiKeyError(
-  authMethod: string,
-  settings: Settings,
-  config?: Config,
-): string | null {
-  const { hasKey, checkedEnvKey, isExplicitEnvKey } = hasApiKeyForAuth(
-    authMethod,
-    settings,
-    config,
-  );
-  if (hasKey) {
-    return null;
-  }
-
-  const envKeyHint = checkedEnvKey || DEFAULT_ENV_KEYS[authMethod];
-  if (isExplicitEnvKey) {
-    return t(
-      '{{envKeyHint}} environment variable not found. Please set it in your .env file or environment variables.',
-      { envKeyHint },
-    );
-  }
-  return t(
-    '{{envKeyHint}} environment variable not found (or set settings.security.auth.apiKey). Please set it in your .env file or environment variables.',
-    { envKeyHint },
-  );
-}
-
-/**
  * Validate that the required credentials and configuration exist for the given auth method.
  */
 export function validateAuthMethod(
@@ -306,68 +239,6 @@ export function validateAuthMethod(
         { envKeyHint },
       );
     }
-    return null;
-  }
-
-  if (authMethod === AuthType.QWEN_OAUTH) {
-    // Qwen OAuth free tier was discontinued on 2026-04-15.
-    // Block new OAuth setups; existing cached tokens still work until server rejects them.
-    return t(
-      'Qwen OAuth free tier was discontinued on 2026-04-15. Run /auth to switch to Coding Plan, OpenRouter, Fireworks AI, or another provider.',
-    );
-  }
-
-  if (authMethod === AuthType.USE_ANTHROPIC) {
-    const apiKeyError = getApiKeyError(authMethod, settings.merged, config);
-    if (apiKeyError) {
-      return apiKeyError;
-    }
-
-    // Check baseUrl - can come from modelProviders or environment
-    const modelProviders = settings.merged.modelProviders as
-      | ModelProvidersConfig
-      | undefined;
-    // Resolve the selected model + baseUrl so duplicate-id providers validate
-    // the Anthropic baseUrl of the selected provider, not the first id match.
-    const { modelId, baseUrl } = resolveSelectedModel(settings.merged, config);
-    const modelConfig = findModelConfig(
-      modelProviders,
-      settings.merged.providerProtocol,
-      authMethod,
-      modelId,
-      baseUrl,
-    );
-
-    if (modelConfig && !modelConfig.baseUrl) {
-      return t(
-        'Anthropic provider missing required baseUrl in modelProviders[].baseUrl.',
-      );
-    }
-    if (!modelConfig && !process.env['ANTHROPIC_BASE_URL']) {
-      return t('ANTHROPIC_BASE_URL environment variable not found.');
-    }
-
-    return null;
-  }
-
-  if (authMethod === AuthType.USE_GEMINI) {
-    const apiKeyError = getApiKeyError(authMethod, settings.merged, config);
-    if (apiKeyError) {
-      return apiKeyError;
-    }
-    return null;
-  }
-
-  if (authMethod === AuthType.USE_VERTEX_AI) {
-    const adcEligible = isVertexAdcEligible(settings.merged, config);
-    if (!adcEligible || !hasVertexProject(settings.merged)) {
-      const apiKeyError = getApiKeyError(authMethod, settings.merged, config);
-      if (apiKeyError) {
-        return adcEligible ? apiKeyError + VERTEX_ADC_HINT : apiKeyError;
-      }
-    }
-
-    process.env['GOOGLE_GENAI_USE_VERTEXAI'] = 'true';
     return null;
   }
 

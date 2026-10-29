@@ -4,17 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type SupportedLanguage =
-  | 'en'
-  | 'zh'
-  | 'zh-TW'
-  | 'ru'
-  | 'de'
-  | 'ja'
-  | 'pt'
-  | 'fr'
-  | 'ca'
-  | string;
+export type SupportedLanguage = 'en' | 'ru' | string;
 
 export interface LanguageDefinition {
   /** The internal locale code used by the i18n system (e.g., 'en', 'zh'). */
@@ -40,54 +30,10 @@ export const SUPPORTED_LANGUAGES: readonly LanguageDefinition[] = [
     nativeName: 'English',
   },
   {
-    code: 'zh-TW',
-    id: 'zh-TW',
-    fullName: 'Traditional Chinese',
-    nativeName: '繁體中文',
-    strictParity: true,
-  },
-  {
-    code: 'zh',
-    id: 'zh-CN',
-    fullName: 'Chinese',
-    nativeName: '中文',
-    strictParity: true,
-  },
-  {
     code: 'ru',
     id: 'ru-RU',
     fullName: 'Russian',
     nativeName: 'Русский',
-  },
-  {
-    code: 'de',
-    id: 'de-DE',
-    fullName: 'German',
-    nativeName: 'Deutsch',
-  },
-  {
-    code: 'ja',
-    id: 'ja-JP',
-    fullName: 'Japanese',
-    nativeName: '日本語',
-  },
-  {
-    code: 'pt',
-    id: 'pt-BR',
-    fullName: 'Portuguese',
-    nativeName: 'Português',
-  },
-  {
-    code: 'fr',
-    id: 'fr-FR',
-    fullName: 'French',
-    nativeName: 'Français',
-  },
-  {
-    code: 'ca',
-    id: 'ca-ES',
-    fullName: 'Catalan',
-    nativeName: 'Català',
   },
 ];
 

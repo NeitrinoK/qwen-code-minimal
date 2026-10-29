@@ -5,7 +5,7 @@
  */
 
 import { render } from 'ink-testing-library';
-import { render as inkRender } from 'ink';
+import { render as inkRender, Text } from 'ink';
 import type { DOMElement } from 'ink';
 import stripAnsi from 'strip-ansi';
 import { EventEmitter } from 'node:events';
@@ -20,6 +20,7 @@ import {
 import * as useTerminalSize from '../hooks/useTerminalSize.js';
 import * as useStatusLineModule from '../hooks/useStatusLine.js';
 import * as useMCPHealthModule from '../hooks/useMCPHealth.js';
+import * as HubLoadPillModule from './HubLoadPill.js';
 import { type UIState, UIStateContext } from '../contexts/UIStateContext.js';
 import {
   BackgroundTaskViewStateContext,
@@ -41,6 +42,12 @@ const useStatusLineMock = vi.mocked(useStatusLineModule.useStatusLine);
 
 vi.mock('../hooks/useMCPHealth.js');
 const useMCPHealthMock = vi.mocked(useMCPHealthModule.useMCPHealth);
+
+vi.mock('./HubLoadPill.js', () => ({
+  useFooterHubLoad: vi.fn(() => undefined),
+  HubLoadPill: vi.fn(() => <Text>HUB_PILL</Text>),
+}));
+const useFooterHubLoadMock = vi.mocked(HubLoadPillModule.useFooterHubLoad);
 
 vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
   const actual =
@@ -67,6 +74,7 @@ const createMockMemoryManager = () => ({
 const createMockConfig = (overrides = {}) => ({
   getModel: vi.fn(() => defaultProps.model),
   getDebugMode: vi.fn(() => false),
+  getSkillManager: vi.fn(() => null),
   getContentGeneratorConfig: vi.fn(() => ({ contextWindowSize: 131072 })),
   getMcpServers: vi.fn(() => ({})),
   getBlockedMcpServers: vi.fn(() => []),
@@ -74,6 +82,7 @@ const createMockConfig = (overrides = {}) => ({
   getSessionId: vi.fn(() => 'test-session'),
   getMemoryManager: vi.fn(createMockMemoryManager),
   isSafeMode: vi.fn(() => false),
+  getAllConfiguredModels: vi.fn(() => []),
   ...overrides,
 });
 
@@ -281,6 +290,9 @@ describe('<Footer />', () => {
       connectingCount: 0,
       connectedCount: 0,
     });
+    // Hub pill hidden by default; a hub is not the active provider in
+    // these tests, matching the real hook's undefined return.
+    useFooterHubLoadMock.mockReturnValue(undefined);
   });
 
   it('shows the current runtime tool policy in the footer', () => {
@@ -350,7 +362,11 @@ describe('<Footer />', () => {
     expect(lastFrame()).not.toContain('workflow active');
   });
 
-  it('shows steer and queue shortcuts while the model is responding', () => {
+  it('shows the shortcuts hint while the model is responding', () => {
+    // Fork behavior: the Footer's bottom-left row shows the generic
+    // "? for shortcuts" hint while responding (in DEFAULT approval mode). The
+    // upstream "Enter to steer · Ctrl+Q to queue" hint was removed from the
+    // Footer; queue affordances now live in QueuedMessageDisplay.
     const { lastFrame } = renderWithWidth(
       120,
       createMockUIState({
@@ -359,7 +375,7 @@ describe('<Footer />', () => {
       }),
     );
 
-    expect(lastFrame()).toContain('Enter to steer · Ctrl+Q to queue');
+    expect(lastFrame()).toContain('? for shortcuts');
   });
 
   it('shows a queued-count badge when messages are queued', () => {
@@ -447,18 +463,9 @@ describe('<Footer />', () => {
           .split('\n')
           .map((line) => line.replace(/[ \t]+$/u, ''));
         expect(lines).toHaveLength(1);
-        // On win32 the auto-accept indicator renders '(tab to cycle)'
-        // instead of '(shift + tab to cycle)'; the 8 columns it gives back
-        // shift Yoga's proportional shrink by one column, truncating the
-        // hint one character earlier. Pin each platform's deterministic
-        // rendering so any further truncation fails its lane (the win32
-        // spelling stays a substring of the POSIX one, so a future change
-        // that restores the full hint does not fail this assertion).
-        if (process.platform === 'win32') {
-          expect(lines[0]).toContain('Enter to steer · Ctrl+Q to queu');
-        } else {
-          expect(lines[0]).toContain('Enter to steer · Ctrl+Q to queue');
-        }
+        // Fork behavior: the removed "Enter to steer · Ctrl+Q to queue" hint no
+        // longer shares this row; the queued-count badge (⏳) is what the
+        // one-line height guard must keep from wrapping.
         expect(lines[0]).toContain('⏳ 1');
       } finally {
         unmount();
@@ -494,10 +501,11 @@ describe('<Footer />', () => {
     }
   });
 
-  it('uses a distinct badge glyph from the DEFAULT approval indicator', () => {
-    // Regression (R2-3 of the #8667 review): the badge reused `⏸`, the
-    // DEFAULT approval-mode icon, so the same row rendered two `⏸` glyphs
-    // with different meanings.
+  it('uses the ⏳ queued badge and no ⏸ approval indicator in DEFAULT mode', () => {
+    // Fork behavior: the DEFAULT approval mode no longer renders the
+    // "⏸ Ask permissions" indicator in the Footer (AutoAcceptIndicator is only
+    // shown for non-DEFAULT modes), so the queued badge's ⏳ glyph is the only
+    // status glyph and cannot collide with the approval indicator.
     const { lastFrame } = renderWithWidth(
       120,
       createMockUIState({
@@ -506,9 +514,9 @@ describe('<Footer />', () => {
       }),
     );
     const frame = stripAnsi(lastFrame()!);
-    expect(frame).toContain('⏸ Ask permissions');
+    expect(frame).not.toContain('⏸');
+    expect(frame).not.toContain('Ask permissions');
     expect(frame).toContain('⏳ 1 queued');
-    expect(frame.match(/⏸/gu)).toHaveLength(1);
   });
 
   it('shows mode indicator alongside steering hint during streaming', () => {
@@ -521,50 +529,7 @@ describe('<Footer />', () => {
     );
 
     const frame = lastFrame()!;
-    expect(frame).toContain('Enter to steer · Ctrl+Q to queue');
     expect(frame).toContain('YOLO mode');
-  });
-
-  it('shows deferred IDE connection progress', () => {
-    const { lastFrame } = renderWithWidth(
-      120,
-      createMockUIState({
-        startupIdeConnectionStatus: { state: 'connecting' },
-      }),
-    );
-
-    expect(lastFrame()).toContain(
-      'IDE connecting... context may be unavailable',
-    );
-  });
-
-  it('shows deferred IDE connection failures', () => {
-    const { lastFrame } = renderWithWidth(
-      120,
-      createMockUIState({
-        startupIdeConnectionStatus: {
-          state: 'failed',
-          message: 'ide_connect timed out after 10000ms',
-        },
-      }),
-    );
-
-    expect(lastFrame()).toContain(
-      'IDE connection unavailable: ide_connect timed out after 10000ms',
-    );
-  });
-
-  it('hides the deferred IDE status after connection succeeds', () => {
-    const { lastFrame } = renderWithWidth(
-      120,
-      createMockUIState({
-        startupIdeConnectionStatus: { state: 'connected' },
-      }),
-    );
-
-    expect(lastFrame()).not.toContain('IDE connecting');
-    expect(lastFrame()).not.toContain('IDE connection unavailable');
-    expect(lastFrame()).toContain('? for shortcuts');
   });
 
   it('shows the active scheduled task count', () => {
@@ -610,7 +575,7 @@ describe('<Footer />', () => {
     }
   });
 
-  it('shows the default approval mode badge when in DEFAULT mode', () => {
+  it('shows the shortcuts hint (no approval badge) when in DEFAULT mode', () => {
     const { lastFrame } = renderWithWidth(
       120,
       createMockUIState({
@@ -618,9 +583,9 @@ describe('<Footer />', () => {
       }),
     );
     const frame = lastFrame()!;
-    expect(frame).toContain('⏸');
-    expect(frame).toContain('Ask permissions');
-    expect(frame).not.toContain('? for shortcuts');
+    expect(frame).not.toContain('⏸');
+    expect(frame).not.toContain('Ask permissions');
+    expect(frame).toContain('? for shortcuts');
   });
 
   it('does not display the working directory or branch name', () => {
@@ -766,6 +731,24 @@ describe('<Footer />', () => {
       const frame = lastFrame()!;
       expect(frame).toContain('model-name ctx:34%');
       expect(frame).toContain('Initializing...');
+    });
+  });
+
+  describe('Hub load pill', () => {
+    it('shows the Hub load pill when eligible', () => {
+      useFooterHubLoadMock.mockReturnValue({
+        state: { snapshot: null, stale: false },
+        tiers: { hard: 'hard-model' },
+        queueWarn: 20,
+      });
+      const { lastFrame } = renderWithWidth(120, createMockUIState());
+      expect(lastFrame()).toContain('HUB_PILL');
+    });
+
+    it('hides the Hub load pill when not eligible', () => {
+      useFooterHubLoadMock.mockReturnValue(undefined);
+      const { lastFrame } = renderWithWidth(120, createMockUIState());
+      expect(lastFrame()).not.toContain('HUB_PILL');
     });
   });
 

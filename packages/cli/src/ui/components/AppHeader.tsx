@@ -7,7 +7,7 @@
 import { useMemo } from 'react';
 import { Box } from 'ink';
 import {
-  AuthType,
+  type AuthType,
   findProviderByCredentials,
   resolveMetadataKey,
 } from '@qwen-code/qwen-code-core';
@@ -40,8 +40,6 @@ function getAuthDisplayType(
   }
 
   switch (authType) {
-    case AuthType.QWEN_OAUTH:
-      return AuthDisplayType.QWEN_OAUTH;
     default:
       return AuthDisplayType.API_KEY;
   }

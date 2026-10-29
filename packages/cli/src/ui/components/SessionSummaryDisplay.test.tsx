@@ -5,7 +5,7 @@
  */
 
 import { render } from 'ink-testing-library';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { SessionSummaryDisplay } from './SessionSummaryDisplay.js';
 import * as SessionContext from '../contexts/SessionContext.js';
 import type {
@@ -64,6 +64,20 @@ const renderWithMockedStats = (
 };
 
 describe('<SessionSummaryDisplay />', () => {
+  beforeAll(() => {
+    // Pin number formatting to en-US so thousands separators are stable across
+    // machine locales (e.g. ru_RU renders a narrow no-break space, not a comma).
+    vi.spyOn(Number.prototype, 'toLocaleString').mockImplementation(function (
+      this: number,
+    ) {
+      return new Intl.NumberFormat('en-US').format(this);
+    });
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
   it('renders the summary display with a title', () => {
     const metrics: SessionMetrics = {
       models: {
