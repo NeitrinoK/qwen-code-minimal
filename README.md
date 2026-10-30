@@ -171,7 +171,16 @@ Qwen Code is an open-source AI agent for the terminal, optimized for Qwen series
 
 ## Installation
 
-Qwen Coder Minimal is distributed as source and built locally.
+### Install from a release
+
+Each [release](https://github.com/NeitrinoK/qwen-code-minimal/releases) has a
+prebuilt package attached. With Node.js 22 or later, install it directly:
+
+```bash
+npm install -g https://github.com/NeitrinoK/qwen-code-minimal/releases/download/<tag>/qwen-code-minimal-<version>.tgz
+```
+
+Copy the exact link from the release's assets, then run `qwen`.
 
 ### Prerequisites
 

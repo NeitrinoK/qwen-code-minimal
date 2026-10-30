@@ -24,6 +24,7 @@
 40188 e2e.yml
 11634 finalize-release.yml
 14912 main-ci-failure-issue.yml
+2817 minimal-release.yml
 7299 pr-force-push-reminder.yml
 6495 pr-self-report-label.yml
 9646 qwen-autofix-fork-bridge.yml

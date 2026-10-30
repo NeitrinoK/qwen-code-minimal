@@ -1,0 +1,92 @@
+name: 'Minimal Release'
+
+# Builds the installable npm tarball and attaches it to a GitHub release.
+# Users install it with:
+#   npm install -g https://github.com/NeitrinoK/qwen-code-minimal/releases/download/<tag>/qwen-code-minimal-<version>.tgz
+
+on:
+  push:
+    tags:
+      - 'v*-minimal.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build the release for, e.g. v0.25.1-minimal.1'
+        required: true
+        type: 'string'
+
+permissions:
+  contents: 'write'
+
+concurrency:
+  group: 'minimal-release-${{ inputs.tag || github.ref_name }}'
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: "github.repository == 'NeitrinoK/qwen-code-minimal'"
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 60
+    env:
+      TAG: '${{ inputs.tag || github.ref_name }}'
+    steps:
+      - name: 'Checkout'
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
+        with:
+          ref: '${{ inputs.tag || github.ref }}'
+
+      - name: 'Set up Node.js'
+        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e' # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 'Check tag matches package version'
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          case "$TAG" in
+            "v${version}-minimal."*) echo "Releasing ${TAG} (package ${version})" ;;
+            *) echo "::error::Tag ${TAG} must start with v${version}-minimal." ; exit 1 ;;
+          esac
+
+      - name: 'Install dependencies'
+        run: 'npm ci'
+
+      - name: 'Build and bundle'
+        run: |
+          npm run build
+          npm run bundle
+          npm run prepare:package
+
+      - name: 'Pack'
+        id: 'pack'
+        run: |
+          mkdir -p out
+          file="$(cd out && npm pack ../dist --silent)"
+          echo "file=out/${file}" >> "$GITHUB_OUTPUT"
+          ls -l "out/${file}"
+
+      - name: 'Smoke test the tarball'
+        run: |
+          prefix="$(mktemp -d)"
+          npm install -g --prefix "$prefix" "${{ steps.pack.outputs.file }}"
+          "$prefix/bin/qwen" --version
+
+      - name: 'Create or update the release'
+        env:
+          GH_TOKEN: '${{ github.token }}'
+          FILE: '${{ steps.pack.outputs.file }}'
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber
+          else
+            gh release create "$TAG" "$FILE" --title "$TAG" --generate-notes --verify-tag
+          fi
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$FILE")"
+          {
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo "npm install -g ${url}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
