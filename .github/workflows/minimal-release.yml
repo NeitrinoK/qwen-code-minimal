@@ -63,7 +63,8 @@ jobs:
         run: |
           mkdir -p out
           file="$(cd out && npm pack ../dist --silent)"
-          echo "file=out/${file}" >> "$GITHUB_OUTPUT"
+          # Absolute path: npm reads a bare `out/x.tgz` as a GitHub shorthand.
+          echo "file=${PWD}/out/${file}" >> "$GITHUB_OUTPUT"
           ls -l "out/${file}"
 
       - name: 'Smoke test the tarball'
