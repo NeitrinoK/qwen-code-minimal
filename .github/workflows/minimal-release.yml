@@ -1,8 +1,8 @@
 name: 'Minimal Release'
 
 # Builds the installable npm tarball and attaches it to a GitHub release.
-# Users install it with:
-#   npm install -g https://github.com/NeitrinoK/qwen-code-minimal/releases/download/<tag>/qwen-code-minimal-<version>.tgz
+# Users install the latest release with:
+#   npm install -g https://github.com/NeitrinoK/qwen-code-minimal/releases/latest/download/qwen-code-minimal.tgz
 
 on:
   push:
@@ -78,16 +78,21 @@ jobs:
           GH_TOKEN: '${{ github.token }}'
           FILE: '${{ steps.pack.outputs.file }}'
         run: |
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$FILE" --clobber
-          else
-            gh release create "$TAG" "$FILE" --title "$TAG" --generate-notes --verify-tag
-          fi
+          # A fixed-name copy lets the README link to
+          # /releases/latest/download/qwen-code-minimal.tgz across versions.
+          stable="$(dirname "$FILE")/qwen-code-minimal.tgz"
+          cp "$FILE" "$stable"
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/$(basename "$FILE")"
-          {
-            echo "### Install"
-            echo
-            echo '```bash'
-            echo "npm install -g ${url}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          install="$(printf '### Install\n\n```bash\nnpm install -g %s\n```\n' "$url")"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" "$stable" --clobber
+            notes="$(gh release view "$TAG" --json body --jq .body)"
+          else
+            gh release create "$TAG" "$FILE" "$stable" --title "$TAG" --generate-notes --verify-tag
+            notes="$(gh release view "$TAG" --json body --jq .body)"
+          fi
+          case "$notes" in
+            *"npm install -g "*) ;;
+            *) gh release edit "$TAG" --notes "$(printf '%s\n\n%s\n' "$install" "$notes")" ;;
+          esac
+          echo "$install" >> "$GITHUB_STEP_SUMMARY"
